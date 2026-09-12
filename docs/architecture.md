@@ -149,7 +149,7 @@ The recorder is a bounded, append-only log with monotonic sequence numbers and c
 
 ### 6.7 State, paths, and serialization
 
-State that crosses the protocol must be JSON-serializable. Dates serialize through `toJSON`, and `undefined` properties are omitted as in JSON. Functions, `BigInt`, `NaN`, `Infinity`, `Map`, `Set`, class instances other than `Date`, and cyclic references are replaced with `{ "$unserializable": "<kind>" }` and reported once per path. Paths are dot-separated, with numeric segments for array indices. Results can be narrowed to a subtree with a path to keep agent context small.
+State that crosses the protocol must be JSON-serializable. Dates serialize through `toJSON`, and `undefined` properties are omitted as in JSON. Functions, `BigInt`, `NaN`, `Infinity`, `Map`, `Set`, class instances other than `Date`, and cyclic references are replaced with `{ "$unserializable": "<kind>" }` and reported once per path. Boxed primitives unwrap; an invalid `Date`, a throwing getter, or an uninspectable object gets a placeholder rather than an exception. Paths are dot-separated, with numeric segments for array indices. Results can be narrowed to a subtree with a path to keep agent context small.
 
 ## 7. Flows
 

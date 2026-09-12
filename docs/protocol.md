@@ -281,7 +281,7 @@ Settle timeouts are not errors, because the command has already been applied; th
 
 ## 7. Serialization
 
-State values follow `JSON.stringify` rules: `Date` serializes through `toJSON`, and `undefined` properties are omitted, so optional fields never produce warnings. Values that JSON would throw on or silently flatten, namely functions, `BigInt`, `NaN`, `Infinity`, `Map`, `Set`, class instances other than `Date`, and cyclic references, are replaced with `{ "$unserializable": "<kind>" }`. Each affected path produces one `UNSERIALIZABLE_STATE` warning per connection.
+State values follow `JSON.stringify` rules: `Date` serializes through `toJSON`, and `undefined` properties are omitted, so optional fields never produce warnings. Values that JSON would throw on or silently flatten, namely functions, `BigInt`, `NaN`, `Infinity`, `Map`, `Set`, class instances other than `Date`, and cyclic references, are replaced with `{ "$unserializable": "<kind>" }`. Boxed primitives unwrap as in JSON. An invalid `Date`, which JSON would flatten to `null`, is marked `InvalidDate`. A property whose getter throws is marked `throwing-getter`, and an object that can't be inspected at all, such as a revoked `Proxy`, is marked `unreadable`; serialization never throws. Each affected path produces one `UNSERIALIZABLE_STATE` warning per connection.
 
 ## 8. Versioning
 

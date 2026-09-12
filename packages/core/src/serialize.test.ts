@@ -71,4 +71,45 @@ describe('serializeState', () => {
       ),
     );
   });
+
+  it('unboxes boxed primitives like JSON does', () => {
+    const { value, warnings } = serializeState({ n: new Number(5), s: new String('x'), b: new Boolean(false), big: Object(10n) });
+    expect(value).toEqual({ n: 5, s: 'x', b: false, big: { $unserializable: 'BigInt' } });
+    expect(warnings).toEqual([{ path: 'big', valueKind: 'BigInt' }]);
+  });
+
+  it('keeps plain objects that merely have a then key, and marks real promises', () => {
+    const { value } = serializeState({ status: 'pending', then: () => {}, promise: Promise.resolve(1) });
+    expect(value).toEqual({ status: 'pending', then: { $unserializable: 'function' }, promise: { $unserializable: 'Promise' } });
+  });
+
+  it('marks an invalid Date instead of flattening it to null', () => {
+    const { value, warnings } = serializeState({ at: new Date(Number.NaN) });
+    expect(value).toEqual({ at: { $unserializable: 'InvalidDate' } });
+    expect(warnings).toEqual([{ path: 'at', valueKind: 'InvalidDate' }]);
+  });
+
+  it('never throws on throwing getters or exotic proxies and keeps siblings', () => {
+    const hostile = { fine: 1 };
+    Object.defineProperty(hostile, 'bad', { enumerable: true, get: () => { throw new Error('nope'); } });
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    const { value, warnings } = serializeState({ hostile, revoked: revoked.proxy, shared: hostile });
+    expect(value).toEqual({
+      hostile: { fine: 1, bad: { $unserializable: 'throwing-getter' } },
+      revoked: { $unserializable: 'unreadable' },
+      shared: { fine: 1, bad: { $unserializable: 'throwing-getter' } },
+    });
+    expect(warnings.map((w) => w.path)).toEqual(['hostile.bad', 'revoked', 'shared.bad']);
+  });
+
+  it('property: JSON values round-trip byte-for-byte with no warnings', () => {
+    fc.assert(
+      fc.property(fc.jsonValue(), (input) => {
+        const { value, warnings } = serializeState(input);
+        expect(JSON.stringify(value)).toBe(JSON.stringify(input));
+        expect(warnings).toEqual([]);
+      }),
+    );
+  });
 });
