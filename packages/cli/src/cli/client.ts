@@ -12,11 +12,14 @@ export const DEFAULT_DAEMON_URL = 'http://127.0.0.1:4567';
 
 type RpcEnvelope = { ok: true; result: unknown } | { ok: false; error: ErrorShape };
 
-/** Recognizes a parsed JSON body shaped like the protocol's failure envelope, `{ ok: false, error }`. */
+/** Recognizes a parsed JSON body shaped like the protocol's failure envelope, `{ ok: false, error }`,
+ * where `error` is itself an object with a string `code` and `message`. */
 function asErrorEnvelope(parsed: unknown): ErrorShape | undefined {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
   const candidate = parsed as { ok?: unknown; error?: unknown };
   if (candidate.ok !== false || candidate.error === null || typeof candidate.error !== 'object') return undefined;
+  const error = candidate.error as { code?: unknown; message?: unknown };
+  if (typeof error.code !== 'string' || typeof error.message !== 'string') return undefined;
   return candidate.error as ErrorShape;
 }
 
@@ -59,7 +62,9 @@ export function createDaemonClient(options: { url: string; token?: string; fetch
 
       const envelope = parsed as RpcEnvelope;
       if (envelope.ok) return envelope.result as T;
-      throw new IronbirdError(envelope.error.code, envelope.error.message, envelope.error.details);
+      const finalErrorEnvelope = asErrorEnvelope(envelope);
+      if (!finalErrorEnvelope) throw unexpectedResponse(status, bodyText);
+      throw new IronbirdError(finalErrorEnvelope.code, finalErrorEnvelope.message, finalErrorEnvelope.details);
     },
     async stream({ target, since = 0, signal, onMessage }) {
       const query = new URLSearchParams({ ...(target ? { target } : {}), since: String(since) });
@@ -71,7 +76,17 @@ export function createDaemonClient(options: { url: string; token?: string; fetch
         throw error instanceof IronbirdError ? error : unreachable();
       }
       const status = response.status;
-      if (status === 401) throw new IronbirdError('UNAUTHORIZED', 'Token missing or wrong for this daemon');
+      if (status === 401) {
+        const bodyText = await response.text().catch(() => '');
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(bodyText);
+        } catch {
+          parsed = undefined;
+        }
+        const errorEnvelope = asErrorEnvelope(parsed);
+        throw new IronbirdError('UNAUTHORIZED', errorEnvelope?.message ?? 'Token missing or wrong for this daemon');
+      }
       if (status !== 200) throw unexpectedResponse(status, await response.text().catch(() => ''));
       if (!response.body) return;
       const reader = response.body.getReader();
@@ -100,7 +115,14 @@ export function createDaemonClient(options: { url: string; token?: string; fetch
               else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
             }
             if (data.length > 0 && (kind === 'event' || kind === 'state' || kind === 'target' || kind === 'error')) {
-              onMessage(kind, JSON.parse(data.join('\n')));
+              let payload: unknown;
+              try {
+                payload = JSON.parse(data.join('\n'));
+              } catch {
+                await reader.cancel().catch(() => {});
+                throw new IronbirdError('TARGET_DISCONNECTED', `Stream from ${url} sent an unparsable ${kind} frame`, { target, op: 'stream' });
+              }
+              onMessage(kind, payload);
               if (kind === 'error') return;
             }
             boundary = buffer.indexOf('\n\n');

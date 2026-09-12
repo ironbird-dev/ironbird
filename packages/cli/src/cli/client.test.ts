@@ -87,6 +87,16 @@ describe('createDaemonClient.rpc', () => {
     expect(isIronbirdError(error) && error.details).toMatchObject({ url: 'http://127.0.0.1:4567', status: 200 });
     expect(isIronbirdError(error) && (error.details as { body?: string }).body).toContain('<html>nope</html>');
   });
+
+  it('rejects an ok:false envelope with no usable error as INTERNAL instead of a raw TypeError', async () => {
+    const bareFalse = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: vi.fn(async () => jsonResponse({ ok: false })) });
+    const bareFalseError = await bareFalse.rpc('status').catch((caught: unknown) => caught);
+    expect(isIronbirdError(bareFalseError) && bareFalseError.code).toBe('INTERNAL');
+
+    const nullError = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: vi.fn(async () => jsonResponse({ ok: false, error: null })) });
+    const nullErrorResult = await nullError.rpc('status').catch((caught: unknown) => caught);
+    expect(isIronbirdError(nullErrorResult) && nullErrorResult.code).toBe('INTERNAL');
+  });
 });
 
 describe('createDaemonClient.stream', () => {
@@ -162,6 +172,35 @@ describe('createDaemonClient.stream', () => {
     const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: fetchMock });
     const error = await client.stream({ signal: new AbortController().signal, onMessage: () => {} }).catch((caught: unknown) => caught);
     expect(isIronbirdError(error) && error.code).toBe('INTERNAL');
+  });
+
+  it('uses the daemon message for a 401 error envelope', async () => {
+    const response = chunkedResponse([JSON.stringify({ ok: false, error: { code: 'UNAUTHORIZED', message: 'Token missing or wrong' } })], { status: 401 });
+    const fetchMock: FetchMock = vi.fn(async () => response);
+    const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: fetchMock });
+    const error = await client.stream({ signal: new AbortController().signal, onMessage: () => {} }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('UNAUTHORIZED');
+    expect(isIronbirdError(error) && error.message).toBe('Token missing or wrong');
+  });
+
+  it('rejects a frame with an unparsable data payload as TARGET_DISCONNECTED', async () => {
+    const response = chunkedResponse(['event: state\ndata: {not json\n\n']);
+    const fetchMock: FetchMock = vi.fn(async () => response);
+    const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: fetchMock });
+    const error = await client.stream({ signal: new AbortController().signal, onMessage: () => {} }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('TARGET_DISCONNECTED');
+  });
+
+  it('delivers a frame whose CRLF terminator is split across chunks (one ends with \\r, the next starts with \\n\\n)', async () => {
+    const response = chunkedResponse(['event: state\ndata: {"rev":1}\r', '\n\nevent: state\ndata: {"rev":2}\n\n']);
+    const fetchMock: FetchMock = vi.fn(async () => response);
+    const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: fetchMock });
+    const seen: Array<[string, unknown]> = [];
+    await client.stream({ signal: new AbortController().signal, onMessage: (kind, data) => seen.push([kind, data]) });
+    expect(seen).toEqual([
+      ['state', { rev: 1 }],
+      ['state', { rev: 2 }],
+    ]);
   });
 });
 
