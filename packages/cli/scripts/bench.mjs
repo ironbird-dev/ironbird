@@ -1,3 +1,18 @@
+// Benchmarks ironbird's own overhead against the checkout example app, headless.
+//
+// Two of the rows below run in process, against the same target, but exercise different paths
+// through the headless target's settle logic:
+//
+//   - "headless dispatch, no pending effect (floor)" dispatches `cart.clear`, a pure reducer step
+//     with no pending fake effect. The tracker's `whenIdle` sees no pending items and returns on
+//     its first check, so this row is a floor: the raw cost of dispatch + snapshot + event slice,
+//     never entering the quiescent settle loop that a step with a pending effect pays.
+//   - "headless dispatch with pending fake effect" dispatches `payment.start`, which leaves the
+//     fake reader's `collectPayment` pending on the manual clock. Settling now goes through the
+//     quiescent branch: three macrotask yields (QUIESCENT_STABLE_YIELDS in
+//     packages/core/src/tracker.ts) before `whenIdle` reports `quiescent: true`. This is the path
+//     most real commands take, and is what the spec's G1 budget ("ironbird overhead per headless
+//     command, excluding app logic, < 5 ms p95") should be measured against.
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -28,6 +43,25 @@ try {
     inProcess.push(performance.now() - started);
   }
 
+  await target.run('dispatch', { name: 'cart.addItem', payload: { sku: 'cut-45', qty: 1 }, path: 'cart' });
+  const inProcessQuiescent = [];
+  let firstQuiescentResult;
+  for (let i = 0; i < 500; i += 1) {
+    const started = performance.now();
+    const result = await target.run('dispatch', { name: 'payment.start', payload: { method: 'card' }, path: 'payment' });
+    inProcessQuiescent.push(performance.now() - started);
+    if (i === 0) firstQuiescentResult = result;
+    // Outside the timed span: drive the manual clock so the fake reader, the fake API, and the
+    // server echo all fire and the order completes, freeing the cart for the next iteration's
+    // `payment.start` (the reducer allows it again once payment is no longer in progress).
+    await target.run('clockAdvance', { ms: 2_000 });
+  }
+  if (!firstQuiescentResult?.settle?.quiescent) {
+    throw new Error(
+      `Expected the first measured "payment.start" dispatch to settle via the quiescent branch (settle.quiescent === true), got ${JSON.stringify(firstQuiescentResult?.settle)}. This row is meant to measure the quiescent settle path, not the no-pending-effect floor.`,
+    );
+  }
+
   daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: 'bench', headless: target, defaultTarget: 'headless', log: () => {} });
   await writeDaemonInfo(path.join(example, '.ironbird'), { url: daemon.url, pid: process.pid, startedAt: Date.now(), version: 'bench', defaultTarget: 'headless' });
 
@@ -46,7 +80,8 @@ try {
   }
 
   const rows = [
-    ['headless dispatch, in process (overhead)', inProcess, 5],
+    ['headless dispatch, no pending effect (floor)', inProcess, 5],
+    ['headless dispatch with pending fake effect', inProcessQuiescent, 5],
     ['headless dispatch over HTTP', http, null],
     ['CLI invocation end to end', cli, 300],
   ];
