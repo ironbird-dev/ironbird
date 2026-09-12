@@ -6,17 +6,23 @@ export type Schemas = Record<string, z.ZodType>;
 
 export interface CommandRegistry<T extends Schemas = Schemas> {
   readonly schemas: T;
-  names(): string[];
   /**
-   * Type predicate is written with the method's own type parameter `K`, not bare `keyof T`,
-   * for the same reason `parse` below is: a bare `keyof T` (or a method type-parameter
-   * constrained by it, as this and `parse` originally were) makes TS6's generic-method
-   * variance check treat `T` as invariant, so `CommandRegistry<{...}>` stops being assignable
-   * to the bare `CommandRegistry` that targets, the daemon, and fakes hold.
+   * `names()`, `has()`, and `parse()` all defer through a conditional type
+   * (`T extends infer U extends Schemas ? ... : never`) instead of using a bare `keyof T` (or a
+   * method type-parameter constrained by it). A bare `keyof T` in a method's output/predicate
+   * position makes TS6's generic-method variance check treat `T` as invariant, so
+   * `CommandRegistry<{...}>` stops being assignable to the bare `CommandRegistry` that targets,
+   * the daemon, and fakes hold. Deferring the lookup through a naked type parameter `U`
+   * introduced by `infer` keeps the member covariant in `T` while still resolving to the exact
+   * literal keys/output types for any concrete `T` — no precision is lost.
    */
+  names(): T extends infer U extends Schemas ? Array<keyof U & string> : never;
   has<K extends string>(name: K): name is K & keyof T;
   /** Throws IronbirdError with UNKNOWN_COMMAND or INVALID_PAYLOAD. */
-  parse<K extends string>(name: K, payload: unknown): z.output<T[K & keyof T]>;
+  parse<K extends (T extends infer U extends Schemas ? keyof U & string : never)>(
+    name: K,
+    payload: unknown,
+  ): T extends infer U extends Schemas ? z.output<U[K & keyof U]> : never;
   describe(): Record<string, CommandDescription>;
 }
 
@@ -79,13 +85,17 @@ export function defineCommands<const T extends Schemas>(schemas: T): CommandRegi
   const names = Object.keys(schemas) as Array<keyof T & string>;
   const has = (name: string): name is keyof T & string => Object.prototype.hasOwnProperty.call(schemas, name);
 
+  // The interface's members are declared through a deferred conditional type
+  // (`T extends infer U extends Schemas ? ... : never`) so that `CommandRegistry<T>` stays
+  // covariant in `T` (see the interface doc comment). That deferral means TS can't see, member
+  // by member, that this concrete object satisfies it — it's the same information the runtime
+  // logic below already establishes (via `names`, `has`, and the schema lookups), just not
+  // phrased in a way the conditional type can follow structurally. One cast on the returned
+  // object records that equivalence in a single place, rather than fighting the checker on each
+  // member.
   return {
     schemas,
     names: () => [...names],
-    // `has` is a plain, non-generic function (its own type is exact: `name is keyof T & string`
-    // for this concrete T), while the interface declares a generic `has<K extends string>`.
-    // The cast reflects that: for any K, narrowing `name` to `keyof T & string` also narrows it
-    // to `K & keyof T` whenever the runtime check is true, which is exactly what `has` computes.
     has: has as <K extends string>(name: K) => name is K & keyof T,
     parse(name, payload) {
       if (!has(name)) {
@@ -117,5 +127,5 @@ export function defineCommands<const T extends Schemas>(schemas: T): CommandRegi
       }
       return out;
     },
-  };
+  } as CommandRegistry<T>;
 }

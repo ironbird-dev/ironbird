@@ -71,6 +71,18 @@ describe('defineCommands', () => {
     expect(widened.parse('cart.clear', undefined)).toEqual({});
   });
 
+  it('keeps literal precision while staying covariant', () => {
+    const names: Array<'cart.addItem' | 'cart.clear' | 'payment.start'> = commands.names();
+    const parsed: { sku: string; qty: number } = commands.parse('cart.addItem', { sku: 'x', qty: 1 });
+    // @ts-expect-error unknown command names are rejected at compile time
+    const rejected = () => commands.parse('cart.addItems', {});
+    const widened: CommandRegistry = commands;
+    expect(names).toHaveLength(3);
+    expect(parsed.qty).toBe(1);
+    expect(typeof rejected).toBe('function');
+    expect(widened.has('cart.clear')).toBe(true);
+  });
+
   it('warns once per command whose schema uses transforms or refinements', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const withTransforms = defineCommands({
