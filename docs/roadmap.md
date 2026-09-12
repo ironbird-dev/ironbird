@@ -44,7 +44,7 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 
 **Exit criteria**
 
-- [ ] A coding agent, given only the output of `ironbird commands`, completes cart → payment → receipt headlessly
+- [x] A coding agent, given only the output of `ironbird commands`, completes cart → payment → receipt headlessly
 - [x] ironbird overhead per headless command is under 5 ms at p95, and CLI invocations are under 300 ms at p95
 - [x] A `react-native` import in the headless graph produces `HEADLESS_LOAD_FAILED` with the import chain
 
