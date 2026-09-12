@@ -85,6 +85,22 @@ describe('createManualClock', () => {
     expect(isIronbirdError(error) && error.details).toEqual({ labels: ['loop'], firings: MAX_FIRINGS_PER_ADVANCE });
   });
 
+  it('drains a multi-step promise chain before firing the next timer', async () => {
+    const clock = createManualClock();
+    const fired: string[] = [];
+    clock.setTimeout(() => {
+      void (async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        clock.setTimeout(() => fired.push('chained@' + clock.now()), 300, 'chained');
+      })();
+    }, 1_200, 'first');
+    clock.setTimeout(() => fired.push('later@' + clock.now()), 1_700, 'later');
+    await clock.advance(2_000);
+    expect(fired).toEqual(['chained@1500', 'later@1700']);
+  });
+
   it('property: advancing by a then b fires the same sequence as advancing by a + b', async () => {
     await fc.assert(
       fc.asyncProperty(

@@ -1,4 +1,5 @@
 import { IronbirdError } from './errors';
+import { scheduler } from './scheduler';
 
 export type TimerId = number;
 
@@ -155,10 +156,7 @@ export function createManualClock(options: { now?: number } = {}): ManualClock {
           next.seq = nextSeq++;
         }
         next.callback();
-        // Yield to the microtask queue (not a real macrotask) so promise jobs scheduled by the
-        // callback run before the next firing, without coupling manual-clock advancement to
-        // real wall-clock event-loop timing (see deviation note in the task report).
-        await Promise.resolve();
+        await scheduler.yieldMacrotask();
       }
       now = target;
     },

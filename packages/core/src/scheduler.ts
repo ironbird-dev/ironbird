@@ -7,9 +7,11 @@ export const scheduler = {
   now(): number {
     return Date.now();
   },
+  /** Yields a macrotask: prefers `setImmediate` where available, falling back to a zero-delay timeout. */
   yieldMacrotask(): Promise<void> {
     return new Promise((resolve) => {
-      setTimeout(() => resolve(), 0);
+      if (typeof setImmediate === 'function') setImmediate(() => resolve());
+      else setTimeout(() => resolve(), 0);
     });
   },
   sleep(ms: number): Promise<void> {
