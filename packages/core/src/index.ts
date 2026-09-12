@@ -29,3 +29,6 @@ export { FAKE_PORT_MARK, QUIESCENT_STABLE_YIELDS, createTracker, isFakePort, mar
 export type { Tracker } from './tracker';
 export { createTarget } from './target';
 export type { Target, TargetDefinition } from './target';
+export type { FakeInstance } from './fake';
+export { defineHeadless, isHeadlessDefinition } from './headless';
+export type { HeadlessApp, HeadlessContext, HeadlessDefinition } from './headless';

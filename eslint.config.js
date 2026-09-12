@@ -12,7 +12,7 @@ const coreOnlyZod = {
 };
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/node_modules/**', '**/.ironbird/**', '**/coverage/**'] },
+  { ignores: ['**/dist/**', '**/node_modules/**', '**/.ironbird/**', '**/coverage/**', '**/.superpowers/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { files: ['**/*.{js,mjs,cjs}'], languageOptions: { globals: { ...globals.node } } },

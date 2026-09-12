@@ -50,7 +50,7 @@ Tooling: pnpm workspaces, TypeScript in strict mode, Vitest for packages, Jest w
 6. Public API or CLI changes update [docs/api.md](docs/api.md) or [docs/cli.md](docs/cli.md) in the same PR and include a changeset.
 7. New runtime dependencies in `core` or `react-native` need an ADR. New dependencies in `cli` need a one-line justification in the PR.
 8. Errors that cross a package boundary are `IronbirdError` with a code from the protocol error table. No bare string throws.
-9. Headless determinism is a feature. Library code and example app logic take time from the injected `Clock`, never from global `setTimeout`, `setInterval`, or `Date.now`. The bridge is library code too: it uses the `Clock` passed to `startBridge`, which defaults to the real clock. `requestAnimationFrame` is a rendering signal rather than a clock and may be used directly.
+9. Headless determinism is a feature. Library code and example app logic take time from the injected `Clock`, never from global `setTimeout`, `setInterval`, or `Date.now`. The bridge is library code too: it uses the `Clock` passed to `startBridge`, which defaults to the real clock. `requestAnimationFrame` is a rendering signal rather than a clock and may be used directly. Inside `@ironbird/core`, `clock.ts` and `scheduler.ts` are the only files that may use global timers or `Date.now`, and lint enforces that.
 
 ## Conventions
 

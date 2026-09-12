@@ -99,6 +99,7 @@ type TimerId = number;
 interface ScheduledTimer {
   id: TimerId;
   dueAt: number;
+  scheduledAt: number;
   label?: string;
   repeatMs?: number;
 }
@@ -130,18 +131,21 @@ function createManualClock(options?: { now?: number }): ManualClock;
 
 ```ts
 interface Tracker {
-  track<T>(promise: Promise<T>, label: string): Promise<T>;
+  track<T>(promise: Promise<T>, label: string, options?: { fake?: boolean }): Promise<T>;
   /** Shallow proxy: each method returning a thenable is tracked as `${name}.${method}`. */
-  wrap<P extends object>(port: P, name: string): P;
+  wrap<P extends object>(port: P, name: string, options?: { fake?: boolean }): P;
   pending(): PendingItem[];
   whenIdle(options?: { timeoutMs?: number; mode?: 'idle' | 'quiescent' }): Promise<SettleResult>;
   onChange(listener: () => void): () => void;
 }
 
 function createTracker(options?: { clock?: Clock; timerThresholdMs?: number; enabled?: boolean }): Tracker;
+
+/** Tags a port so wrap marks its calls fake: true; defineFake does this for every fake port. */
+function markFakePort<P extends object>(port: P): P;
 ```
 
-With a real clock, timers due within `timerThresholdMs` (default 1,000) count as pending. Manual-clock timers never count. Wrapping is always explicit, so the app chooses the label; when the port passed to `wrap` is a `FakeInstance.port`, which the fake tags with a private symbol, its calls are marked `fake: true`, which is what allows `mode: 'quiescent'` to finish without advancing time. With `enabled: false` (app code passes `enabled: __DEV__`), `wrap` returns the port untouched, `track` returns the promise untouched, `pending()` is empty, and `whenIdle` resolves idle at once, so release builds carry no tracking. `PendingItem` and `SettleResult` are defined in [protocol.md](protocol.md#5-types).
+With a real clock, timers due within `timerThresholdMs` (default 1,000) count as pending. Manual-clock timers never count. Wrapping is always explicit, so the app chooses the label; when the port passed to `wrap` is a `FakeInstance.port`, which the fake tags with a private symbol, its calls are marked `fake: true`, which is what allows `mode: 'quiescent'` to finish without advancing time. Hand-written fakes, such as the M0 example's, call `markFakePort` on the port or pass `{ fake: true }` to `wrap`. With `enabled: false` (app code passes `enabled: __DEV__`), `wrap` returns the port untouched, `track` returns the promise untouched, `pending()` is empty, and `whenIdle` resolves idle at once, so release builds carry no tracking. `PendingItem` and `SettleResult` are defined in [protocol.md](protocol.md#5-types). `whenIdle`'s `timeoutMs` and every `ageMs` are wall-clock milliseconds, because a manual clock never advances on its own; only the settle result's `nextTimerInMs` is manual-clock time.
 
 ### defineFake (P0)
 
@@ -271,9 +275,14 @@ interface HeadlessApp {
   fakes?: FakeInstance[];
   dispose?(): void | Promise<void>;
 }
+
+interface HeadlessDefinition {
+  readonly kind: 'ironbird.headless';
+  create(context: HeadlessContext): Promise<HeadlessApp>;
+}
 ```
 
-The module named by `headless` in `ironbird.config.ts` must default-export the result. The daemon calls the factory on start and again on `reset`, each time with a fresh context.
+The module named by `headless` in `ironbird.config.ts` must default-export the result. The daemon calls the factory on start and again on `reset`, each time with a fresh context. `HeadlessDefinition` has `kind: 'ironbird.headless'` and an async `create(context)`; the daemon checks the loaded default export with `isHeadlessDefinition` and fails with `HEADLESS_LOAD_FAILED` otherwise.
 
 ### IronbirdError (P0)
 
