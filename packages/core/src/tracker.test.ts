@@ -154,6 +154,57 @@ describe('createTracker', () => {
     expect(changes).toBe(2);
   });
 
+  it('is inert when disabled even with a real clock that has short timers', async () => {
+    const clock = createRealClock();
+    const tracker = createTracker({ clock, enabled: false });
+    const id = clock.setTimeout(() => {}, 100, 'debounce');
+    expect(tracker.pending()).toEqual([]);
+    const result = await tracker.whenIdle({ timeoutMs: 1_000, mode: 'quiescent' });
+    expect(result).toEqual({ idle: true, quiescent: false, waitedMs: 0, pending: [] });
+    clock.clearTimeout(id);
+  });
+
+  it('does not report quiescence while fake work keeps churning under the same label', async () => {
+    const clock = createManualClock();
+    const tracker = createTracker({ clock });
+    // setImmediate (not a real-clock ms-scale timer) so each resolve/replace cycle races directly
+    // against the tracker's own macrotask-yield sampling instead of running slower than it -
+    // otherwise a single still-pending call can look "stable" for 3 straight samples well within
+    // its own real-timer lifetime, before it is ever replaced.
+    const port = markFakePort({ poll: () => new Promise<void>((resolve) => setImmediate(resolve)) });
+    const wrapped = tracker.wrap(port, 'fake');
+    let churning = true;
+    const loop = async (): Promise<void> => {
+      while (churning) await wrapped.poll();
+    };
+    const running = loop();
+    const result = await tracker.whenIdle({ timeoutMs: 60, mode: 'quiescent' });
+    churning = false;
+    await running;
+    expect(result.quiescent).toBe(false);
+    expect(result.idle).toBe(false);
+    expect(result.pending.map((item) => item.label)).toEqual(['fake.poll']);
+  });
+
+  it('returns the same wrapper function for the same method across reads', () => {
+    const tracker = createTracker();
+    const wrapped = tracker.wrap({ fetch: () => Promise.resolve(1) }, 'api');
+    expect(wrapped.fetch).toBe(wrapped.fetch);
+  });
+
+  it('cleans up change listeners after a settle times out', async () => {
+    const tracker = createTracker();
+    tracker.track(new Promise<void>(() => {}), 'stuck');
+    await tracker.whenIdle({ timeoutMs: 50 });
+    let calls = 0;
+    const off = tracker.onChange(() => {
+      calls += 1;
+    });
+    tracker.track(Promise.resolve(), 'fresh');
+    off();
+    expect(calls).toBe(1);
+  });
+
   it('property: idle is reported only when no tracked promise is unresolved', async () => {
     await fc.assert(
       fc.asyncProperty(fc.array(fc.boolean(), { minLength: 1, maxLength: 8 }), async (resolveFlags) => {

@@ -33,32 +33,53 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 export function createTracker(options: { clock?: Clock; timerThresholdMs?: number; enabled?: boolean } = {}): Tracker {
   const { clock, timerThresholdMs = 1_000, enabled = true } = options;
 
+  if (!enabled) {
+    return {
+      track: (promise) => promise,
+      wrap: (port) => port,
+      pending: () => [],
+      whenIdle: async () => ({ idle: true, quiescent: false, waitedMs: 0, pending: [] }),
+      onChange: () => () => {},
+    };
+  }
+
   interface Effect {
+    id: number;
     label: string;
     fake: boolean;
     startedAt: number;
   }
 
+  type InternalItem = { kind: 'effect'; id: number; label: string; ageMs: number; fake: boolean } | { kind: 'timer'; label: string; ageMs: number; fake: boolean };
+
+  const toPendingItem = (item: InternalItem): PendingItem =>
+    item.kind === 'effect' ? { kind: 'effect', label: item.label, ageMs: item.ageMs, fake: item.fake } : { kind: 'timer', label: item.label, ageMs: item.ageMs, fake: item.fake };
+
+  const stabilityKey = (item: InternalItem): string => (item.kind === 'effect' ? `e${item.id}` : `t:${item.label}`);
+
+  let nextEffectId = 1;
   const effects = new Set<Effect>();
   const listeners = new Set<() => void>();
   const notify = (): void => {
     for (const listener of listeners) listener();
   };
 
-  const timerItems = (): PendingItem[] => {
+  const timerItems = (): InternalItem[] => {
     if (!clock || clock.kind !== 'real') return [];
     const now = clock.now();
     return clock
       .timers()
       .filter((timer) => timer.dueAt - now <= timerThresholdMs)
-      .map((timer) => ({ kind: 'timer', label: timer.label ?? `timer#${timer.id}`, ageMs: Math.max(0, now - timer.scheduledAt), fake: false }));
+      .map((timer) => ({ kind: 'timer' as const, label: timer.label ?? `timer#${timer.id}`, ageMs: Math.max(0, now - timer.scheduledAt), fake: false }));
   };
 
-  const pending = (): PendingItem[] => {
+  const pendingItems = (): InternalItem[] => {
     const now = scheduler.now();
-    const effectItems: PendingItem[] = [...effects].map((effect) => ({ kind: 'effect', label: effect.label, ageMs: now - effect.startedAt, fake: effect.fake }));
+    const effectItems: InternalItem[] = [...effects].map((effect) => ({ kind: 'effect' as const, id: effect.id, label: effect.label, ageMs: now - effect.startedAt, fake: effect.fake }));
     return [...effectItems, ...timerItems()];
   };
+
+  const pending = (): PendingItem[] => pendingItems().map(toPendingItem);
 
   const nextTimer = (): Pick<SettleResult, 'nextTimerInMs'> => {
     if (!clock || clock.kind !== 'manual') return {};
@@ -73,17 +94,20 @@ export function createTracker(options: { clock?: Clock; timerThresholdMs?: numbe
     };
   };
 
-  const nextChange = (): Promise<void> =>
-    new Promise((resolve) => {
-      const off = onChange(() => {
-        off();
-        resolve();
-      });
+  const waitForChangeOrSleep = async (ms: number): Promise<void> => {
+    let off: () => void = () => {};
+    const changed = new Promise<void>((resolve) => {
+      off = onChange(() => resolve());
     });
+    try {
+      await Promise.race([changed, scheduler.sleep(ms)]);
+    } finally {
+      off();
+    }
+  };
 
   const track = <T>(promise: Promise<T>, label: string, trackOptions?: { fake?: boolean }): Promise<T> => {
-    if (!enabled) return promise;
-    const effect: Effect = { label, fake: trackOptions?.fake ?? false, startedAt: scheduler.now() };
+    const effect: Effect = { id: nextEffectId++, label, fake: trackOptions?.fake ?? false, startedAt: scheduler.now() };
     effects.add(effect);
     notify();
     const done = (): void => {
@@ -95,17 +119,24 @@ export function createTracker(options: { clock?: Clock; timerThresholdMs?: numbe
   };
 
   const wrap = <P extends object>(port: P, name: string, wrapOptions?: { fake?: boolean }): P => {
-    if (!enabled) return port;
     const fake = wrapOptions?.fake ?? isFakePort(port);
+    const wrapperCache = new Map<string, unknown>();
+    const originalCache = new Map<string, unknown>();
     return new Proxy(port, {
       get(target, property, receiver) {
         const value: unknown = Reflect.get(target, property, receiver);
         if (typeof value !== 'function' || typeof property !== 'string') return value;
+        if (wrapperCache.has(property) && originalCache.get(property) === value) {
+          return wrapperCache.get(property);
+        }
         const method = value as (this: P, ...args: unknown[]) => unknown;
-        return (...args: unknown[]): unknown => {
+        const wrapper = (...args: unknown[]): unknown => {
           const result = method.apply(target, args);
           return isThenable(result) ? track(Promise.resolve(result), `${name}.${property}`, { fake }) : result;
         };
+        wrapperCache.set(property, wrapper);
+        originalCache.set(property, value);
+        return wrapper;
       },
     });
   };
@@ -115,24 +146,24 @@ export function createTracker(options: { clock?: Clock; timerThresholdMs?: numbe
     const started = scheduler.now();
     const waited = (): number => scheduler.now() - started;
     let stableYields = 0;
-    let lastKey = '';
+    let lastKey: string | undefined;
 
     for (;;) {
-      const items = pending();
+      const items = pendingItems();
       if (items.length === 0) return { idle: true, quiescent: false, waitedMs: waited(), pending: [], ...nextTimer() };
       if (mode === 'quiescent' && items.every((item) => item.fake)) {
-        const key = items.map((item) => item.label).join('|');
+        const key = items.map(stabilityKey).join('|');
         stableYields = key === lastKey ? stableYields + 1 : 0;
         lastKey = key;
         if (stableYields >= QUIESCENT_STABLE_YIELDS) {
-          return { idle: false, quiescent: true, waitedMs: waited(), pending: items, ...nextTimer() };
+          return { idle: false, quiescent: true, waitedMs: waited(), pending: items.map(toPendingItem), ...nextTimer() };
         }
         await scheduler.yieldMacrotask();
       } else {
         stableYields = 0;
-        lastKey = '';
-        if (waited() >= timeoutMs) return { idle: false, quiescent: false, waitedMs: waited(), pending: items, ...nextTimer() };
-        await Promise.race([nextChange(), scheduler.sleep(Math.min(16, Math.max(0, timeoutMs - waited())))]);
+        lastKey = undefined;
+        if (waited() >= timeoutMs) return { idle: false, quiescent: false, waitedMs: waited(), pending: items.map(toPendingItem), ...nextTimer() };
+        await waitForChangeOrSleep(Math.min(16, Math.max(0, timeoutMs - waited())));
       }
       if (waited() >= timeoutMs) return { idle: false, quiescent: false, waitedMs: waited(), pending: pending(), ...nextTimer() };
     }
