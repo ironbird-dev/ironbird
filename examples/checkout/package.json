@@ -10,5 +10,8 @@
   "dependencies": {
     "@ironbird/core": "workspace:*",
     "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@ironbird/cli": "workspace:*"
   }
 }

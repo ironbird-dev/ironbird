@@ -58,7 +58,7 @@ Tooling: pnpm workspaces, TypeScript in strict mode, Vitest for packages, Jest w
 - Public APIs, the protocol, and MCP tools take durations in milliseconds; only the CLI accepts `ms`, `s`, and `m` suffixes.
 - CLI output is JSON when stdout isn't a TTY or `--json` is passed, and its shapes must match docs/cli.md.
 - Tests live next to code as `*.test.ts`. Device tests are named `*.device.test.ts` and are excluded from `pnpm test`.
-- Packages publish ESM and CommonJS builds with type declarations.
+- Packages publish ESM and CommonJS builds with type declarations. The exception is `@ironbird/cli`'s main entry, which is ESM only because it is a Node 22 binary; its `./config` subpath ships both.
 
 ## Definition of done
 
