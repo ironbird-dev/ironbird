@@ -85,7 +85,7 @@ On 2026-09-10 Shopify described its answer for native apps: business logic decou
 
 **R3. Headless daemon.** `ironbird serve` hosts the app's headless definition in Node.
 - [ ] Loads a TypeScript headless entry named in config without a separate build step
-- [ ] A `react-native` import anywhere in the headless import graph fails with `HEADLESS_LOAD_FAILED`, naming the import chain
+- [ ] A `react-native` import anywhere in the app's own source graph (dependencies are left external and are not scanned) fails with `HEADLESS_LOAD_FAILED`, naming the import chain
 - [ ] `ironbird reset` disposes the app and recreates it with a fresh clock, recorder, tracker, and fakes
 - [ ] Binds to 127.0.0.1 by default; a non-loopback host requires a token
 - [ ] A daemon session serves one app: a bridge whose app id differs from the session's app is rejected with `APP_MISMATCH`

@@ -46,7 +46,7 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 
 - [x] A coding agent, given only the output of `ironbird commands`, completes cart → payment → receipt headlessly
 - [x] ironbird overhead per headless command is under 5 ms at p95, and CLI invocations are under 300 ms at p95
-- [x] A `react-native` import in the headless graph produces `HEADLESS_LOAD_FAILED` with the import chain
+- [x] A `react-native` import anywhere in the app's own source graph (dependencies are left external and are not scanned) produces `HEADLESS_LOAD_FAILED` with the import chain
 
 ## M1: Remote mode
 

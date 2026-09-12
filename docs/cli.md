@@ -80,7 +80,7 @@ The CLI prints the daemon's `result` object, adding `target` to results that don
 ironbird serve [--port 4567] [--bridge-port 4568] [--host 127.0.0.1] [--no-headless] [--token <token>]
 ```
 
-Runs the daemon in the foreground. Loads the headless entry unless `--no-headless` is passed, accepts bridge connections, and runs `adb reverse` for connected Android devices when `adb` is available. Binding a non-loopback `--host` requires a token; if none is given, one is generated and printed. On start it prints one line, `{ url, targets, defaultTarget, bridgePort }`, and writes `.ironbird/daemon.json` so later invocations find the daemon without loading the config; the file is removed on shutdown. `--bridge-port` is accepted now and used from M1.
+Runs the daemon in the foreground. Loads the headless entry unless `--no-headless` is passed, accepts bridge connections, and runs `adb reverse` for connected Android devices when `adb` is available (M1). Binding a non-loopback `--host` requires a token; if none is given, one is generated and printed. On start it prints one line, `{ url, targets, defaultTarget, bridgePort }`, and writes `.ironbird/daemon.json` so later invocations find the daemon without loading the config; the file is removed on shutdown (only by the invocation that wrote it, so a `serve` that fails to bind leaves a running daemon's file alone). Requests that carry an `Origin` header, or a `Host` that is neither loopback nor the daemon's bind address, are refused with 403, so a page in a local browser can't drive the daemon. `--bridge-port` is accepted now and used from M1.
 
 ### status
 
@@ -112,7 +112,7 @@ Lists fakes wired into the target, with descriptions and control schemas.
 ironbird send <command> [payload] [--path <path>] [--no-settle] [--settle-timeout <duration>] [--screenshot]
 ```
 
-Validates and dispatches a command, settles unless `--no-settle` is passed, and prints a step result. On a remote target, `--screenshot` behaves like `step`.
+Validates and dispatches a command, settles unless `--no-settle` is passed, and prints a step result. On a remote target, `--screenshot` (M1) behaves like `step`.
 
 ```sh
 ironbird send cart.addItem '{"sku":"cut-45","qty":1}' --path cart
@@ -152,9 +152,9 @@ Prints a settle result without dispatching anything. Exits 3 when the target is 
 ironbird events [--since <seq>] [--limit <n>] [--follow]
 ```
 
-Prints `{ events, nextSeq, truncated }`. With `--follow`, streams events as JSON lines until interrupted. With `--follow`, the backlog and every later event print as JSON lines regardless of TTY.
+Prints `{ events, nextSeq, truncated }`. With `--follow`, the backlog and every later event print as JSON lines regardless of TTY, until interrupted.
 
-### fake
+### fake (M2)
 
 ```text
 ironbird fake <fake> <control> [payload] [--path <path>] [--no-settle]
@@ -184,7 +184,7 @@ ironbird reset
 
 Headless only. Disposes the headless app, recreates it with a fresh context, and prints `{ target, rev, path, value }`. Event sequence numbers restart at 1 after a reset, so call `events` without `--since` once before paging again.
 
-### screenshot
+### screenshot (M1)
 
 ```text
 ironbird screenshot [--device <udid|serial>] [--out <file>]
@@ -192,7 +192,7 @@ ironbird screenshot [--device <udid|serial>] [--out <file>]
 
 Captures the iOS Simulator with `xcrun simctl io <device> screenshot` or an Android device with `adb exec-out screencap -p`. The default output is `.ironbird/screenshots/<timestamp>-<target>.png`. Prints `{ path, device, capturedAt }`.
 
-### step
+### step (M1)
 
 ```text
 ironbird step <command> [payload] [--device <udid|serial>] [--path <path>] [--no-settle] [--settle-timeout <duration>]
@@ -200,7 +200,7 @@ ironbird step <command> [payload] [--device <udid|serial>] [--path <path>] [--no
 
 Remote targets only. Sends, settles, and captures a screenshot, then prints a step result plus `screenshot` and `settledBeforeCapture`. The screenshot is captured even when settling times out, so the agent can see what went wrong, and the CLI still exits 3. With `--no-settle` the capture happens right after the dispatch.
 
-### scenario run
+### scenario run (M2)
 
 ```text
 ironbird scenario run <file...> [--bail]
@@ -231,7 +231,7 @@ ironbird doctor
 
 Checks the Node version, config validity, headless entry load (printing the import chain on failure), daemon port availability, `xcrun simctl` and `adb` availability, booted devices, and whether `.ironbird/` is gitignored.
 
-### verify-bundle
+### verify-bundle (M1)
 
 ```text
 ironbird verify-bundle <path...>

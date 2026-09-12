@@ -1,3 +1,6 @@
+# The first run of this workflow must be verified by hand: npm trusted publishing (OIDC) has
+# only been exercised through `npm publish`, not through `pnpm -r publish`, and changeset tag
+# detection depends on the tags the publish step creates. Watch the first release end to end.
 name: Release
 on:
   push:
@@ -22,6 +25,8 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - run: pnpm lint
+      - run: pnpm typecheck
       - run: pnpm test
       - name: Version or publish
         uses: changesets/action@v1

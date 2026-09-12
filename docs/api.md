@@ -6,7 +6,7 @@
 | Last updated | 2026-09-11 |
 | Related | [protocol.md](protocol.md) for wire types and error codes · [cli.md](cli.md) for the CLI |
 
-Priority markers match [spec.md](spec.md): **P0** ships in 0.1, **P1** is planned for 0.1 if milestones hold.
+Priority markers match [spec.md](spec.md): **P0** ships in 0.1, **P1** is planned for 0.1 if milestones hold. Sections marked **M1** or **M2** describe APIs planned for those milestones ([roadmap.md](roadmap.md)); they are not in the repository yet.
 
 ## @ironbird/core
 
@@ -50,14 +50,16 @@ export const commands = defineCommands({
 ### createTarget (P0)
 
 ```ts
-function createTarget<R extends CommandRegistry, S>(definition: {
+function createTarget<R extends CommandRegistry, S>(definition: TargetDefinition<R, S>): Target<S>;
+
+interface TargetDefinition<R extends CommandRegistry, S> {
   commands: R;
   dispatch(command: CommandOf<R>): void | Promise<void>;
   getState(): S;
   subscribe?(listener: () => void): () => void;
-  persist?(): unknown;                                // P1
-  restore?(snapshot: unknown): void | Promise<void>;  // P1
-}): Target<S>;
+  persist?(): unknown;
+  restore?(snapshot: unknown): void | Promise<void>;
+}
 
 interface Target<S = unknown> {
   readonly commands: CommandRegistry;
@@ -68,8 +70,14 @@ interface Target<S = unknown> {
   /** Increments on every subscribe notification, or on every dispatch when subscribe is absent. */
   revision(): number;
   subscribe(listener: () => void): () => void;
+  /** Present only when the definition provides it. */
+  persist?(): unknown;
+  /** Present only when the definition provides it; bumps the revision when subscribe is absent. */
+  restore?(snapshot: unknown): Promise<void>;
 }
 ```
+
+`TargetDefinition` is exported alongside `createTarget`. `persist` and `restore` ship today: a definition that provides either gets the matching method and capability on the `Target`. What is P1 is the pair of protocol operations that use them, `snapshotSave` and `snapshotLoad`; see [protocol.md §4.1](protocol.md#41-target-operations).
 
 `capabilities` lists only what the `Target` itself provides. The daemon and bridge add `settle`, `events`, `fakes`, `clock`, and `reset` as appropriate when they describe the target; see [protocol.md §5](protocol.md#5-types).
 
@@ -125,7 +133,7 @@ function createRealClock(): Clock;
 function createManualClock(options?: { now?: number }): ManualClock;
 ```
 
-`advance` throws `IronbirdError('CLOCK_RUNAWAY')` after 10,000 firings in one call. App code under test should take time only from an injected `Clock`.
+`now` defaults to `0`, so a headless run starts at the Unix epoch unless `clock.start` in `ironbird.config.ts` says otherwise. `advance` throws `IronbirdError('CLOCK_RUNAWAY')` after 10,000 firings in one call. App code under test should take time only from an injected `Clock`.
 
 ### createTracker (P0)
 
@@ -135,19 +143,20 @@ interface Tracker {
   /** Shallow proxy: each method returning a thenable is tracked as `${name}.${method}`. */
   wrap<P extends object>(port: P, name: string, options?: { fake?: boolean }): P;
   pending(): PendingItem[];
+  /** timeoutMs defaults to 5000, mode to 'idle'. */
   whenIdle(options?: { timeoutMs?: number; mode?: 'idle' | 'quiescent' }): Promise<SettleResult>;
   onChange(listener: () => void): () => void;
 }
 
 function createTracker(options?: { clock?: Clock; timerThresholdMs?: number; enabled?: boolean }): Tracker;
 
-/** Tags a port so wrap marks its calls fake: true; defineFake does this for every fake port. */
+/** Tags a port with FAKE_PORT_MARK so wrap marks its calls fake: true. */
 function markFakePort<P extends object>(port: P): P;
 ```
 
-With a real clock, timers due within `timerThresholdMs` (default 1,000) count as pending. Manual-clock timers never count. Wrapping is always explicit, so the app chooses the label; when the port passed to `wrap` is a `FakeInstance.port`, which the fake tags with a private symbol, its calls are marked `fake: true`, which is what allows `mode: 'quiescent'` to finish without advancing time. Hand-written fakes, such as the M0 example's, call `markFakePort` on the port or pass `{ fake: true }` to `wrap`. With `enabled: false` (app code passes `enabled: __DEV__`), `wrap` returns the port untouched, `track` returns the promise untouched, `pending()` is empty, and `whenIdle` resolves idle at once, so release builds carry no tracking. `PendingItem` and `SettleResult` are defined in [protocol.md](protocol.md#5-types). `whenIdle`'s `timeoutMs` and every `ageMs` are wall-clock milliseconds, because a manual clock never advances on its own; only the settle result's `nextTimerInMs` is manual-clock time.
+With a real clock, timers due within `timerThresholdMs` (default 1,000) count as pending. Manual-clock timers never count. Wrapping is always explicit, so the app chooses the label; a port tagged as fake has its calls marked `fake: true`, which is what allows `mode: 'quiescent'` to finish without advancing time. `markFakePort` tags a port with the global-registry symbol `FAKE_PORT_MARK`; `defineFake` (M2) will do this for every fake port. Hand-written fakes, such as the M0 example's, call `markFakePort` on the port or pass `{ fake: true }` to `wrap`. With `enabled: false` (app code passes `enabled: __DEV__`), `wrap` returns the port untouched, `track` returns the promise untouched, `pending()` is empty, and `whenIdle` resolves idle at once, so release builds carry no tracking. `PendingItem` and `SettleResult` are defined in [protocol.md](protocol.md#5-types). `whenIdle`'s `timeoutMs` and every `ageMs` are wall-clock milliseconds, because a manual clock never advances on its own; only the settle result's `nextTimerInMs` is manual-clock time.
 
-### defineFake (P0)
+### defineFake (P0, M2)
 
 ```ts
 function defineFake<Port extends object, C extends Schemas>(
@@ -176,6 +185,7 @@ interface FakeFactory<Port extends object, C extends Schemas> {
 
 interface FakeInstance<Port extends object = object, C extends Schemas = Schemas> {
   readonly name: string;
+  readonly description?: string;
   /** Call-recording proxy over the port returned by create(). */
   readonly port: Port;
   readonly controls: CommandRegistry<C>;
@@ -256,7 +266,7 @@ interface EventRecorder {
 function createEventRecorder(options?: { clock?: Clock; limit?: number; enabled?: boolean }): EventRecorder;
 ```
 
-`limit` defaults to 10,000. With `enabled: false`, `record` is a no-op and `since` returns nothing, so release builds carry no event log. To capture analytics, wrap your analytics adapter so each call also records: `recorder.record('analytics', name, properties)`.
+`limit` defaults to 10,000; `since` defaults to `seq` `0` and an unlimited page. With `enabled: false`, `record` stores nothing and returns an event with `seq: 0`, `since` returns nothing, and `lastSeq()` stays `0`, so release builds carry no event log. To capture analytics, wrap your analytics adapter so each call also records: `recorder.record('analytics', name, properties)`.
 
 ### defineHeadless (P0)
 
@@ -290,14 +300,36 @@ The module named by `headless` in `ironbird.config.ts` must default-export the r
 
 ```ts
 class IronbirdError extends Error {
+  constructor(code: ErrorCode, message: string, details?: unknown);
   readonly code: ErrorCode;   // see protocol.md §6
   readonly details?: unknown;
+  /** The wire shape; `details` is omitted when undefined. */
+  toJSON(): ErrorShape;
 }
 
 const PROTOCOL_VERSION: 1;
 ```
 
-## @ironbird/react-native
+### Other exports (P0)
+
+| Export | What it is |
+|---|---|
+| `ERROR_CODES` | The list of protocol error codes; `ErrorCode` is its union |
+| `isIronbirdError` | Structural check (name plus a string `code`), so it holds across module instances |
+| `messageOf` | The `message` of an `Error`, or `String(value)` for anything else |
+| `toErrorShape` | Any thrown value as an `ErrorShape`; a non-ironbird throw becomes `INTERNAL` |
+| `getAtPath` | Reads a dot path out of a state value, `undefined` when it doesn't resolve |
+| `parsePath` | Splits a dot path into segments; the empty path is no segments |
+| `serializeState` | JSON-safe copy plus the `SerializationWarning[]` for what it replaced |
+| `suggestNames` | Near-miss names for `UNKNOWN_COMMAND` and `UNKNOWN_CONTROL` details |
+| `MAX_FIRINGS_PER_ADVANCE` | `10_000`, the `CLOCK_RUNAWAY` threshold for one `advance` |
+| `FAKE_PORT_MARK` | The `Symbol.for('ironbird.fakePort')` tag `markFakePort` writes |
+| `isFakePort` | Whether a port carries that tag |
+| `QUIESCENT_STABLE_YIELDS` | `3`, the macrotask yields `mode: 'quiescent'` waits out before reporting |
+| `TargetDefinition` | The `createTarget` parameter type (above) |
+| `SerializationWarning` | `{ path, valueKind }` for one replaced value |
+
+## @ironbird/react-native (P0, M1)
 
 Dev builds only. Peer dependencies: `react-native`, `@ironbird/core`. No native code.
 
@@ -382,9 +414,11 @@ Keep the `require` inside the `__DEV__` branch so production bundles drop the br
 
 ## @ironbird/cli
 
-The binary is documented in [cli.md](cli.md). The package also exports configuration helpers.
+The binary is documented in [cli.md](cli.md). The package also exports the pieces the binary is built from, for embedding a daemon in another process: `loadConfig`, `loadTypeScriptModule`, `createHeadlessTarget`, `startDaemon`, `readDaemonInfo` / `writeDaemonInfo` / `removeDaemonInfo`, `buildProgram`, `runServe`, `isLoopbackHost`, and `parseCondition` / `conditionHolds`.
 
 ### defineConfig (P0)
+
+`defineConfig` is an identity function; it exists for the types and the editor completions. Validation happens in `loadConfig`, which rejects an unknown or malformed key with `INVALID_CONFIG`.
 
 ```ts
 // ironbird.config.ts

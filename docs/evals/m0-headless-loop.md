@@ -2,7 +2,7 @@
 
 | Criterion | Result | Evidence |
 |---|---|---|
-| A coding agent, given only the output of `ironbird commands`, completes cart → payment → receipt headlessly | met | Transcript below: 12 CLI commands, completed unaided, no repository access |
+| A coding agent, given only the output of `ironbird commands`, completes cart → payment → receipt headlessly | met | Transcript below: 12 steps (about 19 CLI invocations), completed unaided, no repository access |
 | ironbird overhead per headless command < 5 ms p95; CLI invocation < 300 ms p95 | met | `pnpm bench --check`: headless dispatch with pending fake effect p95 0.12 ms (< 5 ms), CLI invocation end to end p95 129.57 ms (< 300 ms). Full table below |
 | A `react-native` import in the headless graph produces `HEADLESS_LOAD_FAILED` with the import chain | met | `packages/cli/src/cli/commands/serve.test.ts`, "exits 2 with HEADLESS_LOAD_FAILED and the import chain when the entry imports react-native": expects `importChain` to equal `['headless.ts', 'pricing.ts', 'react-native']`. `packages/cli/src/bundle.test.ts` covers the same failure at the loader level with `importChain: ['entry.ts', 'pricing.ts', 'react-native']` |
 

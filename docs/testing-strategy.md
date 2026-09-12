@@ -14,7 +14,7 @@ ironbird's tests have two jobs: prove that ironbird works, and measure how far i
 |---|---|---|---|
 | Unit | Vitest | Every commit | Registry validation and suggestions, path resolution, serialization placeholders, recorder sequencing, manual clock ordering, tracker idle and quiescence logic, scenario parsing |
 | Property | Vitest with fast-check | Every commit | Clock, tracker, recorder, and serialization invariants (below) |
-| Protocol contract | Vitest | Every commit | Shared message fixtures that both the daemon and the bridge must accept and produce; fixtures are kept per protocol version |
+| Protocol contract (from M1) | Vitest | Every commit | Shared message fixtures that both the daemon and the bridge must accept and produce; fixtures are kept per protocol version |
 | Daemon integration | Vitest in Node | Every commit | Every CLI command against the example app's headless entry: outputs, error codes, exit codes, reset isolation, two concurrent clients including a `wait` in one satisfied by a `clock advance` in the other |
 | Bridge integration, no device | Vitest in Node | Every commit | The real bridge running in Node with shims for `Platform`, `requestAnimationFrame`, and `WebSocket` and a manual clock, connected to a real daemon: handshake, reconnection, the app-id check, request ordering, settle timeouts, the dev-only guard |
 | Device end to end | Vitest on a macOS runner with iOS Simulator and an Android emulator | Nightly and before each release | Example app: 300-step stale-screenshot run, Metro reload reconnection, `step` latency, `verify-bundle` against real release and export output |
