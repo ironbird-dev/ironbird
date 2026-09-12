@@ -38,7 +38,7 @@ The headless target runs inside the daemon and implements the same operations wi
 }
 ```
 
-A successful operation returns `{ "ok": true, "target": "<id>", "result": { ... } }`, where `target` is the id the operation ran against and is absent for daemon-only operations such as `status`. A failed operation returns `{ "ok": false, "error": { "code": "...", "message": "...", "details": { ... } } }`. Both use HTTP 200. Other statuses are reserved for transport problems: 401 for a missing or wrong token, 404 for unknown routes, and 500 for daemon faults. 403 for a request that carries an `Origin` header or whose `Host` is neither loopback nor the daemon's bind address, which stops a page in a local browser from driving the daemon.
+A successful operation returns `{ "ok": true, "target": "<id>", "result": { ... } }`, where `target` is the id the operation ran against and is absent for daemon-only operations such as `status`. A failed operation returns `{ "ok": false, "error": { "code": "...", "message": "...", "details": { ... } } }`. Both use HTTP 200. Other statuses are reserved for transport problems: 401 for a missing or wrong token, 403 for a request that carries an `Origin` header or whose `Host` is neither loopback nor the daemon's bind address — which stops a page in a local browser from driving the daemon, except a wildcard bind (`0.0.0.0` or `::`) accepts any `Host`, since it already requires a token and has no single bind address to compare against — 404 for unknown routes, and 500 for daemon faults.
 
 When the daemon was started with a token, requests must include `Authorization: Bearer <token>`.
 
@@ -106,7 +106,7 @@ A daemon session serves one app: the app id of the headless target, or of the fi
 }
 ```
 
-Failures use the same `ok: false` error shape as the client API. Mutating operations (`dispatch`, `fakeControl`, `clockAdvance`, `reset`, `snapshotLoad`) are processed one at a time per target, in arrival order. Read-only operations (`describe`, `getState`, `events`, `settle`, `waitFor`, `fakeCalls`, `snapshotSave`, `clockNow`) are not queued behind them, so a pending `waitFor` never blocks the operation that would satisfy it. `reset` is the exception among mutating operations: it is not queued, so it can recover a target whose dispatch never settles; any operation still waiting in the queue, or in flight, fails with `TARGET_DISCONNECTED`. Operations that arrive while a reset is in progress run after it, against the new session. The daemon applies a request timeout (default 30 s) to every target operation and fails the request with `TARGET_DISCONNECTED` when it elapses or when a remote connection drops before a response arrives; the operation itself is left to the target's queue and `reset`.
+Failures use the same `ok: false` error shape as the client API. Mutating operations (`dispatch`, `fakeControl`, `clockAdvance`, `reset`, `snapshotLoad`) are processed one at a time per target, in arrival order. Read-only operations (`describe`, `getState`, `events`, `settle`, `waitFor`, `fakeCalls`, `snapshotSave`, `clockNow`) are not queued behind them, so a pending `waitFor` never blocks the operation that would satisfy it. `reset` is the exception among mutating operations: it is not queued, so it can recover a target whose dispatch never settles; any operation still waiting in the queue, or in flight, fails with `TARGET_DISCONNECTED`. Operations that arrive while a reset is in progress run after it, against the new session. The daemon applies a request timeout to every target operation and fails the request with `TARGET_DISCONNECTED` when it elapses or when a remote connection drops before a response arrives; the operation itself is left to the target's queue and `reset`. The bound is the larger of 30 s (the default) and the operation's own timeout plus five seconds, so a `--timeout` or `--settle-timeout` longer than 30 s is never cut short by the request timeout.
 
 ### 3.3 Notifications
 
@@ -264,10 +264,10 @@ Capabilities say which operations a target supports, and an operation whose capa
 | `UNKNOWN_FAKE` | The fake isn't wired into the target | `{ fake, available }` |
 | `UNKNOWN_CONTROL` | The fake doesn't declare the control | `{ fake, control, suggestions }` |
 | `WAIT_TIMEOUT` | A condition wasn't met in time | `{ path, value, pending }` |
-| `UNSUPPORTED` | The operation isn't available on this target | `{ op, target }` |
+| `UNSUPPORTED` | The operation isn't available on this target, or the route is unknown (HTTP 404, `target: null`) | `{ op, target }` |
 | `NO_TARGET` | No target is connected or configured | `{ available }` |
 | `AMBIGUOUS_TARGET` | Several targets qualify and none was chosen | `{ available }` |
-| `TARGET_DISCONNECTED` | The connection dropped before a response | `{ target, op }` |
+| `TARGET_DISCONNECTED` | The connection dropped before a response, the request timeout elapsed, or a reset or dispose abandoned the operation | `{ target, op }` |
 | `AMBIGUOUS_DEVICE` | Several booted devices and none was chosen | `{ devices }` |
 | `SCREENSHOT_FAILED` | The host capture tool failed | `{ tool, stderr }` |
 | `HEADLESS_LOAD_FAILED` | The headless entry failed to load | `{ entry, message, importChain? }` |
@@ -275,7 +275,7 @@ Capabilities say which operations a target supports, and an operation whose capa
 | `CLOCK_RUNAWAY` | `clockAdvance` exceeded 10,000 timer firings | `{ labels }` |
 | `PROTOCOL_MISMATCH` | Handshake versions differ | `{ daemon, bridge }` |
 | `APP_MISMATCH` | A bridge's app id differs from the app this daemon session serves | `{ expected, received }` |
-| `UNAUTHORIZED` | Token missing or wrong | none |
+| `UNAUTHORIZED` | Token missing or wrong, or a request with an `Origin` header or a foreign `Host` (HTTP 403) | none |
 | `INTERNAL` | A bug in ironbird | `{ message }` |
 
 Settle timeouts are not errors, because the command has already been applied; the result reports `idle: false`. Warning codes such as `UNSERIALIZABLE_STATE` appear only in notifications.

@@ -231,6 +231,33 @@ describe('createHeadlessTarget', () => {
     await expect(t.run('reset', {})).rejects.toMatchObject({ code: 'UNSUPPORTED' });
   });
 
+  it('a reset whose previous session throws on dispose reports INTERNAL, not "Target is disposed", until a later reset succeeds', async () => {
+    let disposeCalls = 0;
+    const throwsOnFirstDispose = defineHeadless(() => {
+      const app = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({}) });
+      return {
+        target: app,
+        dispose: () => {
+          disposeCalls += 1;
+          if (disposeCalls === 1) throw new Error('dispose exploded');
+        },
+      };
+    });
+    const t = await bootWith(throwsOnFirstDispose);
+    const failedReset = await t.run('reset', {}).catch((caught: unknown) => caught);
+    expect(isIronbirdError(failedReset) && failedReset.code).toBe('INTERNAL');
+    // The target isn't disposed, only this reset's teardown failed; a later op must report that
+    // real cause instead of falling back to the generic "disposed" message.
+    const getState = await t.run('getState', {}).catch((caught: unknown) => caught);
+    expect(isIronbirdError(getState) && getState.code).toBe('INTERNAL');
+    expect(isIronbirdError(getState) && getState.message).not.toContain('disposed');
+    // A second reset has no previous session left to dispose (the first reset's teardown, while it
+    // threw, still cleared it), so it boots cleanly and clears `bootError` again.
+    const secondReset = await t.run('reset', {});
+    expect(secondReset).toMatchObject({ rev: 0, path: '', value: {} });
+    expect(await t.run('getState', {})).toMatchObject({ rev: 0, value: {} });
+  });
+
   it('fails an in-flight step that finishes during the reset window and leaves the new session untouched', async () => {
     let created = 0;
     let releaseDispatch: (() => void) | undefined;
@@ -422,6 +449,14 @@ describe('createHeadlessTarget', () => {
     expect(isIronbirdError(error) && error.code).toBe('HEADLESS_LOAD_FAILED');
     expect(isIronbirdError(error) && error.message).toContain('boot exploded');
     expect(isIronbirdError(error) && (error.details as { entry: string }).entry).toBe('a');
+  });
+
+  it('names entryPath rather than appId in a boot failure when the caller provides it', async () => {
+    const explodes = defineHeadless(() => {
+      throw new Error('boot exploded');
+    });
+    const error = await createHeadlessTarget({ definition: explodes, appId: 'com.example.checkout', entryPath: 'src/ironbird/headless.ts', settleTimeoutMs: 100, env: {}, log: () => {} }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && (error.details as { entry: string }).entry).toBe('src/ironbird/headless.ts');
   });
 
   it('bounds a factory that never resolves so boot and reset fail and dispose still completes', async () => {

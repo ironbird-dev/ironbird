@@ -32,6 +32,13 @@ export interface HeadlessTargetOptions {
    * same stuck promise, and `dispose` awaits it too.
    */
   bootTimeoutMs?: number;
+  /**
+   * Path to the module `definition` was loaded from, reported as `details.entry` in a boot
+   * failure so the message names the file that failed to load rather than the app's declared id.
+   * Falls back to `appId` when omitted, as in tests that build a definition inline with no file
+   * behind it.
+   */
+  entryPath?: string;
 }
 
 export interface HeadlessTarget {
@@ -98,13 +105,14 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
   const connectedAt = Date.now();
 
   const bootTimeoutMs = options.bootTimeoutMs ?? 30_000;
+  const entry = options.entryPath ?? options.appId;
 
   // A factory that hangs must fail the boot rather than the whole target, so `create` races a
   // timer. The abandoned factory keeps running on its own; nothing else ever reads its result.
   const createApp = async (context: Parameters<HeadlessDefinition['create']>[0]): Promise<HeadlessApp> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new IronbirdError('HEADLESS_LOAD_FAILED', `Headless app failed to start: the factory did not resolve within ${bootTimeoutMs} ms`, { entry: options.appId, message: `boot timed out after ${bootTimeoutMs} ms` })), bootTimeoutMs);
+      timer = setTimeout(() => reject(new IronbirdError('HEADLESS_LOAD_FAILED', `Headless app failed to start: the factory did not resolve within ${bootTimeoutMs} ms`, { entry, message: `boot timed out after ${bootTimeoutMs} ms` })), bootTimeoutMs);
     });
     timeout.catch(() => undefined);
     try {
@@ -127,7 +135,7 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
   // A boot failure is a load failure whichever boot it was: the app the config names never came
   // up. An IronbirdError from the factory itself (a bad payload, say) keeps its own code.
   const bootFailure = (error: unknown): IronbirdError =>
-    error instanceof IronbirdError ? error : new IronbirdError('HEADLESS_LOAD_FAILED', `Headless app failed to start: ${messageOf(error)}`, { entry: options.appId, message: messageOf(error) });
+    error instanceof IronbirdError ? error : new IronbirdError('HEADLESS_LOAD_FAILED', `Headless app failed to start: ${messageOf(error)}`, { entry, message: messageOf(error) });
 
   try {
     session = await boot();
@@ -255,7 +263,21 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
       inFlight.clear();
       for (const entry of executing) entry.reject(abandoned(entry.op, 'reset'));
       warned.clear();
-      if (previous) await disposeSession(previous);
+      if (previous) {
+        try {
+          await disposeSession(previous);
+        } catch (error) {
+          // The old session is gone either way (its listeners are already detached above), but a
+          // dispose that throws must not leave `bootError` unset: without this, `requireSession`
+          // would fall back to its generic "Target is disposed" message for every later op, which
+          // is wrong (the target isn't disposed, only this reset's teardown failed) and hides the
+          // real cause. A later successful reset clears `bootError` again as usual. `disposeSession`
+          // only ever throws an `IronbirdError`, but `bootFailure` is used anyway to stay honest
+          // about the `unknown` catch type rather than asserting it.
+          bootError = bootFailure(error);
+          throw bootError;
+        }
+      }
       let next: Session;
       try {
         next = await boot();

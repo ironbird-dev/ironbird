@@ -62,7 +62,7 @@ export async function runServe(options: ServeOptions, io: ServeIo): Promise<numb
       if (!isHeadlessDefinition(definition)) {
         throw new IronbirdError('HEADLESS_LOAD_FAILED', `${path.relative(io.cwd, config.headlessPath)} must default-export defineHeadless(...)`, { entry: config.headlessPath, message: 'default export is not a headless definition' });
       }
-      target = await createHeadlessTarget({ definition, appId: config.appId, clockStart: config.clock.start, settleTimeoutMs: config.settle.timeoutMs, env: io.env, log });
+      target = await createHeadlessTarget({ definition, appId: config.appId, clockStart: config.clock.start, settleTimeoutMs: config.settle.timeoutMs, env: io.env, log, entryPath: config.headlessPath });
     } else if (options.headless && !config.headlessPath) {
       log('No headless entry in config; running remote-only');
     }

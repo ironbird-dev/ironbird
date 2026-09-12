@@ -347,16 +347,25 @@ describe('startDaemon', () => {
     expect(stream.status).toBe(403);
   });
 
-  it('accepts a Host naming the daemon\'s own non-loopback bind address', async () => {
-    target = await createHeadlessTarget({ definition: counterDefinition, appId: 'com.example.test', settleTimeoutMs: 500, env: {}, log: () => {} });
-    daemon = await startDaemon({ host: '0.0.0.0', port: 0, version: '0.0.0-test', headless: target, defaultTarget: 'headless', token: 'secret', log: () => {} });
-    const allowed = await raw(daemon, { headers: { host: `0.0.0.0:${daemon.port}`, authorization: 'Bearer secret' } });
-    expect(allowed.status).toBe(200);
-    const refused = await raw(daemon, { headers: { host: 'attacker.test', authorization: 'Bearer secret' } });
-    expect(refused.status).toBe(403);
+  it('accepts a bracketed IPv6 loopback Host', async () => {
+    const d = await boot();
+    const response = await raw(d, { headers: { host: `[::1]:${d.port}` } });
+    expect(response.status).toBe(200);
   });
 
-  it('fails a target operation that never settles with TARGET_DISCONNECTED and keeps serving status', async () => {
+  it('accepts any Host when bound to a wildcard address (0.0.0.0 or ::)', async () => {
+    target = await createHeadlessTarget({ definition: counterDefinition, appId: 'com.example.test', settleTimeoutMs: 500, env: {}, log: () => {} });
+    daemon = await startDaemon({ host: '0.0.0.0', port: 0, version: '0.0.0-test', headless: target, defaultTarget: 'headless', token: 'secret', log: () => {} });
+    // `0.0.0.0` means "every interface", not one address a request's Host header could ever
+    // literally name, so there is nothing sensible to compare it against; a wildcard bind already
+    // requires a token (checked in startDaemon), so any Host is accepted here.
+    const named = await raw(daemon, { headers: { host: `0.0.0.0:${daemon.port}`, authorization: 'Bearer secret' } });
+    expect(named.status).toBe(200);
+    const foreign = await raw(daemon, { headers: { host: 'attacker.test', authorization: 'Bearer secret' } });
+    expect(foreign.status).toBe(200);
+  });
+
+  it('fails a target operation that never settles with TARGET_DISCONNECTED, floored 5s past its own timeout, and keeps serving status', async () => {
     const wedged = defineHeadless(() => {
       const app = createTarget({
         commands: defineCommands({ 'hang.forever': z.object({}) }),
@@ -366,15 +375,53 @@ describe('startDaemon', () => {
       return { target: app };
     });
     target = await createHeadlessTarget({ definition: wedged, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
+    // requestTimeoutMs is deliberately tiny, but this request carries no timeoutMs/settle.timeoutMs
+    // of its own, so the bound floors at 5s past that (see requestBoundFor in daemon.ts) rather
+    // than at the 50ms configured here.
     daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: 'headless', requestTimeoutMs: 50, log: () => {} });
     const startedAt = Date.now();
     const wedgedResponse = await rpc(daemon, { op: 'dispatch', params: { name: 'hang.forever' } });
     expect(wedgedResponse.status).toBe(200);
     expect(wedgedResponse.json).toMatchObject({ ok: false, error: { code: 'TARGET_DISCONNECTED', details: { target: 'headless', op: 'dispatch' } } });
     expect(String((wedgedResponse.json['error'] as { message: string }).message)).toContain('ironbird reset');
-    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    const elapsed = Date.now() - startedAt;
+    expect(elapsed).toBeGreaterThanOrEqual(5_000);
+    expect(elapsed).toBeLessThan(7_000);
     // The daemon itself is still healthy; only the wedged operation failed.
     expect((await rpc(daemon, { op: 'status' })).json).toMatchObject({ ok: true });
+  }, 10_000);
+
+  it('never truncates a waitFor whose own timeoutMs outlives a tiny request timeout', async () => {
+    target = await createHeadlessTarget({ definition: counterDefinition, appId: 'com.example.test', settleTimeoutMs: 500, env: {}, log: () => {} });
+    daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: 'headless', requestTimeoutMs: 50, log: () => {} });
+    // requestTimeoutMs (50ms) alone would fire TARGET_DISCONNECTED long before this; the request's
+    // own timeoutMs (300ms) must push the daemon's bound out past it so waitFor's own WAIT_TIMEOUT
+    // is what the caller sees.
+    const response = await rpc(daemon, { op: 'waitFor', params: { path: 'count', equals: 999, timeoutMs: 300 } });
+    expect(response.status).toBe(200);
+    expect(response.json).toMatchObject({ ok: false, error: { code: 'WAIT_TIMEOUT' } });
+  });
+
+  it('never truncates a dispatch settle whose own timeoutMs outlives a tiny request timeout', async () => {
+    const neverIdle = defineHeadless(({ tracker }) => {
+      const app = createTarget({
+        commands: defineCommands({ 'work.start': z.object({}) }),
+        // A real (non-fake) effect that never resolves, tracked so `settle` actually has something
+        // to wait on instead of reporting idle immediately.
+        dispatch: () => {
+          void tracker.track(new Promise<void>(() => {}), 'real.work');
+        },
+        getState: () => ({}),
+      });
+      return { target: app };
+    });
+    target = await createHeadlessTarget({ definition: neverIdle, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
+    daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: 'headless', requestTimeoutMs: 50, log: () => {} });
+    const startedAt = Date.now();
+    const response = await rpc(daemon, { op: 'dispatch', params: { name: 'work.start', settle: { timeoutMs: 300 } } });
+    expect(response.status).toBe(200);
+    expect(response.json).toMatchObject({ ok: true, target: 'headless', result: { settle: { idle: false } } });
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
   });
 
   it('close() is idempotent', async () => {

@@ -34,12 +34,53 @@ const REQUEST_TIMEOUT_MS = 30_000;
 /** Hosts a request may name beyond the daemon's own bind address. */
 const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
+/**
+ * `0.0.0.0` and `::` mean "every interface", not one address a request's `Host` header could ever
+ * literally name, so there is no single string to compare against. A wildcard bind already
+ * requires a token (see the loopback check in `startDaemon`), so the `Host` check is skipped
+ * rather than compared against the unreachable wildcard address itself.
+ */
+function isWildcardBindHost(host: string): boolean {
+  const normalized = host.toLowerCase();
+  return normalized === '0.0.0.0' || normalized === '::';
+}
+
 /** Strips the port from a `Host` header, leaving a bracketed IPv6 literal intact. */
 function hostWithoutPort(header: string): string {
   const value = header.trim().toLowerCase();
   if (value.startsWith('[')) return value.slice(0, value.indexOf(']') + 1) || value;
   const colon = value.lastIndexOf(':');
   return colon === -1 ? value : value.slice(0, colon);
+}
+
+/**
+ * The operation-specific timeout a caller asked for, read straight from the wire `params`:
+ * `waitFor` and `settle` carry `params.timeoutMs`; `dispatch`, `fakeControl`, and `clockAdvance`
+ * carry it nested under `params.settle.timeoutMs`. Anything else — a missing value, a non-finite
+ * or negative number, a `settle` that isn't an object — contributes 0 rather than guessing at the
+ * target's own default settle timeout, which the daemon never sees.
+ */
+function operationTimeoutMs(params: Record<string, unknown>): number {
+  const direct = params['timeoutMs'];
+  if (typeof direct === 'number' && Number.isFinite(direct) && direct >= 0) return direct;
+  const settle = params['settle'];
+  if (typeof settle === 'object' && settle !== null) {
+    const nested = (settle as { timeoutMs?: unknown }).timeoutMs;
+    if (typeof nested === 'number' && Number.isFinite(nested) && nested >= 0) return nested;
+  }
+  return 0;
+}
+
+/**
+ * The wall-clock bound for one request: at least `requestTimeoutMs`, and always at least 5 s past
+ * whatever operation-specific timeout the caller asked for, so the request timeout can never fire
+ * before the operation's own timeout would have (see docs/protocol.md §3.2). A `waitFor` or
+ * `settle` racing a condition that never holds still resolves on its own — with `WAIT_TIMEOUT` or
+ * `idle: false` — well inside this bound; the bound only catches an operation that never resolves
+ * at all.
+ */
+function requestBoundFor(requestTimeoutMs: number, params: Record<string, unknown>): number {
+  return Math.max(requestTimeoutMs, operationTimeoutMs(params) + 5_000);
 }
 
 const IPV4_LOOPBACK = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
@@ -107,10 +148,10 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
 
   // Bounds one target operation so a wedged target can't hold an HTTP connection open forever.
   // The operation itself keeps running: the target's queue owns it, and `reset` is what clears it.
-  const withRequestTimeout = async <T>(targetId: string, op: string, work: Promise<T>): Promise<T> => {
+  const withRequestTimeout = async <T>(targetId: string, op: string, boundMs: number, work: Promise<T>): Promise<T> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new IronbirdError('TARGET_DISCONNECTED', `Request timed out after ${requestTimeoutMs} ms; the target may be wedged, run ironbird reset`, { target: targetId, op })), requestTimeoutMs);
+      timer = setTimeout(() => reject(new IronbirdError('TARGET_DISCONNECTED', `Request timed out after ${boundMs} ms; the target may be wedged, run ironbird reset`, { target: targetId, op })), boundMs);
     });
     timeout.catch(() => undefined);
     // The abandoned `work` may reject later with nothing awaiting it; swallow that so it doesn't
@@ -149,7 +190,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         return;
       }
       const target = selectTarget(requestedTarget);
-      const result = await withRequestTimeout(target.id, op, target.run(op, params));
+      const bound = requestBoundFor(requestTimeoutMs, params);
+      const result = await withRequestTimeout(target.id, op, bound, target.run(op, params));
       sendJson(res, 200, { ok: true, target: target.id, result });
     } catch (error) {
       if (isIronbirdError(error)) {
@@ -301,6 +343,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   // arrives with a `Host` the daemon was never bound to.
   const sameSite = (req: IncomingMessage): boolean => {
     if (req.headers.origin !== undefined) return false;
+    if (isWildcardBindHost(options.host)) return true;
     const header = req.headers.host;
     if (header === undefined) return true;
     const host = hostWithoutPort(header);

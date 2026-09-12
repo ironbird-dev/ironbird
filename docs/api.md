@@ -294,7 +294,7 @@ interface HeadlessDefinition {
 }
 ```
 
-The module named by `headless` in `ironbird.config.ts` must default-export the result. The daemon calls the factory on start and again on `reset`, each time with a fresh context. `HeadlessDefinition` has `kind: 'ironbird.headless'` and an async `create(context)`; the daemon checks the loaded default export with `isHeadlessDefinition` and fails with `HEADLESS_LOAD_FAILED` otherwise.
+The module named by `headless` in `ironbird.config.ts` must default-export the result. The daemon calls the factory on start and again on `reset`, each time with a fresh context. `HeadlessDefinition` has `kind: 'ironbird.headless'` and an async `create(context)`; the daemon checks the loaded default export with `isHeadlessDefinition` and fails with `HEADLESS_LOAD_FAILED` otherwise. The daemon bounds `create` with a 30 s boot timeout in M0; a configurable limit is planned with the bridge in M1.
 
 ### IronbirdError (P0)
 
