@@ -389,6 +389,7 @@ The binary is documented in [cli.md](cli.md). The package also exports configura
 import { defineConfig } from '@ironbird/cli/config';
 
 export default defineConfig({
+  appId: 'com.example.checkout',              // reported as app.id by the headless target
   headless: './src/ironbird/headless.ts',     // omit to run remote-only
   defaultTarget: 'headless',
   daemon: { host: '127.0.0.1', port: 4567 },  // token comes from IRONBIRD_TOKEN, never from config

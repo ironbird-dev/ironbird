@@ -182,7 +182,7 @@ These targets are hypotheses to revisit after the first pilots.
 | # | Question | Owner | Blocking |
 |---|---|---|---|
 | Q1 | ~~Can we claim the `@ironbird` npm scope and an `ironbird` GitHub org?~~ **Resolved 2026-09-10:** `@ironbird` npm org claimed; GitHub org is `ironbird-dev` because `ironbird` was taken; repository `ironbird-dev/ironbird`. The unscoped `ironbird` package is still unpublished and becomes the CLI entry point in M0 | Maintainer | Resolved |
-| Q2 | How should the daemon load TypeScript headless entries: a runtime loader such as jiti, a bundling step, or prebuilt JS? How are tsconfig path aliases honored? | Engineering | Decide in M0 |
+| Q2 | ~~How should the daemon load TypeScript headless entries?~~ **Resolved 2026-09-11:** esbuild bundles the entry with dependencies external; tsconfig `paths` are honored and the metafile yields the `react-native` import chain | Engineering | Resolved |
 | Q3 | Does Zod 4's JSON Schema output work cleanly as MCP tool input schemas with the MCP TypeScript SDK? | Engineering | M3 |
 | Q4 | How do we map a connected app to a specific simulator when several are booted, without native code? | Engineering | No; config fallback exists |
 | Q5 | Are JS-only signals enough to settle around UI-thread animations (for example Reanimated), layout animations, and image decoding, or is an optional native add-on needed? | Engineering | Investigate in M1 |
