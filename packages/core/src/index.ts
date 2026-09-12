@@ -27,3 +27,5 @@ export { createEventRecorder } from './recorder';
 export type { EventRecorder } from './recorder';
 export { FAKE_PORT_MARK, QUIESCENT_STABLE_YIELDS, createTracker, isFakePort, markFakePort } from './tracker';
 export type { Tracker } from './tracker';
+export { createTarget } from './target';
+export type { Target, TargetDefinition } from './target';
