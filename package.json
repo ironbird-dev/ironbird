@@ -9,6 +9,7 @@
     "build": "pnpm --filter './packages/*' -r run build",
     "test": "vitest run --project unit --project serial",
     "test:device": "vitest run --project device",
+    "bench": "pnpm build && node packages/cli/scripts/bench.mjs",
     "lint": "eslint .",
     "typecheck": "pnpm -r run typecheck",
     "changeset": "changeset"
