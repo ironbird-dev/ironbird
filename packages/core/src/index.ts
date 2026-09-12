@@ -19,3 +19,5 @@ export type {
 export { getAtPath, parsePath } from './paths';
 export { serializeState } from './serialize';
 export type { SerializationWarning } from './serialize';
+export { defineCommands, suggestNames } from './registry';
+export type { CommandOf, CommandRegistry, Schemas } from './registry';
