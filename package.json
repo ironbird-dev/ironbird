@@ -1,0 +1,29 @@
+{
+  "name": "ironbird-monorepo",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm --filter './packages/*' -r run build",
+    "test": "vitest run --project unit",
+    "test:device": "vitest run --project device",
+    "lint": "eslint .",
+    "typecheck": "pnpm -r run typecheck",
+    "changeset": "changeset"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^3.0.2",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.2",
+    "eslint": "^10.10.0",
+    "fast-check": "^4.9.0",
+    "globals": "^17.12.0",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^5.0.0"
+  },
+  "packageManager": "pnpm@12.4.1"
+}

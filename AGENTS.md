@@ -25,7 +25,7 @@ docs/
 
 ## Commands
 
-These are the intended workspace scripts. Create them during M0 if they don't exist yet.
+These are the workspace scripts.
 
 | Task | Command |
 |---|---|
@@ -38,7 +38,7 @@ These are the intended workspace scripts. Create them during M0 if they don't ex
 | Run the example on iOS | `pnpm example:ios` |
 | Add a release note | `pnpm changeset` |
 
-Intended tooling: pnpm workspaces, TypeScript in strict mode, Vitest for packages, Jest with React Native Testing Library inside `examples/`, ESLint for import boundaries, and Changesets for releases. Confirm or replace these in M0 and record any change here.
+Tooling: pnpm workspaces, TypeScript in strict mode, Vitest for packages, Jest with React Native Testing Library inside `examples/`, ESLint for import boundaries, and Changesets for releases. Vitest runs with `test.projects`: `unit` is the default and `device` holds `*.device.test.ts`.
 
 ## Hard rules
 
