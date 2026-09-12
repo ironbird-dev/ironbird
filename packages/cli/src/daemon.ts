@@ -1,4 +1,5 @@
-import { IronbirdError, PROTOCOL_VERSION, isIronbirdError, toErrorShape, type ErrorShape, type TargetInfo } from '@ironbird/core';
+import { IronbirdError, PROTOCOL_VERSION, isIronbirdError, toErrorShape, type RecordedEvent, type TargetInfo } from '@ironbird/core';
+import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { HeadlessTarget } from './headless-target';
 
@@ -24,14 +25,16 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const STATE_THROTTLE_MS = 100;
 const PING_INTERVAL_MS = 15_000;
 
+/** Loopback hosts may run without a token (see spec R3); anything else must be paired with one. */
+export function isLoopbackHost(host: string): boolean {
+  const normalized = host.toLowerCase();
+  return normalized === 'localhost' || normalized === '::1' || normalized.startsWith('127.');
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(text) });
   res.end(text);
-}
-
-function failure(status: number, error: ErrorShape): { status: number; body: { ok: false; error: ErrorShape } } {
-  return { status, body: { ok: false, error } };
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {
@@ -48,6 +51,11 @@ async function readBody(req: IncomingMessage): Promise<string> {
 
 export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const log = options.log ?? ((line: string) => console.error(line));
+
+  if (!isLoopbackHost(options.host) && !options.token) {
+    throw new IronbirdError('UNAUTHORIZED', `Binding ${options.host} requires a token; pass one or bind 127.0.0.1`);
+  }
+
   const startedAt = Date.now();
   const targets = new Map<string, HeadlessTarget>();
   if (options.headless) targets.set(options.headless.id, options.headless);
@@ -66,17 +74,32 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     return target;
   };
 
-  const authorized = (req: IncomingMessage): boolean => !options.token || req.headers.authorization === `Bearer ${options.token}`;
+  const authorized = (req: IncomingMessage): boolean => {
+    if (!options.token) return true;
+    const header = req.headers.authorization;
+    if (typeof header !== 'string') return false;
+    const expected = Buffer.from(`Bearer ${options.token}`);
+    const actual = Buffer.from(header);
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  };
 
   const handleRpc = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    let envelope: { op?: unknown; target?: unknown; params?: unknown };
+    let parsed: unknown;
     try {
-      envelope = JSON.parse(await readBody(req)) as typeof envelope;
+      parsed = JSON.parse(await readBody(req));
     } catch (error) {
       const shape = isIronbirdError(error) ? toErrorShape(error) : { code: 'INVALID_PAYLOAD' as const, message: 'Malformed JSON body', details: { name: 'rpc', issues: [] } };
-      sendJson(res, 200, failure(200, shape).body);
+      sendJson(res, 200, { ok: false, error: shape });
       return;
     }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      sendJson(res, 200, {
+        ok: false,
+        error: { code: 'INVALID_PAYLOAD', message: 'Body must be a JSON object', details: { name: 'rpc', issues: [{ path: [], message: 'expected an object' }] } },
+      });
+      return;
+    }
+    const envelope = parsed as { op?: unknown; target?: unknown; params?: unknown };
     const { op, target: requestedTarget } = envelope;
     const params = typeof envelope.params === 'object' && envelope.params !== null ? (envelope.params as Record<string, unknown>) : {};
     try {
@@ -112,23 +135,42 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       res.write(`event: ${kind}\ndata: ${JSON.stringify(data)}\n\n`);
     };
     res.write(': connected\n\n');
-    const backlog = (await target.run('events', { since })) as { events: unknown[] };
+
+    // Subscribe before awaiting the backlog so an event recorded during that await isn't lost
+    // between the snapshot and the subscription. Anything that arrives while we're still
+    // buffering is held here and reconciled against the backlog by seq once it's in hand.
+    let buffering = true;
+    const liveBuffer: RecordedEvent[] = [];
+    const offEvent = target.onEvent((event) => {
+      if (buffering) liveBuffer.push(event);
+      else write('event', event);
+    });
+
+    const backlog = (await target.run('events', { since })) as { events: RecordedEvent[] };
     for (const event of backlog.events) write('event', event);
-    const offEvent = target.onEvent((event) => write('event', event));
+    const lastBacklogSeq = backlog.events.length > 0 ? backlog.events[backlog.events.length - 1]!.seq : since;
+    for (const event of liveBuffer) {
+      if (event.seq > lastBacklogSeq) write('event', event);
+    }
+    buffering = false;
+
     let pendingRev: number | undefined;
     let throttle: NodeJS.Timeout | undefined;
+    // Writes immediately on the first update after a quiet period, then re-arms for another
+    // STATE_THROTTLE_MS as long as there's something to flush, so a sustained burst is capped at
+    // one write per window instead of overshooting it.
     const flush = (): void => {
-      throttle = undefined;
-      if (pendingRev === undefined) return;
+      if (pendingRev === undefined) {
+        throttle = undefined;
+        return;
+      }
       write('state', { rev: pendingRev });
       pendingRev = undefined;
+      throttle = setTimeout(flush, STATE_THROTTLE_MS);
     };
     const offState = target.onState((rev) => {
       pendingRev = rev;
-      if (!throttle) {
-        flush();
-        throttle = setTimeout(flush, STATE_THROTTLE_MS);
-      }
+      if (!throttle) flush();
     });
     const ping = setInterval(() => res.write(': ping\n\n'), PING_INTERVAL_MS);
     req.on('close', () => {
@@ -143,16 +185,16 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     void (async () => {
       try {
         if (!authorized(req)) {
-          sendJson(res, 401, failure(401, { code: 'UNAUTHORIZED', message: 'Token missing or wrong' }).body);
+          sendJson(res, 401, { ok: false, error: { code: 'UNAUTHORIZED', message: 'Token missing or wrong' } });
           return;
         }
         const url = new URL(req.url ?? '/', 'http://localhost');
         if (req.method === 'POST' && url.pathname === '/v1/rpc') return await handleRpc(req, res);
         if (req.method === 'GET' && url.pathname === '/v1/stream') return await handleStream(url, req, res);
-        sendJson(res, 404, failure(404, { code: 'INTERNAL', message: `No route ${req.method ?? ''} ${url.pathname}` }).body);
+        sendJson(res, 404, { ok: false, error: { code: 'INTERNAL', message: `No route ${req.method ?? ''} ${url.pathname}` } });
       } catch (error) {
         log(`daemon fault: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
-        if (!res.headersSent) sendJson(res, 500, failure(500, toErrorShape(error)).body);
+        if (!res.headersSent) sendJson(res, 500, { ok: false, error: toErrorShape(error) });
         else res.end();
       }
     })();
@@ -170,15 +212,22 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const url = `http://${options.host}:${port}`;
   log(`ironbird daemon listening at ${url}`);
 
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    if (!closing) {
+      closing = new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+        server.closeAllConnections();
+      });
+    }
+    return closing;
+  };
+
   return {
     url,
     host: options.host,
     port,
     targets: () => [...targets.values()].map((t) => t.info()),
-    close: () =>
-      new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-        server.closeAllConnections();
-      }),
+    close,
   };
 }

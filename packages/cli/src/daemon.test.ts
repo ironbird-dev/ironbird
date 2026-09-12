@@ -1,9 +1,9 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { counterDefinition } from '../test/helpers/counter-app';
-import { startDaemon, type Daemon } from './daemon';
+import { isLoopbackHost, startDaemon, type Daemon } from './daemon';
 import { readDaemonInfo, removeDaemonInfo, writeDaemonInfo } from './daemon-info';
 import { createHeadlessTarget, type HeadlessTarget } from './headless-target';
 
@@ -108,6 +108,66 @@ describe('startDaemon', () => {
     await expect(fetch(`${d.url}/v1/rpc`, { method: 'POST', body: '{}' })).rejects.toThrow();
     daemon = undefined;
   });
+
+  it('rejects a JSON null body as INVALID_PAYLOAD without a daemon fault', async () => {
+    const logs: string[] = [];
+    target = await createHeadlessTarget({ definition: counterDefinition, appId: 'com.example.test', settleTimeoutMs: 500, env: {}, log: () => {} });
+    daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: 'headless', log: (line) => logs.push(line) });
+    const response = await rpc(daemon, 'null');
+    expect(response.status).toBe(200);
+    expect(response.json).toMatchObject({ ok: false, error: { code: 'INVALID_PAYLOAD' } });
+    expect(logs.filter((line) => line.includes('daemon fault'))).toEqual([]);
+  });
+
+  it('throttles state notifications to at most one per 100 ms after the first', async () => {
+    const d = await boot();
+    const controller = new AbortController();
+    const response = await fetch(`${d.url}/v1/stream?target=headless&since=0`, { signal: controller.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    // Reuses one in-flight reader.read() across iterations instead of issuing a fresh one each
+    // time the 20ms timeout wins the race: a stream reader queues concurrent read() calls and
+    // resolves them in the order they were issued, so calling read() again before the previous
+    // call settles orphans it — a later chunk fulfills that stale call instead of the current
+    // iteration's, and its value is silently dropped.
+    let pendingRead: ReturnType<typeof reader.read> | undefined;
+    const drain = async (ms: number): Promise<void> => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) {
+        if (!pendingRead) pendingRead = reader.read();
+        const chunk = await Promise.race([pendingRead, new Promise<{ value: undefined; done: false }>((resolve) => setTimeout(() => resolve({ value: undefined, done: false }), 20))]);
+        if (chunk.value) {
+          text += decoder.decode(chunk.value, { stream: true });
+          pendingRead = undefined;
+        }
+      }
+    };
+    await drain(50);
+    for (let i = 0; i < 20; i += 1) await rpc(d, { op: 'dispatch', params: { name: 'counter.add', payload: { by: 1 } } });
+    await drain(350);
+    const stateFrames = text.split('\n\n').filter((frame) => frame.startsWith('event: state'));
+    expect(stateFrames.length).toBeGreaterThanOrEqual(2);
+    expect(stateFrames.length).toBeLessThanOrEqual(5);
+    expect(stateFrames[stateFrames.length - 1]).toContain('"rev":20');
+    controller.abort();
+  });
+
+  it('refuses a non-loopback bind without a token', async () => {
+    target = await createHeadlessTarget({ definition: counterDefinition, appId: 'com.example.test', settleTimeoutMs: 500, env: {}, log: () => {} });
+    await expect(startDaemon({ host: '0.0.0.0', port: 0, version: '0.0.0-test', headless: target, log: () => {} })).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(isLoopbackHost('127.0.0.1')).toBe(true);
+    expect(isLoopbackHost('::1')).toBe(true);
+    expect(isLoopbackHost('localhost')).toBe(true);
+    expect(isLoopbackHost('0.0.0.0')).toBe(false);
+  });
+
+  it('close() is idempotent', async () => {
+    const d = await boot();
+    await d.close();
+    await expect(d.close()).resolves.toBeUndefined();
+    daemon = undefined;
+  });
 });
 
 describe('daemon.json', () => {
@@ -126,5 +186,15 @@ describe('daemon.json', () => {
     await removeDaemonInfo(artifacts);
     expect(await readDaemonInfo(artifacts)).toBeUndefined();
     await removeDaemonInfo(artifacts);
+  });
+
+  it('rejects a daemon.json missing required fields or that is not valid JSON', async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-info-'));
+    const artifacts = path.join(dir, '.ironbird');
+    await mkdir(artifacts, { recursive: true });
+    await writeFile(path.join(artifacts, 'daemon.json'), JSON.stringify({ url: 'x' }));
+    expect(await readDaemonInfo(artifacts)).toBeUndefined();
+    await writeFile(path.join(artifacts, 'daemon.json'), 'not json');
+    expect(await readDaemonInfo(artifacts)).toBeUndefined();
   });
 });

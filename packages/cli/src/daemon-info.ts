@@ -20,9 +20,15 @@ export async function writeDaemonInfo(artifactsPath: string, info: DaemonInfo): 
 
 export async function readDaemonInfo(artifactsPath: string): Promise<DaemonInfo | undefined> {
   try {
-    const parsed = JSON.parse(await readFile(path.join(artifactsPath, DAEMON_INFO_FILE), 'utf8')) as Partial<DaemonInfo>;
-    if (typeof parsed.url !== 'string' || typeof parsed.pid !== 'number') return undefined;
-    return parsed as DaemonInfo;
+    const parsed: unknown = JSON.parse(await readFile(path.join(artifactsPath, DAEMON_INFO_FILE), 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null) return undefined;
+    const candidate = parsed as Partial<Record<keyof DaemonInfo, unknown>>;
+    if (typeof candidate.url !== 'string') return undefined;
+    if (typeof candidate.pid !== 'number') return undefined;
+    if (typeof candidate.startedAt !== 'number') return undefined;
+    if (typeof candidate.version !== 'string') return undefined;
+    if (candidate.defaultTarget !== undefined && typeof candidate.defaultTarget !== 'string') return undefined;
+    return candidate as DaemonInfo;
   } catch {
     return undefined;
   }
