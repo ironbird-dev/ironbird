@@ -231,6 +231,12 @@ importers:
         specifier: ^4.0.0
         version: 4.6.2
 
+  packages/ironbird:
+    dependencies:
+      '@ironbird/cli':
+        specifier: workspace:*
+        version: link:../cli
+
 packages:
 
   '@cacheable/memory@2.2.0':

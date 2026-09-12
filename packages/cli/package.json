@@ -22,7 +22,8 @@
         "types": "./dist/config-entry.d.cts",
         "default": "./dist/config-entry.cjs"
       }
-    }
+    },
+    "./bin": "./dist/bin.js"
   },
   "files": [
     "dist"
