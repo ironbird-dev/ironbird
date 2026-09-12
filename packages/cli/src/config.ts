@@ -1,3 +1,4 @@
+import { IronbirdError } from '@ironbird/core';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
@@ -71,11 +72,20 @@ export async function loadConfig(options: { cwd: string; configPath?: string }):
   if (!configPath) return resolve(configSchema.parse({}), path.resolve(options.cwd), undefined);
   const rootDir = path.dirname(configPath);
   const loaded = await loadTypeScriptModule(configPath, { outDir: path.join(rootDir, '.ironbird', 'cache'), label: 'config', shims: CONFIG_SHIMS });
-  const raw = loaded.exports['default'] ?? loaded.exports;
-  const parsed = configSchema.safeParse(raw);
+  const relativePath = path.relative(options.cwd, configPath);
+  if (loaded.exports['default'] === undefined) {
+    throw new IronbirdError('INVALID_CONFIG', `${relativePath} must default-export defineConfig(...)`, {
+      file: configPath,
+      issues: [{ path: [], message: 'missing default export' }],
+    });
+  }
+  const parsed = configSchema.safeParse(loaded.exports['default']);
   if (!parsed.success) {
     const problems = parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ');
-    throw new Error(`Invalid ${path.relative(options.cwd, configPath)}: ${problems}`);
+    throw new IronbirdError('INVALID_CONFIG', `Invalid ${relativePath}: ${problems}`, {
+      file: configPath,
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path, message: issue.message })),
+    });
   }
   return resolve(parsed.data, rootDir, configPath);
 }

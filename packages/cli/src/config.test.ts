@@ -1,3 +1,4 @@
+import { isIronbirdError } from '@ironbird/core';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -47,9 +48,19 @@ export default defineConfig({ headless: './src/ironbird/headless.ts', appId: 'co
     expect(config.artifactsPath).toBe(path.join(dir, 'out'));
   });
 
-  it('rejects invalid config values with a clear message', async () => {
+  it('rejects invalid config values as an IronbirdError', async () => {
     dir = await mkdtemp(path.join(tmpdir(), 'ironbird-config-'));
     await writeFile(path.join(dir, 'ironbird.config.ts'), `export default { daemon: { port: 'eighty' } };`);
-    await expect(loadConfig({ cwd: dir })).rejects.toThrow(/daemon\.port/);
+    const error = await loadConfig({ cwd: dir }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('INVALID_CONFIG');
+    expect(isIronbirdError(error) && error.message).toMatch(/daemon\.port/);
+  });
+
+  it('rejects a config file with no default export', async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-config-'));
+    await writeFile(path.join(dir, 'ironbird.config.ts'), `export const config = {};`);
+    const error = await loadConfig({ cwd: dir }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('INVALID_CONFIG');
+    expect(isIronbirdError(error) && error.message).toMatch(/default-export/);
   });
 });

@@ -28,7 +28,7 @@ Payloads are JSON, and an omitted payload means `{}`. Condition values for `--eq
 |---|---|---|
 | 0 | Success, including headless steps that end quiescent | |
 | 1 | Operation failed | `INVALID_PAYLOAD`, `UNKNOWN_COMMAND`, `UNKNOWN_FAKE`, `UNKNOWN_CONTROL`, `DISPATCH_FAILED`, `UNSUPPORTED`, `SCREENSHOT_FAILED`, `TARGET_DISCONNECTED`, `CLOCK_RUNAWAY`, `INTERNAL` |
-| 2 | Usage or configuration error | Bad arguments, `AMBIGUOUS_TARGET`, `AMBIGUOUS_DEVICE`, `HEADLESS_LOAD_FAILED`, `UNAUTHORIZED`, `PROTOCOL_MISMATCH`, `APP_MISMATCH` |
+| 2 | Usage or configuration error | Bad arguments, `AMBIGUOUS_TARGET`, `AMBIGUOUS_DEVICE`, `HEADLESS_LOAD_FAILED`, `INVALID_CONFIG`, `UNAUTHORIZED`, `PROTOCOL_MISMATCH`, `APP_MISMATCH` |
 | 3 | Applied, but not settled within the timeout | See `settle` in the result |
 | 4 | Condition or assertion not met | `WAIT_TIMEOUT`, a failed scenario step |
 | 5 | Nothing to talk to | Daemon unreachable, `NO_TARGET` |

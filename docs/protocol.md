@@ -271,6 +271,7 @@ Capabilities say which operations a target supports, and an operation whose capa
 | `AMBIGUOUS_DEVICE` | Several booted devices and none was chosen | `{ devices }` |
 | `SCREENSHOT_FAILED` | The host capture tool failed | `{ tool, stderr }` |
 | `HEADLESS_LOAD_FAILED` | The headless entry failed to load | `{ entry, message, importChain? }` |
+| `INVALID_CONFIG` | `ironbird.config.ts` is missing a default export or fails validation | `{ file, issues }` |
 | `CLOCK_RUNAWAY` | `clockAdvance` exceeded 10,000 timer firings | `{ labels }` |
 | `PROTOCOL_MISMATCH` | Handshake versions differ | `{ daemon, bridge }` |
 | `APP_MISMATCH` | A bridge's app id differs from the app this daemon session serves | `{ expected, received }` |

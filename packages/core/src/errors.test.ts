@@ -30,8 +30,9 @@ describe('IronbirdError', () => {
   });
 
   it('lists every documented code once', () => {
-    expect(new Set(ERROR_CODES).size).toBe(18);
+    expect(new Set(ERROR_CODES).size).toBe(19);
     expect(ERROR_CODES).toContain('APP_MISMATCH');
+    expect(ERROR_CODES).toContain('INVALID_CONFIG');
     expect(PROTOCOL_VERSION).toBe(1);
   });
 });

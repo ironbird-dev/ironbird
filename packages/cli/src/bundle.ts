@@ -54,6 +54,15 @@ function shimPlugin(shims: Record<string, string>): esbuild.Plugin {
   };
 }
 
+let loadSequence = 0;
+
+/**
+ * Bundles `entryPath` with esbuild and imports the result as a fresh ES module.
+ *
+ * Each call evaluates a fresh module instance that Node keeps for the life of the process;
+ * callers load an entry once per process (the daemon does this at start, and `reset` re-runs
+ * the factory without reloading).
+ */
 export async function loadTypeScriptModule(entryPath: string, options: LoadModuleOptions): Promise<{ exports: Record<string, unknown>; bundlePath: string }> {
   const { outDir, label, forbidden = [], shims = {} } = options;
   const entry = path.resolve(entryPath);
@@ -94,7 +103,7 @@ export async function loadTypeScriptModule(entryPath: string, options: LoadModul
   }
 
   try {
-    const exports = (await import(`${pathToFileURL(bundlePath).href}?v=${Date.now()}`)) as Record<string, unknown>;
+    const exports = (await import(`${pathToFileURL(bundlePath).href}?v=${Date.now()}-${++loadSequence}`)) as Record<string, unknown>;
     return { exports, bundlePath };
   } catch (error) {
     throw fail(messageOf(error));

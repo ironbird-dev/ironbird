@@ -24,8 +24,8 @@ describe('loadTypeScriptModule', () => {
   });
 
   it('reloads fresh on every call', async () => {
-    const first = await loadTypeScriptModule(path.join(fixtures, 'good/entry.ts'), { outDir, label: 'good' });
-    const second = await loadTypeScriptModule(path.join(fixtures, 'good/entry.ts'), { outDir, label: 'good' });
+    const load = () => loadTypeScriptModule(path.join(fixtures, 'good/entry.ts'), { outDir, label: 'good' });
+    const [first, second] = await Promise.all([load(), load()]);
     expect(first.exports).not.toBe(second.exports);
   });
 
@@ -52,5 +52,17 @@ describe('loadTypeScriptModule', () => {
       shims: { '@ironbird/cli/config': 'export const defineConfig = (config) => config;' },
     });
     expect(loaded.exports['default']).toEqual({ headless: './src/ironbird/headless.ts', appId: 'com.example.fixture', clock: { start: '2026-01-01T00:00:00.000Z' } });
+  });
+
+  it('leaves app dependencies external so they resolve from the app tree at runtime', async () => {
+    const appDir = path.join(fixtures, 'external');
+    const cache = path.join(appDir, '.ironbird', 'cache');
+    try {
+      const loaded = await loadTypeScriptModule(path.join(appDir, 'entry.ts'), { outDir: cache, label: 'external' });
+      expect(loaded.exports['default']).toEqual({ ok: true });
+      expect(loaded.bundlePath.startsWith(cache)).toBe(true);
+    } finally {
+      await rm(path.join(appDir, '.ironbird'), { recursive: true, force: true });
+    }
   });
 });
