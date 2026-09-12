@@ -1,8 +1,22 @@
-import { IronbirdError } from '@ironbird/core';
+import { IronbirdError, messageOf } from '@ironbird/core';
 
-export type Condition = { equals: unknown } | { notEquals: unknown } | { exists: boolean } | { matches: RegExp };
+export type Condition = { equals: unknown } | { notEquals: unknown } | { exists: boolean } | { matches: string };
 
 const KEYS = ['equals', 'notEquals', 'exists', 'matches'] as const;
+
+// A fresh non-global RegExp per call: a shared instance with the `g` flag would carry `lastIndex`
+// from one poll to the next and make the same value match only every other time.
+function compile(pattern: string): RegExp {
+  try {
+    return new RegExp(pattern);
+  } catch (caught) {
+    const message = messageOf(caught);
+    throw new IronbirdError('INVALID_PAYLOAD', `matches is not a valid regular expression: ${message}`, {
+      name: 'waitFor',
+      issues: [{ path: ['matches'], message }],
+    });
+  }
+}
 
 export function parseCondition(params: Record<string, unknown>): Condition {
   const present = KEYS.filter((key) => key in params);
@@ -36,15 +50,9 @@ export function parseCondition(params: Record<string, unknown>): Condition {
           issues: [{ path: ['matches'], message: 'expected a string' }],
         });
       }
-      try {
-        return { matches: new RegExp(pattern) };
-      } catch (caught) {
-        const message = caught instanceof Error ? caught.message : String(caught);
-        throw new IronbirdError('INVALID_PAYLOAD', `matches is not a valid regular expression: ${message}`, {
-          name: 'waitFor',
-          issues: [{ path: ['matches'], message }],
-        });
-      }
+      // Compile once here so a malformed pattern fails the request instead of the first poll.
+      compile(pattern);
+      return { matches: pattern };
     }
   }
 }
@@ -66,5 +74,5 @@ export function conditionHolds(value: unknown, condition: Condition): boolean {
   if ('notEquals' in condition) return !deepEqual(value, condition.notEquals);
   if ('exists' in condition) return (value !== undefined) === condition.exists;
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') return false;
-  return condition.matches.test(String(value));
+  return compile(condition.matches).test(String(value));
 }

@@ -48,9 +48,16 @@ describe('conditions', () => {
     expect(conditionHolds('x', { notEquals: 'x' })).toBe(false);
     expect(conditionHolds(undefined, { exists: false })).toBe(true);
     expect(conditionHolds(null, { exists: true })).toBe(true);
-    expect(conditionHolds('awaitingServerEcho', { matches: /^awaiting/ })).toBe(true);
-    expect(conditionHolds(42, { matches: /^4/ })).toBe(true);
-    expect(conditionHolds({ a: 1 }, { matches: /a/ })).toBe(false);
+    expect(conditionHolds('awaitingServerEcho', { matches: '^awaiting' })).toBe(true);
+    expect(conditionHolds(42, { matches: '^4' })).toBe(true);
+    expect(conditionHolds({ a: 1 }, { matches: 'a' })).toBe(false);
+  });
+
+  it('keeps matches a pattern string and stays stateless across repeated calls', () => {
+    const condition = parseCondition({ path: 'status', matches: 'awaiting' });
+    expect(condition).toEqual({ matches: 'awaiting' });
+    // A fresh non-global RegExp per call, so no lastIndex carries over between polls.
+    expect([1, 2, 3].map(() => conditionHolds('awaitingServerEcho', condition))).toEqual([true, true, true]);
   });
 
   it('deepEqual ignores key order but not array order', () => {

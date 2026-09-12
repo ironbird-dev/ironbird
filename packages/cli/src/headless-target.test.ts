@@ -1,4 +1,4 @@
-import { createTarget, defineCommands, defineHeadless, isIronbirdError, markFakePort, type StepResult } from '@ironbird/core';
+import { createTarget, defineCommands, defineHeadless, isIronbirdError, markFakePort, type HeadlessDefinition, type StepResult } from '@ironbird/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { createHeadlessTarget, type HeadlessTarget } from './headless-target';
@@ -67,6 +67,15 @@ async function boot(env: Record<string, string> = {}): Promise<HeadlessTarget> {
   target = await createHeadlessTarget({ definition, appId: 'com.example.test', clockStart: '2026-01-01T00:00:00.000Z', settleTimeoutMs: 500, env, log: (line) => logs.push(line) });
   return target;
 }
+
+// Custom definitions boot through here too, so `afterEach` always owns disposal. `dispose` is
+// idempotent, so a test may still dispose explicitly to assert on what disposal does.
+async function bootWith(custom: HeadlessDefinition): Promise<HeadlessTarget> {
+  target = await createHeadlessTarget({ definition: custom, appId: 'a', settleTimeoutMs: 100, env: {}, log: (line) => logs.push(line) });
+  return target;
+}
+
+const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('createHeadlessTarget', () => {
   it('describes the app with commands and capabilities', async () => {
@@ -169,16 +178,15 @@ describe('createHeadlessTarget', () => {
   it('describe lists wired fakes with their controls', async () => {
     const fakeControls = defineCommands({ emit: z.object({ event: z.string() }) });
     const withFake = defineHeadless(({ clock }) => {
-      const target = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({ now: clock.now() }) });
+      const app = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({ now: clock.now() }) });
       const fake = { name: 'reader', description: 'Fake reader', port: {}, controls: fakeControls, control: async () => {}, calls: () => [] };
-      return { target, fakes: [fake] };
+      return { target: app, fakes: [fake] };
     });
-    const t = await createHeadlessTarget({ definition: withFake, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
+    const t = await bootWith(withFake);
     const description = (await t.run('describe', {})) as { fakes: Record<string, { description?: string; controls: Record<string, unknown> }>; capabilities: string[] };
     expect(description.capabilities).toContain('fakes');
     expect(description.fakes['reader']?.description).toBe('Fake reader');
     expect(Object.keys(description.fakes['reader']?.controls ?? {})).toEqual(['emit']);
-    await t.dispose();
   });
 
   it('rejects a malformed matches pattern with INVALID_PAYLOAD', async () => {
@@ -197,7 +205,7 @@ describe('createHeadlessTarget', () => {
   it('reset recovers a target whose dispatch never settles', async () => {
     const stuck = defineHeadless(() => {
       let count = 0;
-      const target = createTarget({
+      const app = createTarget({
         commands: defineCommands({ 'hang.forever': z.object({}), 'count.add': z.object({}) }),
         dispatch: ({ name }) => {
           if (name === 'hang.forever') return new Promise<void>(() => {});
@@ -205,25 +213,26 @@ describe('createHeadlessTarget', () => {
         },
         getState: () => ({ count }),
       });
-      return { target };
+      return { target: app };
     });
-    const t = await createHeadlessTarget({ definition: stuck, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
+    const t = await bootWith(stuck);
     const hanging = t.run('dispatch', { name: 'hang.forever' });
+    void hanging;
     const queued = t.run('dispatch', { name: 'count.add' });
+    // Let the wedged dispatch reach the app, so it is in flight rather than still in the queue.
+    await tick();
     const reset = await t.run('reset', {});
     expect(reset).toEqual({ rev: 0, path: '', value: { count: 0 } });
     const after = (await t.run('dispatch', { name: 'count.add', path: 'count' })) as { state: number };
     expect(after.state).toBe(1);
-    void hanging;
     await expect(queued).rejects.toMatchObject({ code: 'TARGET_DISCONNECTED' });
-    await t.dispose();
   });
 
   it('rejects queued and in-flight operations that a reset abandons', async () => {
     let release: (() => void) | undefined;
     const slow = defineHeadless(() => {
       let count = 0;
-      const target = createTarget({
+      const app = createTarget({
         commands: defineCommands({ 'slow.add': z.object({}), 'count.add': z.object({}) }),
         dispatch: ({ name }) => {
           if (name === 'slow.add')
@@ -237,18 +246,17 @@ describe('createHeadlessTarget', () => {
         },
         getState: () => ({ count }),
       });
-      return { target };
+      return { target: app };
     });
-    const t = await createHeadlessTarget({ definition: slow, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
+    const t = await bootWith(slow);
     const inFlight = t.run('dispatch', { name: 'slow.add' });
     const queued = t.run('dispatch', { name: 'count.add' });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
     await t.run('reset', {});
     release?.();
     await expect(inFlight).rejects.toMatchObject({ code: 'TARGET_DISCONNECTED' });
     await expect(queued).rejects.toMatchObject({ code: 'TARGET_DISCONNECTED' });
     expect(await t.run('getState', { path: 'count' })).toMatchObject({ value: 0 });
-    await t.dispose();
   });
 
   it('collapses concurrent resets and disposes every session exactly once', async () => {
@@ -256,15 +264,15 @@ describe('createHeadlessTarget', () => {
     let created = 0;
     const counted = defineHeadless(() => {
       const id = ++created;
-      const target = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({ id }) });
+      const app = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({ id }) });
       return {
-        target,
+        target: app,
         dispose: () => {
           disposed.push(id);
         },
       };
     });
-    const t = await createHeadlessTarget({ definition: counted, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
+    const t = await bootWith(counted);
     const [a, b] = await Promise.all([t.run('reset', {}), t.run('reset', {})]);
     expect(a).toEqual(b);
     expect(created).toBe(2);
@@ -272,5 +280,136 @@ describe('createHeadlessTarget', () => {
     await t.dispose();
     expect(disposed).toEqual([1, 2]);
     await expect(t.run('reset', {})).rejects.toMatchObject({ code: 'UNSUPPORTED' });
+  });
+
+  it('fails an in-flight step that finishes during the reset window and leaves the new session untouched', async () => {
+    let created = 0;
+    let releaseDispatch: (() => void) | undefined;
+    let releaseBoot: (() => void) | undefined;
+    const slow = defineHeadless(async () => {
+      created += 1;
+      // The second boot parks inside definition.create, so the abandoned dispatch settles while
+      // the target has no session at all.
+      if (created === 2) await new Promise<void>((resolve) => (releaseBoot = resolve));
+      let state: { count: number; junk?: unknown } = { count: 0 };
+      const listeners = new Set<() => void>();
+      const set = (next: typeof state): void => {
+        state = next;
+        listeners.forEach((l) => l());
+      };
+      const app = createTarget({
+        commands: defineCommands({ 'slow.add': z.object({}), 'make.junk': z.object({}) }),
+        dispatch: ({ name }) => {
+          if (name === 'make.junk') {
+            set({ ...state, junk: new Map() });
+            return;
+          }
+          return new Promise<void>((resolve) => {
+            releaseDispatch = () => {
+              set({ ...state, count: state.count + 1 });
+              resolve();
+            };
+          });
+        },
+        getState: () => state,
+        subscribe: (l) => {
+          listeners.add(l);
+          return () => listeners.delete(l);
+        },
+      });
+      return { target: app };
+    });
+    const t = await bootWith(slow);
+    await t.run('dispatch', { name: 'make.junk' });
+    expect(logs.filter((line) => line.includes('UNSERIALIZABLE_STATE'))).toHaveLength(1);
+    const inFlight = t.run('dispatch', { name: 'slow.add' });
+    await tick();
+    const loggedBeforeReset = logs.length;
+    const resetting = t.run('reset', {});
+    await tick();
+    releaseDispatch?.();
+    await expect(inFlight).rejects.toMatchObject({ code: 'TARGET_DISCONNECTED' });
+    releaseBoot?.();
+    expect(await resetting).toEqual({ rev: 0, path: '', value: { count: 0 } });
+    expect(await t.run('getState', {})).toMatchObject({ rev: 0, value: { count: 0 } });
+    // The abandoned step never read the dead session, so its `junk` warning never reappeared
+    // even though `reset` cleared the warned-path set.
+    expect(logs).toHaveLength(loggedBeforeReset);
+  });
+
+  it('does not resolve a waitFor issued before a reset against the new session', async () => {
+    const t = await boot();
+    await t.run('dispatch', { name: 'data.load' });
+    const startedAt = Date.now();
+    const waiting = t.run('waitFor', { path: 'status', equals: 'idle', timeoutMs: 2_000 });
+    await t.run('reset', {});
+    const error = await waiting.catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('TARGET_DISCONNECTED');
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(await t.run('getState', { path: 'status' })).toMatchObject({ value: 'idle' });
+  });
+
+  it('fails a settle spanning a reset with TARGET_DISCONNECTED', async () => {
+    const releases: Array<() => void> = [];
+    const busy = defineHeadless(({ tracker }) => {
+      const app = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({}) });
+      void tracker.track(new Promise<void>((resolve) => releases.push(resolve)), 'real.work');
+      return { target: app };
+    });
+    const t = await bootWith(busy);
+    const settling = t.run('settle', { timeoutMs: 2_000 });
+    await tick();
+    await t.run('reset', {});
+    releases[0]?.();
+    const error = await settling.catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('TARGET_DISCONNECTED');
+  });
+
+  it('dispose rejects pending operations, is idempotent, and disposes every session once', async () => {
+    const disposed: number[] = [];
+    let created = 0;
+    const stuck = defineHeadless(() => {
+      const id = ++created;
+      const app = createTarget({
+        commands: defineCommands({ 'hang.forever': z.object({}), 'count.add': z.object({}) }),
+        dispatch: ({ name }) => {
+          if (name === 'hang.forever') return new Promise<void>(() => {});
+        },
+        getState: () => ({ id }),
+      });
+      return {
+        target: app,
+        dispose: () => {
+          disposed.push(id);
+        },
+      };
+    });
+    const t = await bootWith(stuck);
+    const hanging = t.run('dispatch', { name: 'hang.forever' });
+    void hanging;
+    const queued = t.run('dispatch', { name: 'count.add' });
+    await tick();
+    await Promise.all([t.dispose(), t.dispose()]);
+    await t.dispose();
+    await expect(queued).rejects.toMatchObject({ code: 'TARGET_DISCONNECTED' });
+    expect(disposed).toEqual([1]);
+    await expect(t.run('getState', {})).rejects.toMatchObject({ code: 'UNSUPPORTED' });
+  });
+
+  it('keeps rejecting after a failed boot during reset until a later reset succeeds', async () => {
+    let created = 0;
+    const flaky = defineHeadless(() => {
+      created += 1;
+      if (created === 2) throw new Error('boot exploded');
+      const app = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({ id: created }) });
+      return { target: app };
+    });
+    const t = await bootWith(flaky);
+    const failure = await t.run('reset', {}).catch((caught: unknown) => caught);
+    expect(isIronbirdError(failure) && failure.code).toBe('INTERNAL');
+    expect(isIronbirdError(failure) && failure.message).toContain('boot exploded');
+    expect(await t.run('getState', {}).catch((caught: unknown) => caught)).toBe(failure);
+    expect(await t.run('reset', {})).toEqual({ rev: 0, path: '', value: { id: 3 } });
+    expect(await t.run('getState', {})).toMatchObject({ value: { id: 3 } });
   });
 });

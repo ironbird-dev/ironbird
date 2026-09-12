@@ -4,6 +4,7 @@ import {
   createManualClock,
   createTracker,
   getAtPath,
+  messageOf,
   serializeState,
   type Description,
   type EventRecorder,
@@ -48,7 +49,6 @@ interface Session {
   tracker: Tracker;
   app: HeadlessApp;
   unsubscribe: () => void;
-  generation: number;
 }
 
 type Params = Record<string, unknown>;
@@ -56,13 +56,12 @@ type ResetResult = { rev: number; path: string; value: unknown };
 
 interface PendingOp {
   op: string;
-  enqueuedFor: number;
+  enqueuedEpoch: number;
   reject: (error: unknown) => void;
 }
 
 const str = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
 const num = (value: unknown, fallback: number): number => (typeof value === 'number' && Number.isFinite(value) ? value : fallback);
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function createHeadlessTarget(options: HeadlessTargetOptions): Promise<HeadlessTarget> {
   const log = options.log ?? ((line: string) => console.error(line));
@@ -71,9 +70,16 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
   const warned = new Set<string>();
   let queue: Promise<unknown> = Promise.resolve();
   const pendingOps = new Set<PendingOp>();
-  let sessionCounter = 0;
+  // `epoch` is the one source of truth for which session an operation belongs to. Both `reset`
+  // and `dispose` bump it as their first statement, before any await, so every operation that
+  // started earlier is invalidated the instant recovery begins rather than once a new session
+  // happens to be installed.
+  let epoch = 0;
+  let session: Session | undefined;
   let resetting: Promise<ResetResult> | undefined;
   let disposed = false;
+  let disposing: Promise<void> | undefined;
+  let bootError: IronbirdError | undefined;
   const connectedAt = Date.now();
 
   const boot = async (): Promise<Session> => {
@@ -83,16 +89,26 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     const app = await options.definition.create({ clock, recorder, tracker, env: options.env });
     const offEvents = recorder.subscribe((event) => eventListeners.forEach((listener) => listener(event)));
     const offState = app.target.subscribe(() => stateListeners.forEach((listener) => listener(app.target.revision())));
-    sessionCounter += 1;
-    return { clock, recorder, tracker, app, unsubscribe: () => (offEvents(), offState()), generation: sessionCounter };
+    return { clock, recorder, tracker, app, unsubscribe: () => (offEvents(), offState()) };
   };
 
-  let session = await boot();
+  session = await boot();
 
   const disposeSession = async (current: Session): Promise<void> => {
     current.unsubscribe();
     await current.app.dispose?.();
   };
+
+  // There is no session between `reset` bumping the epoch and its `boot()` returning, and none
+  // at all after `dispose`. A failed reset leaves `bootError` behind so every later operation
+  // reports why the target is unusable until another reset succeeds.
+  const requireSession = (op: string): Session => {
+    if (!session) throw bootError ?? new IronbirdError('UNSUPPORTED', 'Target is disposed', { op, target: 'headless' });
+    return session;
+  };
+
+  const abandoned = (op: string): IronbirdError =>
+    new IronbirdError('TARGET_DISCONNECTED', `Target was reset before ${op} completed`, { target: 'headless', op });
 
   const snapshotOf = (current: Session, path: string): unknown => {
     const { value, warnings } = serializeState(getAtPath(current.app.target.getState(), path));
@@ -105,8 +121,6 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     return value;
   };
 
-  const snapshot = (path: string): unknown => snapshotOf(session, path);
-
   const settleOptions = (params: Params): { timeoutMs: number } | null => {
     const settle = params['settle'];
     if (settle === false) return null;
@@ -114,108 +128,135 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     return { timeoutMs };
   };
 
-  // Runs a mutating step against `current`, the session that was live when the op started.
-  // If `reset` swaps in a new session while `action` is in flight, the new session must never
-  // observe this op's side effects through the target, so we bail out with TARGET_DISCONNECTED
-  // instead of reading state or events off of `current` any further.
-  const runStep = async (current: Session, params: Params, action: () => Promise<void>, op: string): Promise<StepResult> => {
+  // Runs a mutating step against `current`, the session that was live when the op started. If a
+  // `reset` or `dispose` intervenes while `action` is in flight, the epoch no longer matches, and
+  // this op must neither touch the new session nor report state read off the dead one, so every
+  // await is followed by a bail-out.
+  const runStep = async (op: string, startedEpoch: number, current: Session, params: Params, action: () => Promise<void>): Promise<StepResult> => {
     const path = str(params['path']);
     const settle = settleOptions(params);
     const since = current.recorder.since(0).nextSeq;
     await action();
-    if (current !== session) {
-      throw new IronbirdError('TARGET_DISCONNECTED', 'Target was reset while the operation was in flight', { target: 'headless', op });
-    }
+    if (epoch !== startedEpoch) throw abandoned(op);
     await current.clock.advance(0);
+    if (epoch !== startedEpoch) throw abandoned(op);
     const settleResult: SettleResult | null = settle ? await current.tracker.whenIdle({ timeoutMs: settle.timeoutMs, mode: 'quiescent' }) : null;
-    if (current !== session) {
-      throw new IronbirdError('TARGET_DISCONNECTED', 'Target was reset while the operation was in flight', { target: 'headless', op });
-    }
+    if (epoch !== startedEpoch) throw abandoned(op);
     return { target: 'headless', rev: current.app.target.revision(), path, state: snapshotOf(current, path), events: current.recorder.since(since).events, settle: settleResult };
   };
 
-  const step = (params: Params, action: (current: Session) => Promise<void>, op: string): Promise<StepResult> => {
-    const current = session;
-    return runStep(current, params, () => action(current), op);
+  const step = (op: string, params: Params, action: (current: Session) => Promise<void>): Promise<StepResult> => {
+    const startedEpoch = epoch;
+    const current = requireSession(op);
+    return runStep(op, startedEpoch, current, params, () => action(current));
   };
 
-  const waitForStateChangeOrSleep = async (ms: number): Promise<void> => {
+  // Subscribes to the session the caller started on, never to whatever `session` holds now.
+  const stateChangeOrSleep = async (current: Session, ms: number): Promise<void> => {
     let off: () => void = () => {};
-    const changed = new Promise<void>((resolve) => {
-      off = session.app.target.subscribe(() => resolve());
-    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([changed, sleep(ms)]);
+      await new Promise<void>((resolve) => {
+        off = current.app.target.subscribe(() => resolve());
+        timer = setTimeout(resolve, ms);
+      });
     } finally {
       off();
+      if (timer !== undefined) clearTimeout(timer);
     }
   };
 
-  const performReset = async (): Promise<ResetResult> => {
-    const previous = session;
-    await disposeSession(previous);
-    session = await boot();
-    // Future enqueues chain onto this fresh queue; an op that was still ahead in the old one
-    // keeps running (or hanging) on its own and is caught by the generation check in `runStep`
-    // once/if it ever resolves, but must not block ops enqueued from here on.
-    queue = Promise.resolve();
-    // Anything still waiting for its turn is abandoned outright: whether or not the op ahead of
-    // it ever settles, it must not run against the freshly booted session.
-    const abandoned = [...pendingOps];
-    pendingOps.clear();
-    for (const entry of abandoned) {
-      entry.reject(new IronbirdError('TARGET_DISCONNECTED', `Target was reset before ${entry.op} ran`, { target: 'headless', op: entry.op }));
-    }
-    warned.clear();
-    return { rev: session.app.target.revision(), path: '', value: snapshot('') };
+  const performReset = (): Promise<ResetResult> => {
+    const promise = (async (): Promise<ResetResult> => {
+      epoch += 1;
+      const previous = session;
+      session = undefined;
+      // Future enqueues chain onto this fresh queue; an op that was still ahead in the old one
+      // keeps running (or hanging) on its own and is caught by an epoch check once/if it ever
+      // resolves, but must not block ops enqueued from here on.
+      queue = Promise.resolve();
+      // Anything still waiting for its turn is abandoned outright: whether or not the op ahead of
+      // it ever settles, it must not run against the freshly booted session.
+      const waiting = [...pendingOps];
+      pendingOps.clear();
+      for (const entry of waiting) entry.reject(abandoned(entry.op));
+      warned.clear();
+      if (previous) await disposeSession(previous);
+      let next: Session;
+      try {
+        next = await boot();
+      } catch (error) {
+        bootError = error instanceof IronbirdError ? error : new IronbirdError('INTERNAL', `Reset failed: ${messageOf(error)}`, { message: messageOf(error) });
+        throw bootError;
+      }
+      session = next;
+      bootError = undefined;
+      return { rev: next.app.target.revision(), path: '', value: snapshotOf(next, '') };
+    })().finally(() => {
+      resetting = undefined;
+    });
+    resetting = promise;
+    return promise;
   };
 
   const ops: Record<string, (params: Params) => unknown | Promise<unknown>> = {
     describe: (): Description => {
+      const current = requireSession('describe');
       const fakes: Description['fakes'] = {};
-      for (const fake of session.app.fakes ?? []) {
+      for (const fake of current.app.fakes ?? []) {
         fakes[fake.name] = { ...(fake.description === undefined ? {} : { description: fake.description }), controls: fake.controls.describe() };
       }
       return {
         app: { id: options.appId, platform: 'headless' },
-        commands: session.app.target.commands.describe(),
+        commands: current.app.target.commands.describe(),
         fakes,
-        capabilities: ['settle', 'events', ...(session.app.fakes?.length ? (['fakes'] as const) : []), 'clock', 'reset', ...session.app.target.capabilities],
+        capabilities: ['settle', 'events', ...(current.app.fakes?.length ? (['fakes'] as const) : []), 'clock', 'reset', ...current.app.target.capabilities],
       };
     },
-    dispatch: (params) => step(params, (current) => current.app.target.dispatch(str(params['name']), params['payload']), 'dispatch'),
+    dispatch: (params) => step('dispatch', params, (current) => current.app.target.dispatch(str(params['name']), params['payload'])),
     getState: (params) => {
+      const current = requireSession('getState');
       const path = str(params['path']);
-      return { rev: session.app.target.revision(), path, value: snapshot(path) };
+      return { rev: current.app.target.revision(), path, value: snapshotOf(current, path) };
     },
     waitFor: async (params) => {
+      const startedEpoch = epoch;
+      const current = requireSession('waitFor');
       const path = str(params['path']);
       const condition = parseCondition(params);
       const timeoutMs = num(params['timeoutMs'], 5_000);
       const started = Date.now();
       for (;;) {
-        const value = snapshot(path);
-        if (conditionHolds(value, condition)) return { rev: session.app.target.revision(), path, value, waitedMs: Date.now() - started };
+        const value = snapshotOf(current, path);
+        if (conditionHolds(value, condition)) return { rev: current.app.target.revision(), path, value, waitedMs: Date.now() - started };
         const remaining = timeoutMs - (Date.now() - started);
         if (remaining <= 0) {
-          throw new IronbirdError('WAIT_TIMEOUT', `Condition on ${path || '<root>'} not met within ${timeoutMs} ms`, { path, value, pending: session.tracker.pending() });
+          throw new IronbirdError('WAIT_TIMEOUT', `Condition on ${path || '<root>'} not met within ${timeoutMs} ms`, { path, value, pending: current.tracker.pending() });
         }
-        await waitForStateChangeOrSleep(Math.min(16, remaining));
+        await stateChangeOrSleep(current, Math.min(16, remaining));
+        if (epoch !== startedEpoch) throw abandoned('waitFor');
       }
     },
-    settle: (params) => session.tracker.whenIdle({ timeoutMs: num(params['timeoutMs'], options.settleTimeoutMs), mode: 'quiescent' }),
-    events: (params) => session.recorder.since(num(params['since'], 0), num(params['limit'], Number.POSITIVE_INFINITY)),
+    settle: async (params) => {
+      const startedEpoch = epoch;
+      const current = requireSession('settle');
+      const result = await current.tracker.whenIdle({ timeoutMs: num(params['timeoutMs'], options.settleTimeoutMs), mode: 'quiescent' });
+      if (epoch !== startedEpoch) throw abandoned('settle');
+      return result;
+    },
+    events: (params) => requireSession('events').recorder.since(num(params['since'], 0), num(params['limit'], Number.POSITIVE_INFINITY)),
     clockAdvance: async (params) => {
       const ms = params['ms'];
       if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {
         throw new IronbirdError('INVALID_PAYLOAD', 'clockAdvance needs a non-negative ms', { name: 'clockAdvance', issues: [{ path: ['ms'], message: 'expected a non-negative number' }] });
       }
-      const current = session;
-      const result = await runStep(current, params, () => current.clock.advance(ms), 'clockAdvance');
+      const startedEpoch = epoch;
+      const current = requireSession('clockAdvance');
+      const result = await runStep('clockAdvance', startedEpoch, current, params, () => current.clock.advance(ms));
       return { ...result, now: current.clock.now() };
     },
-    clockNow: () => ({ now: session.clock.now() }),
-    reset: async () => {
+    clockNow: () => ({ now: requireSession('clockNow').clock.now() }),
+    reset: () => {
       // Not queued (see `run`): a stuck dispatch must not block recovery, so reset abandons
       // whatever is still waiting in the queue instead of waiting its turn behind it.
       if (disposed) {
@@ -223,36 +264,31 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
       }
       // Two concurrent resets must not dispose the same session twice or orphan one of the two
       // freshly booted sessions, so a reset already in flight is handed back as-is.
-      if (resetting) return resetting;
-      const promise = performReset().finally(() => {
-        resetting = undefined;
-      });
-      resetting = promise;
-      return promise;
+      return resetting ?? performReset();
     },
   };
 
   return {
     id: 'headless',
-    info: () => ({ id: 'headless', platform: 'headless', appId: options.appId, connectedAt, rev: session.app.target.revision() }),
+    info: () => ({ id: 'headless', platform: 'headless', appId: options.appId, connectedAt, rev: session ? session.app.target.revision() : 0 }),
     async run(op, params) {
       const handler = ops[op];
       if (!handler) throw new IronbirdError('UNSUPPORTED', `The headless target doesn't support ${op}`, { op, target: 'headless' });
+      if (disposed) throw new IronbirdError('UNSUPPORTED', 'Target is disposed', { op, target: 'headless' });
       if (op === 'reset') return handler(params);
       if (!QUEUED_OPS.has(op)) return handler(params);
-      const enqueuedFor = session.generation;
       const myTurn = queue;
       return new Promise((resolve, reject) => {
-        const entry: PendingOp = { op, enqueuedFor, reject };
+        const entry: PendingOp = { op, enqueuedEpoch: epoch, reject };
         pendingOps.add(entry);
         // `myTurn` is the previous queued op's turn, not its result: if that op never settles
-        // (e.g. a wedged dispatch), this callback never runs, and `reset` reaches in via
-        // `pendingOps` to reject `entry` directly instead of leaving it stuck behind it forever.
+        // (e.g. a wedged dispatch), this callback never runs, and `reset` and `dispose` reach in
+        // via `pendingOps` to reject `entry` instead of leaving it stuck behind it forever.
         queue = myTurn
           .then(async () => {
             pendingOps.delete(entry);
-            if (session.generation !== enqueuedFor) {
-              reject(new IronbirdError('TARGET_DISCONNECTED', `Target was reset before ${op} ran`, { target: 'headless', op }));
+            if (epoch !== entry.enqueuedEpoch) {
+              reject(abandoned(op));
               return;
             }
             try {
@@ -276,10 +312,24 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
         stateListeners.delete(listener);
       };
     },
-    async dispose() {
+    dispose() {
+      // Idempotent, and a second caller awaits the same work rather than returning early while
+      // the first call is still disposing.
+      if (disposing) return disposing;
       disposed = true;
-      if (resetting) await resetting.catch(() => undefined);
-      await disposeSession(session);
+      epoch += 1;
+      const waiting = [...pendingOps];
+      pendingOps.clear();
+      for (const entry of waiting) entry.reject(abandoned(entry.op));
+      disposing = (async () => {
+        // Awaiting an in-flight reset first is what keeps the count exact: whatever session it
+        // installs becomes the one this call disposes.
+        await resetting?.catch(() => undefined);
+        const previous = session;
+        session = undefined;
+        if (previous) await disposeSession(previous);
+      })();
+      return disposing;
     },
   };
 }
