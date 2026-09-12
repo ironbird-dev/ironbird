@@ -30,7 +30,7 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 - [ ] Review ADR-0001 through ADR-0005 and mark each Accepted, amended, or rejected
 - [x] Create `ironbird-dev/ironbird` and push these docs as the first commit
 - [ ] Protect `main` and require 2FA for org members
-- [ ] Enable 2FA on the npm org and plan to publish from GitHub Actions with npm trusted publishing rather than long-lived tokens
+- [ ] Enable 2FA on the npm org and plan to publish from GitHub Actions with npm trusted publishing rather than long-lived tokens. Trusted publishing (npmjs.com → package → Settings → Publishing access, pointing at `ironbird-dev/ironbird` and `release.yml`) can only be configured once a package already exists, so the first `0.0.x` publish of `@ironbird/core`, `@ironbird/cli`, and `ironbird` must be done once by hand from the maintainer's machine with npm 2FA (`pnpm -r publish --access public`); the release workflow publishes on its own after that
 
 ## M0: Headless loop
 
@@ -45,8 +45,8 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 **Exit criteria**
 
 - [ ] A coding agent, given only the output of `ironbird commands`, completes cart → payment → receipt headlessly
-- [ ] ironbird overhead per headless command is under 5 ms at p95, and CLI invocations are under 300 ms at p95
-- [ ] A `react-native` import in the headless graph produces `HEADLESS_LOAD_FAILED` with the import chain
+- [x] ironbird overhead per headless command is under 5 ms at p95, and CLI invocations are under 300 ms at p95
+- [x] A `react-native` import in the headless graph produces `HEADLESS_LOAD_FAILED` with the import chain
 
 ## M1: Remote mode
 

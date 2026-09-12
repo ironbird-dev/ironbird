@@ -12,7 +12,8 @@
     "bench": "pnpm build && node packages/cli/scripts/bench.mjs",
     "lint": "eslint .",
     "typecheck": "pnpm -r run typecheck",
-    "changeset": "changeset"
+    "changeset": "changeset",
+    "release": "pnpm -r publish --access public --no-git-checks"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.2",

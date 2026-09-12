@@ -15,7 +15,7 @@ The `ironbird` binary ships in `@ironbird/cli` and requires Node 22 or newer. Th
 | `--target <id>` | `defaultTarget` from config | `headless`, or a remote target id such as `ios` or `android-2` |
 | `--json` | On when stdout isn't a TTY | Force JSON output |
 | `--config <file>` | Nearest `ironbird.config.ts` walking up from the working directory | Config file |
-| `--daemon <url>` | `http://127.0.0.1:4567` | Daemon address |
+| `--daemon <url>` | `.ironbird/daemon.json` written by `serve`, else `http://127.0.0.1:4567` | Daemon address |
 | `--token <token>` | `IRONBIRD_TOKEN` environment variable | Token for a daemon bound beyond localhost |
 
 ## Parsing values and durations
@@ -80,7 +80,7 @@ The CLI prints the daemon's `result` object, adding `target` to results that don
 ironbird serve [--port 4567] [--bridge-port 4568] [--host 127.0.0.1] [--no-headless] [--token <token>]
 ```
 
-Runs the daemon in the foreground. Loads the headless entry unless `--no-headless` is passed, accepts bridge connections, and runs `adb reverse` for connected Android devices when `adb` is available. Binding a non-loopback `--host` requires a token; if none is given, one is generated and printed.
+Runs the daemon in the foreground. Loads the headless entry unless `--no-headless` is passed, accepts bridge connections, and runs `adb reverse` for connected Android devices when `adb` is available. Binding a non-loopback `--host` requires a token; if none is given, one is generated and printed. On start it prints one line, `{ url, targets, defaultTarget, bridgePort }`, and writes `.ironbird/daemon.json` so later invocations find the daemon without loading the config; the file is removed on shutdown. `--bridge-port` is accepted now and used from M1.
 
 ### status
 
@@ -144,7 +144,7 @@ ironbird wait payment.status --equals awaitingServerEcho --timeout 2s
 ironbird settle [--timeout <duration>]
 ```
 
-Prints a settle result without dispatching anything.
+Prints a settle result without dispatching anything. Exits 3 when the target is neither idle nor quiescent, like a step.
 
 ### events
 
@@ -152,7 +152,7 @@ Prints a settle result without dispatching anything.
 ironbird events [--since <seq>] [--limit <n>] [--follow]
 ```
 
-Prints `{ events, nextSeq, truncated }`. With `--follow`, streams events as JSON lines until interrupted.
+Prints `{ events, nextSeq, truncated }`. With `--follow`, streams events as JSON lines until interrupted. With `--follow`, the backlog and every later event print as JSON lines regardless of TTY.
 
 ### fake
 
