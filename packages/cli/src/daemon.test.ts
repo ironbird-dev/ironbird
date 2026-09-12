@@ -148,21 +148,6 @@ describe('startDaemon', () => {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     let text = '';
-    // Timestamps each `event: state` frame the moment the chunk carrying it is decoded, so the
-    // burst below can be checked against wall-clock time rather than a fixed frame count (see the
-    // bounds below). `processedFrames` is how many complete (`\n\n`-terminated) frames have
-    // already been accounted for, so a frame split across two chunks is only counted once, against
-    // the chunk that completes it.
-    let processedFrames = 0;
-    const stateFrameTimes: number[] = [];
-    const recordStateFrames = (arrivalMs: number): void => {
-      const frames = text.split('\n\n');
-      const complete = text.endsWith('\n\n') ? frames.filter((frame) => frame.length > 0) : frames.slice(0, -1);
-      for (let i = processedFrames; i < complete.length; i += 1) {
-        if (complete[i]!.startsWith('event: state')) stateFrameTimes.push(arrivalMs);
-      }
-      processedFrames = complete.length;
-    };
     // Reuses one in-flight reader.read() across iterations instead of issuing a fresh one each
     // time the 20ms timeout wins the race: a stream reader queues concurrent read() calls and
     // resolves them in the order they were issued, so calling read() again before the previous
@@ -176,7 +161,6 @@ describe('startDaemon', () => {
         const chunk = await Promise.race([pendingRead, new Promise<{ value: undefined; done: false }>((resolve) => setTimeout(() => resolve({ value: undefined, done: false }), 20))]);
         if (chunk.value) {
           text += decoder.decode(chunk.value, { stream: true });
-          recordStateFrames(Date.now());
           pendingRead = undefined;
         }
       }
@@ -201,22 +185,20 @@ describe('startDaemon', () => {
     // produces 2 + floor(burstSpan / 100) frames for a sustained burst, and burstSpan grows with
     // rpc round-trip latency, so a fixed frame-count cap is inherently flaky on a slower machine.
     // Deriving the cap from `elapsed` (measured from just before the first dispatch to just after
-    // the final drain) tracks that instead. As a scratch check, reverting `flush` in daemon.ts so
-    // it never re-arms its timeout after a write leaves `throttle` permanently unset, so every
-    // later update fires `flush` again immediately with no throttling at all: measured against
-    // this test, that produced all 12 frames roughly 44-50 ms apart (one per dispatch) inside a
-    // ~760 ms elapsed window, which both the derived count bound (12 > ceil(760/100)+1 = 9) and
-    // the minimum-gap assertion below (~44ms < 80ms) correctly rejected.
+    // the final drain) tracks that instead, and it's provably safe under jitter: a throttle timer
+    // can fire late (adding delay, never a frame) but never early, so a slow run can only push
+    // frames past the window and reduce the count, never inflate it above the bound. As a scratch
+    // check, reverting `flush` in daemon.ts so it never re-arms its timeout after a write leaves
+    // `throttle` permanently unset, so every later update fires `flush` again immediately with no
+    // throttling at all: measured against this test, that produced all 12 frames, which the
+    // derived count bound correctly rejected (12 > ceil(760/100)+1 = 9 for that run's ~760 ms
+    // elapsed window). A per-frame minimum-gap assertion was tried too but removed: an event-loop
+    // stall on the client side can coalesce two correctly spaced frames into a single chunk, so
+    // their recorded arrival times collapse to the same instant and the assertion fails on a
+    // correct throttle, not just a broken one.
     expect(stateFrames.length).toBeGreaterThanOrEqual(3);
     expect(stateFrames.length).toBeLessThanOrEqual(Math.ceil(elapsed / 100) + 1);
     expect(stateFrames[stateFrames.length - 1]).toContain('"rev":12');
-    // The throttle never writes two state frames back to back, so consecutive `event: state`
-    // frames must be at least 80 ms apart (a bit under the 100 ms window, to absorb scheduling
-    // jitter). Frames the reader picks up out of the same chunk share that chunk's arrival
-    // timestamp, i.e. a gap of 0 — correctly failing this assertion, since the throttle should
-    // never let two land together.
-    const gaps = stateFrameTimes.slice(1).map((time, index) => time - stateFrameTimes[index]!);
-    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(80);
     controller.abort();
   });
 

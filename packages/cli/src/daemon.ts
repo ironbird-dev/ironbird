@@ -169,15 +169,18 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     // propagating out of an event/state callback into the request handler's try/catch, which would
     // log it as a daemon fault and then attempt to send a second, JSON error response on a stream
     // whose headers are already flushed.
-    const write = (kind: string, data: unknown): void => {
+    const writeRaw = (text: string): void => {
       try {
-        res.write(`event: ${kind}\ndata: ${JSON.stringify(data)}\n\n`);
+        res.write(text);
       } catch {
         cleanup();
         endStream();
       }
     };
-    res.write(': connected\n\n');
+    const write = (kind: string, data: unknown): void => {
+      writeRaw(`event: ${kind}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+    writeRaw(': connected\n\n');
 
     // Subscribe before awaiting the backlog so an event recorded during that await isn't lost
     // between the snapshot and the subscription. Anything that arrives while we're still
@@ -197,8 +200,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       // reconcile: tear down and end the stream with a single error frame instead of letting
       // this reach the daemon-fault handler (the client already got a 200 SSE response head).
       cleanup();
-      res.write(`event: error\ndata: ${JSON.stringify(toErrorShape(error))}\n\n`);
-      res.end();
+      writeRaw(`event: error\ndata: ${JSON.stringify(toErrorShape(error))}\n\n`);
+      endStream();
       return;
     }
     if (aborted || req.destroyed) {
@@ -229,7 +232,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       pendingRev = rev;
       if (!throttle) flush();
     });
-    handles.ping = setInterval(() => res.write(': ping\n\n'), PING_INTERVAL_MS);
+    handles.ping = setInterval(() => writeRaw(': ping\n\n'), PING_INTERVAL_MS);
   };
 
   const server = createServer((req, res) => {
