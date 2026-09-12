@@ -48,7 +48,7 @@ export function createDaemonClient(options: { url: string; token?: string; fetch
       try {
         bodyText = await response.text();
       } catch {
-        throw new IronbirdError('TARGET_DISCONNECTED', `Daemon at ${url} closed the connection before the response completed`, { target: target ?? 'daemon', op });
+        throw new IronbirdError('TARGET_DISCONNECTED', `Daemon at ${url} closed the connection before the response completed`, { target, op });
       }
       let parsed: unknown;
       try {
