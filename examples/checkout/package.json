@@ -1,0 +1,14 @@
+{
+  "name": "@ironbird-examples/checkout",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --project unit"
+  },
+  "dependencies": {
+    "@ironbird/core": "workspace:*",
+    "zod": "^4.0.0"
+  }
+}
