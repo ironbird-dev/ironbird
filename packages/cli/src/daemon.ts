@@ -14,6 +14,8 @@ export interface DaemonOptions {
   /** Test hook: overrides the SSE keepalive ping interval (default 15_000ms) so tests can observe
    * ping behavior without waiting out the real interval. */
   pingIntervalMs?: number;
+  /** Wall-clock bound on one target operation (default 30_000ms); see docs/protocol.md §3.2. */
+  requestTimeoutMs?: number;
 }
 
 export interface Daemon {
@@ -27,6 +29,18 @@ export interface Daemon {
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const STATE_THROTTLE_MS = 100;
 const PING_INTERVAL_MS = 15_000;
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/** Hosts a request may name beyond the daemon's own bind address. */
+const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+/** Strips the port from a `Host` header, leaving a bracketed IPv6 literal intact. */
+function hostWithoutPort(header: string): string {
+  const value = header.trim().toLowerCase();
+  if (value.startsWith('[')) return value.slice(0, value.indexOf(']') + 1) || value;
+  const colon = value.lastIndexOf(':');
+  return colon === -1 ? value : value.slice(0, colon);
+}
 
 const IPV4_LOOPBACK = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 const IPV4_MAPPED_LOOPBACK = /^::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
@@ -89,6 +103,26 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   };
 
+  const requestTimeoutMs = options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
+
+  // Bounds one target operation so a wedged target can't hold an HTTP connection open forever.
+  // The operation itself keeps running: the target's queue owns it, and `reset` is what clears it.
+  const withRequestTimeout = async <T>(targetId: string, op: string, work: Promise<T>): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new IronbirdError('TARGET_DISCONNECTED', `Request timed out after ${requestTimeoutMs} ms; the target may be wedged, run ironbird reset`, { target: targetId, op })), requestTimeoutMs);
+    });
+    timeout.catch(() => undefined);
+    // The abandoned `work` may reject later with nothing awaiting it; swallow that so it doesn't
+    // surface as an unhandled rejection and take the daemon down.
+    work.catch(() => undefined);
+    try {
+      return await Promise.race([work, timeout]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
+
   const handleRpc = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     let parsed: unknown;
     try {
@@ -115,7 +149,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         return;
       }
       const target = selectTarget(requestedTarget);
-      const result = await target.run(op, params);
+      const result = await withRequestTimeout(target.id, op, target.run(op, params));
       sendJson(res, 200, { ok: true, target: target.id, result });
     } catch (error) {
       if (isIronbirdError(error)) {
@@ -250,6 +284,9 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       }
       write('state', { rev: pendingRev });
       pendingRev = undefined;
+      // A failed write runs `cleanup` from inside `guarded`; re-arming here would keep a timer
+      // alive on a stream that is already torn down.
+      if (cleaned) return;
       throttle = setTimeout(flush, STATE_THROTTLE_MS);
     };
     handles.offState = target.onState((rev) => {
@@ -259,9 +296,24 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     handles.ping = setInterval(() => writeRaw(': ping\n\n'), options.pingIntervalMs ?? PING_INTERVAL_MS);
   };
 
+  // A page in the user's browser can reach a loopback daemon, so a same-origin-style check runs
+  // before anything else: a real CLI client never sends `Origin`, and a DNS-rebinding attack
+  // arrives with a `Host` the daemon was never bound to.
+  const sameSite = (req: IncomingMessage): boolean => {
+    if (req.headers.origin !== undefined) return false;
+    const header = req.headers.host;
+    if (header === undefined) return true;
+    const host = hostWithoutPort(header);
+    return ALLOWED_HOSTS.has(host) || host === options.host.toLowerCase() || host === `[${options.host.toLowerCase()}]`;
+  };
+
   const server = createServer((req, res) => {
     void (async () => {
       try {
+        if (!sameSite(req)) {
+          sendJson(res, 403, { ok: false, error: { code: 'UNAUTHORIZED', message: 'Cross-origin or foreign-host requests are not allowed' } });
+          return;
+        }
         if (!authorized(req)) {
           sendJson(res, 401, { ok: false, error: { code: 'UNAUTHORIZED', message: 'Token missing or wrong' } });
           return;
@@ -269,7 +321,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         const url = new URL(req.url ?? '/', 'http://localhost');
         if (req.method === 'POST' && url.pathname === '/v1/rpc') return await handleRpc(req, res);
         if (req.method === 'GET' && url.pathname === '/v1/stream') return await handleStream(url, req, res);
-        sendJson(res, 404, { ok: false, error: { code: 'INTERNAL', message: `No route ${req.method ?? ''} ${url.pathname}` } });
+        sendJson(res, 404, { ok: false, error: { code: 'UNSUPPORTED', message: `No route ${req.method ?? ''} ${url.pathname}`, details: { op: `${req.method ?? ''} ${url.pathname}`, target: null } } });
       } catch (error) {
         log(`daemon fault: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
         if (!res.headersSent) sendJson(res, 500, { ok: false, error: toErrorShape(error) });

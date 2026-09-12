@@ -66,6 +66,19 @@ describe('createEventRecorder', () => {
     expect(seen).toEqual([]);
   });
 
+  it('lastSeq reports the latest seq and survives clear', () => {
+    const recorder = createEventRecorder({ clock: createManualClock() });
+    expect(recorder.lastSeq()).toBe(0);
+    recorder.record('a', 'one');
+    const second = recorder.record('a', 'two');
+    expect(recorder.lastSeq()).toBe(second.seq);
+    recorder.clear();
+    // `clear` drops the buffer, not the numbering: a seq must never be handed out twice.
+    expect(recorder.lastSeq()).toBe(second.seq);
+    expect(recorder.record('a', 'three').seq).toBe(second.seq + 1);
+    expect(recorder.lastSeq()).toBe(second.seq + 1);
+  });
+
   it('property: seq strictly increases and since(n) never returns seq <= n', () => {
     fc.assert(
       fc.property(fc.integer({ min: 0, max: 40 }), fc.integer({ min: 0, max: 45 }), fc.integer({ min: 1, max: 20 }), (count, n, limit) => {

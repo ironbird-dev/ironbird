@@ -26,6 +26,12 @@ export interface HeadlessTargetOptions {
   settleTimeoutMs: number;
   env: Record<string, string | undefined>;
   log?: (line: string) => void;
+  /**
+   * Wall-clock bound on one `definition.create` call (default 30 s). Without it a factory that
+   * never resolves wedges the target for good: `run` waits on `resetting`, `reset` hands back the
+   * same stuck promise, and `dispose` awaits it too.
+   */
+  bootTimeoutMs?: number;
 }
 
 export interface HeadlessTarget {
@@ -91,21 +97,53 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
   let bootError: IronbirdError | undefined;
   const connectedAt = Date.now();
 
+  const bootTimeoutMs = options.bootTimeoutMs ?? 30_000;
+
+  // A factory that hangs must fail the boot rather than the whole target, so `create` races a
+  // timer. The abandoned factory keeps running on its own; nothing else ever reads its result.
+  const createApp = async (context: Parameters<HeadlessDefinition['create']>[0]): Promise<HeadlessApp> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new IronbirdError('HEADLESS_LOAD_FAILED', `Headless app failed to start: the factory did not resolve within ${bootTimeoutMs} ms`, { entry: options.appId, message: `boot timed out after ${bootTimeoutMs} ms` })), bootTimeoutMs);
+    });
+    timeout.catch(() => undefined);
+    try {
+      return await Promise.race([options.definition.create(context), timeout]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
+
   const boot = async (): Promise<Session> => {
     const clock = createManualClock({ now: options.clockStart ? Date.parse(options.clockStart) : 0 });
     const recorder = createEventRecorder({ clock });
     const tracker = createTracker({ clock });
-    const app = await options.definition.create({ clock, recorder, tracker, env: options.env });
+    const app = await createApp({ clock, recorder, tracker, env: options.env });
     const offEvents = recorder.subscribe((event) => eventListeners.forEach((listener) => listener(event)));
     const offState = app.target.subscribe(() => stateListeners.forEach((listener) => listener(app.target.revision())));
     return { clock, recorder, tracker, app, unsubscribe: () => (offEvents(), offState()) };
   };
 
-  session = await boot();
+  // A boot failure is a load failure whichever boot it was: the app the config names never came
+  // up. An IronbirdError from the factory itself (a bad payload, say) keeps its own code.
+  const bootFailure = (error: unknown): IronbirdError =>
+    error instanceof IronbirdError ? error : new IronbirdError('HEADLESS_LOAD_FAILED', `Headless app failed to start: ${messageOf(error)}`, { entry: options.appId, message: messageOf(error) });
+
+  try {
+    session = await boot();
+  } catch (error) {
+    throw bootFailure(error);
+  }
 
   const disposeSession = async (current: Session): Promise<void> => {
     current.unsubscribe();
-    await current.app.dispose?.();
+    try {
+      await current.app.dispose?.();
+    } catch (error) {
+      // The listeners are already detached, so the session is gone either way; the caller still
+      // needs a coded error rather than whatever the app happened to throw.
+      throw new IronbirdError('INTERNAL', `App dispose failed: ${messageOf(error)}`, { message: messageOf(error) });
+    }
   };
 
   // There is no session between `reset` bumping the epoch and its `boot()` returning, and none
@@ -164,7 +202,7 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
   const runStep = async (op: string, startedEpoch: number, current: Session, params: Params, action: () => Promise<void>): Promise<StepResult> => {
     const path = str(params['path']);
     const settle = settleOptions(params);
-    const since = current.recorder.since(0).nextSeq;
+    const since = current.recorder.lastSeq();
     await raceAbandon(op, action());
     if (epoch !== startedEpoch) throw abandoned(op, abandonCause());
     await current.clock.advance(0);
@@ -222,7 +260,7 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
       try {
         next = await boot();
       } catch (error) {
-        bootError = error instanceof IronbirdError ? error : new IronbirdError('INTERNAL', `Reset failed: ${messageOf(error)}`, { message: messageOf(error) });
+        bootError = bootFailure(error);
         throw bootError;
       }
       // `dispose` may have run while `boot()` was in flight: nothing will ever use this session,
@@ -282,7 +320,9 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     settle: async (params) => {
       const startedEpoch = epoch;
       const current = requireSession('settle');
-      const result = await current.tracker.whenIdle({ timeoutMs: num(params['timeoutMs'], options.settleTimeoutMs), mode: 'quiescent' });
+      // Through `raceAbandon` like a step's settle, so a reset or dispose rejects this read
+      // immediately instead of leaving the caller to wait out its own timeout.
+      const result = await raceAbandon('settle', current.tracker.whenIdle({ timeoutMs: num(params['timeoutMs'], options.settleTimeoutMs), mode: 'quiescent' }));
       if (epoch !== startedEpoch) throw abandoned('settle', abandonCause());
       return result;
     },
@@ -324,6 +364,9 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
       // covers a reset that starts during the wait too. If the reset fails, `requireSession` below
       // rethrows `bootError` as it already does.
       while (resetting) await resetting.catch(() => undefined);
+      // `dispose` may have run during that wait, and the ops below would otherwise report the
+      // reset's `bootError` (or run against a session dispose is about to tear down).
+      if (disposed) throw new IronbirdError('UNSUPPORTED', 'Target is disposed', { op, target: 'headless' });
       if (!QUEUED_OPS.has(op)) return handler(params);
       const myTurn = queue;
       return new Promise((resolve, reject) => {

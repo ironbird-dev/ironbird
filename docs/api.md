@@ -247,6 +247,8 @@ export const fakeReader = defineFake('reader', {
 interface EventRecorder {
   record(source: string, name: string, data?: unknown): RecordedEvent;
   since(seq?: number, limit?: number): { events: RecordedEvent[]; nextSeq: number; truncated: boolean };
+  /** The latest recorded seq, or 0 before the first event; O(1) and unaffected by clear(). */
+  lastSeq(): number;
   subscribe(listener: (event: RecordedEvent) => void): () => void;
   clear(): void;
 }

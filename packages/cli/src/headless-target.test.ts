@@ -359,7 +359,7 @@ describe('createHeadlessTarget', () => {
     });
     const t = await bootWith(flaky);
     const failure = await t.run('reset', {}).catch((caught: unknown) => caught);
-    expect(isIronbirdError(failure) && failure.code).toBe('INTERNAL');
+    expect(isIronbirdError(failure) && failure.code).toBe('HEADLESS_LOAD_FAILED');
     expect(isIronbirdError(failure) && failure.message).toContain('boot exploded');
     expect(await t.run('getState', {}).catch((caught: unknown) => caught)).toBe(failure);
     expect(await t.run('reset', {})).toEqual({ rev: 0, path: '', value: { id: 3 } });
@@ -395,6 +395,83 @@ describe('createHeadlessTarget', () => {
     expect(await during).toMatchObject({ state: { count: 1, boot: 2 } });
     expect(await read).toMatchObject({ value: 2 });
     await t.dispose();
+  });
+
+  it('rejects a settle abandoned by a reset without waiting out its timeout', async () => {
+    const busy = defineHeadless(({ tracker }) => {
+      const app = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({}) });
+      // Never resolves, so `whenIdle` would otherwise run its full timeout.
+      void tracker.track(new Promise<void>(() => {}), 'real.work');
+      return { target: app };
+    });
+    const t = await bootWith(busy);
+    const startedAt = Date.now();
+    const settling = t.run('settle', { timeoutMs: 10_000 });
+    await tick();
+    await t.run('reset', {});
+    const error = await settling.catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('TARGET_DISCONNECTED');
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
+  it('fails the initial boot with HEADLESS_LOAD_FAILED when the factory throws', async () => {
+    const explodes = defineHeadless(() => {
+      throw new Error('boot exploded');
+    });
+    const error = await createHeadlessTarget({ definition: explodes, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('HEADLESS_LOAD_FAILED');
+    expect(isIronbirdError(error) && error.message).toContain('boot exploded');
+    expect(isIronbirdError(error) && (error.details as { entry: string }).entry).toBe('a');
+  });
+
+  it('bounds a factory that never resolves so boot and reset fail and dispose still completes', async () => {
+    let boots = 0;
+    const hangsAfterFirstBoot = defineHeadless(async () => {
+      boots += 1;
+      if (boots > 1) await new Promise<void>(() => {});
+      const app = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({ boots }) });
+      return { target: app };
+    });
+    target = await createHeadlessTarget({ definition: hangsAfterFirstBoot, appId: 'a', settleTimeoutMs: 100, bootTimeoutMs: 50, env: {}, log: () => {} });
+    const startedAt = Date.now();
+    const failure = await target.run('reset', {}).catch((caught: unknown) => caught);
+    expect(isIronbirdError(failure) && failure.code).toBe('HEADLESS_LOAD_FAILED');
+    expect(isIronbirdError(failure) && failure.message).toMatch(/50 ms/);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    // The stuck factory must not wedge teardown either.
+    await expect(target.dispose()).resolves.toBeUndefined();
+
+    const neverBoots = defineHeadless(() => new Promise<never>(() => {}));
+    const bootFailure = await createHeadlessTarget({ definition: neverBoots, appId: 'a', settleTimeoutMs: 100, bootTimeoutMs: 50, env: {}, log: () => {} }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(bootFailure) && bootFailure.code).toBe('HEADLESS_LOAD_FAILED');
+    expect(isIronbirdError(bootFailure) && bootFailure.message).toMatch(/50 ms/);
+  });
+
+  it('reports a dispose racing a failing reset as disposed rather than as the reset failure', async () => {
+    let releaseBoot: (() => void) | undefined;
+    let boots = 0;
+    const failsSecondBoot = defineHeadless(async () => {
+      boots += 1;
+      if (boots > 1) {
+        await new Promise<void>((resolve) => {
+          releaseBoot = resolve;
+        });
+        throw new Error('boot exploded');
+      }
+      const app = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({ boots }) });
+      return { target: app };
+    });
+    const t = await bootWith(failsSecondBoot);
+    const reset = t.run('reset', {});
+    reset.catch(() => undefined);
+    await tick();
+    // Parks in `run`'s wait for the reset; by the time it wakes, dispose has already won.
+    const during = t.run('getState', {});
+    const dispose = t.dispose();
+    releaseBoot?.();
+    await expect(during).rejects.toMatchObject({ code: 'UNSUPPORTED', message: 'Target is disposed' });
+    await expect(reset).rejects.toMatchObject({ code: 'HEADLESS_LOAD_FAILED' });
+    await dispose;
   });
 
   it('disposing during a reset tears down the session that reset was about to install', async () => {

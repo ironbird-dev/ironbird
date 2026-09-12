@@ -1,4 +1,5 @@
 import { createTarget, defineCommands, defineHeadless } from '@ironbird/core';
+import { request } from 'node:http';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -21,6 +22,24 @@ async function boot(options: { token?: string; defaultTarget?: string | null } =
 async function rpc(d: Daemon, body: unknown, token?: string): Promise<{ status: number; json: Record<string, unknown> }> {
   const response = await fetch(`${d.url}/v1/rpc`, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: typeof body === 'string' ? body : JSON.stringify(body) });
   return { status: response.status, json: (await response.json()) as Record<string, unknown> };
+}
+
+/**
+ * `fetch` silently drops a caller-supplied `Host` header, so the cross-site checks go through
+ * `node:http`, which sends exactly the headers it is given.
+ */
+async function raw(d: Daemon, options: { path?: string; method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<{ status: number; json: Record<string, unknown> }> {
+  const url = new URL(options.path ?? '/v1/rpc', d.url);
+  return new Promise((resolve, reject) => {
+    const req = request({ hostname: '127.0.0.1', port: d.port, path: url.pathname + url.search, method: options.method ?? 'POST', headers: options.headers }, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => (text += chunk));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, json: (text ? JSON.parse(text) : {}) as Record<string, unknown> }));
+    });
+    req.on('error', reject);
+    req.end(options.body ?? JSON.stringify({ op: 'status' }));
+  });
 }
 
 afterEach(async () => {
@@ -68,6 +87,7 @@ describe('startDaemon', () => {
     expect((await rpc(d, { params: {} })).json).toMatchObject({ ok: false, error: { code: 'INVALID_PAYLOAD' } });
     const missing = await fetch(`${d.url}/v1/nope`);
     expect(missing.status).toBe(404);
+    expect(await missing.json()).toMatchObject({ ok: false, error: { code: 'UNSUPPORTED', details: { op: 'GET /v1/nope', target: null } } });
   });
 
   it('enforces the bearer token when configured', async () => {
@@ -137,7 +157,7 @@ describe('startDaemon', () => {
     expect(response.status).toBe(200);
     const text = await response.text();
     expect(text).toContain('event: error');
-    expect(text).toContain('"code":"INTERNAL"');
+    expect(text).toContain('"code":"HEADLESS_LOAD_FAILED"');
     expect(logs.filter((line) => line.includes('daemon fault'))).toEqual([]);
   });
 
@@ -306,6 +326,55 @@ describe('startDaemon', () => {
     expect(isLoopbackHost('0.0.0.0')).toBe(false);
     expect(isLoopbackHost('127.example.com')).toBe(false);
     expect(isLoopbackHost('::ffff:127.0.0.1')).toBe(true);
+  });
+
+  it('refuses a request carrying an Origin header or a foreign Host', async () => {
+    const d = await boot();
+    const crossOrigin = await fetch(`${d.url}/v1/rpc`, { method: 'POST', headers: { origin: 'http://evil.example' }, body: JSON.stringify({ op: 'status' }) });
+    expect(crossOrigin.status).toBe(403);
+    expect(await crossOrigin.json()).toEqual({ ok: false, error: { code: 'UNAUTHORIZED', message: 'Cross-origin or foreign-host requests are not allowed' } });
+
+    const rebound = await raw(d, { headers: { host: 'evil.example' } });
+    expect(rebound.status).toBe(403);
+    expect(rebound.json).toMatchObject({ ok: false, error: { code: 'UNAUTHORIZED' } });
+
+    // The daemon's own bind address and the loopback names it answers to still pass.
+    expect((await raw(d, { headers: { host: `127.0.0.1:${d.port}` } })).status).toBe(200);
+    expect((await raw(d, { headers: { host: `localhost:${d.port}` } })).status).toBe(200);
+    expect((await raw(d, { headers: { host: '127.0.0.1' } })).status).toBe(200);
+    // A stream request is checked the same way.
+    const stream = await fetch(`${d.url}/v1/stream`, { headers: { origin: 'http://evil.example' } });
+    expect(stream.status).toBe(403);
+  });
+
+  it('accepts a Host naming the daemon\'s own non-loopback bind address', async () => {
+    target = await createHeadlessTarget({ definition: counterDefinition, appId: 'com.example.test', settleTimeoutMs: 500, env: {}, log: () => {} });
+    daemon = await startDaemon({ host: '0.0.0.0', port: 0, version: '0.0.0-test', headless: target, defaultTarget: 'headless', token: 'secret', log: () => {} });
+    const allowed = await raw(daemon, { headers: { host: `0.0.0.0:${daemon.port}`, authorization: 'Bearer secret' } });
+    expect(allowed.status).toBe(200);
+    const refused = await raw(daemon, { headers: { host: 'attacker.test', authorization: 'Bearer secret' } });
+    expect(refused.status).toBe(403);
+  });
+
+  it('fails a target operation that never settles with TARGET_DISCONNECTED and keeps serving status', async () => {
+    const wedged = defineHeadless(() => {
+      const app = createTarget({
+        commands: defineCommands({ 'hang.forever': z.object({}) }),
+        dispatch: () => new Promise<void>(() => {}),
+        getState: () => ({}),
+      });
+      return { target: app };
+    });
+    target = await createHeadlessTarget({ definition: wedged, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
+    daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: 'headless', requestTimeoutMs: 50, log: () => {} });
+    const startedAt = Date.now();
+    const wedgedResponse = await rpc(daemon, { op: 'dispatch', params: { name: 'hang.forever' } });
+    expect(wedgedResponse.status).toBe(200);
+    expect(wedgedResponse.json).toMatchObject({ ok: false, error: { code: 'TARGET_DISCONNECTED', details: { target: 'headless', op: 'dispatch' } } });
+    expect(String((wedgedResponse.json['error'] as { message: string }).message)).toContain('ironbird reset');
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    // The daemon itself is still healthy; only the wedged operation failed.
+    expect((await rpc(daemon, { op: 'status' })).json).toMatchObject({ ok: true });
   });
 
   it('close() is idempotent', async () => {

@@ -5,6 +5,8 @@ import { scheduler } from './scheduler';
 export interface EventRecorder {
   record(source: string, name: string, data?: unknown): RecordedEvent;
   since(seq?: number, limit?: number): { events: RecordedEvent[]; nextSeq: number; truncated: boolean };
+  /** The seq of the most recently recorded event, or 0 before the first one. Survives `clear`. */
+  lastSeq(): number;
   subscribe(listener: (event: RecordedEvent) => void): () => void;
   clear(): void;
 }
@@ -40,6 +42,9 @@ export function createEventRecorder(options: { clock?: Clock; limit?: number; en
         nextSeq: last ? last.seq : Math.max(seq, lastSeq),
         truncated: seq < evictedThrough,
       };
+    },
+    lastSeq() {
+      return lastSeq;
     },
     subscribe(listener) {
       listeners.add(listener);
