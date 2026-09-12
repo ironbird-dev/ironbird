@@ -56,6 +56,23 @@ export default defineConfig({ headless: './src/ironbird/headless.ts', appId: 'co
     expect(isIronbirdError(error) && error.message).toMatch(/daemon\.port/);
   });
 
+  it('reports a config file that fails to bundle as INVALID_CONFIG naming the file', async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-config-'));
+    await writeFile(path.join(dir, 'ironbird.config.ts'), `export default { daemon: { port: 4567 ,,, };`);
+    const error = await loadConfig({ cwd: dir }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('INVALID_CONFIG');
+    expect(isIronbirdError(error) && (error.details as { file: string }).file).toBe(path.join(dir, 'ironbird.config.ts'));
+    expect(isIronbirdError(error) && error.message).toContain('ironbird.config.ts');
+  });
+
+  it('rejects an unknown top-level key so a typo is not silently ignored', async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-config-'));
+    await writeFile(path.join(dir, 'ironbird.config.ts'), `export default { artifactDir: 'out' };`);
+    const error = await loadConfig({ cwd: dir }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('INVALID_CONFIG');
+    expect(isIronbirdError(error) && error.message).toMatch(/artifactDir/);
+  });
+
   it('rejects a config file with no default export', async () => {
     dir = await mkdtemp(path.join(tmpdir(), 'ironbird-config-'));
     await writeFile(path.join(dir, 'ironbird.config.ts'), `export const config = {};`);

@@ -15,7 +15,9 @@ export const configSchema = z.object({
   scenarios: z.string().default('ironbird/scenarios'),
   artifactsDir: z.string().default('.ironbird'),
   devices: z.object({ ios: z.string().optional(), android: z.string().optional() }).prefault({}),
-});
+})
+  // A typo such as `artifactDir` must fail loudly rather than being silently ignored.
+  .strict();
 
 export type IronbirdConfigInput = z.input<typeof configSchema>;
 export type IronbirdConfig = z.output<typeof configSchema>;
@@ -71,7 +73,7 @@ export async function loadConfig(options: { cwd: string; configPath?: string }):
   const configPath = options.configPath ? path.resolve(options.cwd, options.configPath) : await findConfigFile(options.cwd);
   if (!configPath) return resolve(configSchema.parse({}), path.resolve(options.cwd), undefined);
   const rootDir = path.dirname(configPath);
-  const loaded = await loadTypeScriptModule(configPath, { outDir: path.join(rootDir, '.ironbird', 'cache'), label: 'config', shims: CONFIG_SHIMS });
+  const loaded = await loadTypeScriptModule(configPath, { outDir: path.join(rootDir, '.ironbird', 'cache'), label: 'config', shims: CONFIG_SHIMS, errorCode: 'INVALID_CONFIG' });
   const relativePath = path.relative(options.cwd, configPath);
   if (loaded.exports['default'] === undefined) {
     throw new IronbirdError('INVALID_CONFIG', `${relativePath} must default-export defineConfig(...)`, {

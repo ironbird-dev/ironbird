@@ -12,6 +12,12 @@ export interface LoadModuleOptions {
   forbidden?: string[];
   /** Bare specifier → JavaScript source that replaces it, used for '@ironbird/cli/config'. */
   shims?: Record<string, string>;
+  /**
+   * Error code for a load failure. Defaults to `HEADLESS_LOAD_FAILED`; config loading passes
+   * `INVALID_CONFIG` so a config file that fails to bundle reports the code and `{ file, issues }`
+   * details that docs/protocol.md §6 promises for a bad `ironbird.config.ts`.
+   */
+  errorCode?: 'HEADLESS_LOAD_FAILED' | 'INVALID_CONFIG';
 }
 
 const matchesForbidden = (specifier: string, forbidden: string[]): boolean =>
@@ -64,13 +70,18 @@ let loadSequence = 0;
  * the factory without reloading).
  */
 export async function loadTypeScriptModule(entryPath: string, options: LoadModuleOptions): Promise<{ exports: Record<string, unknown>; bundlePath: string }> {
-  const { outDir, label, forbidden = [], shims = {} } = options;
+  const { outDir, label, forbidden = [], shims = {}, errorCode = 'HEADLESS_LOAD_FAILED' } = options;
   const entry = path.resolve(entryPath);
   const absWorkingDir = path.dirname(entry);
   await mkdir(outDir, { recursive: true });
   const bundlePath = path.join(outDir, `${label}.mjs`);
-  const fail = (message: string, extra: Record<string, unknown> = {}): IronbirdError =>
-    new IronbirdError('HEADLESS_LOAD_FAILED', `Failed to load ${path.relative(process.cwd(), entry)}: ${message}`, { entry, message, ...extra });
+  // `basename`, not a cwd-relative path: the daemon's cwd is not the caller's, so a relative path
+  // can walk out of the tree entirely (`../../../app/ironbird.config.ts`) and read as noise.
+  const fail = (message: string, extra: Record<string, unknown> = {}): IronbirdError => {
+    const text = `Failed to load ${path.basename(entry)}: ${message}`;
+    if (errorCode === 'INVALID_CONFIG') return new IronbirdError('INVALID_CONFIG', text, { file: entry, issues: [{ path: [], message }] });
+    return new IronbirdError('HEADLESS_LOAD_FAILED', text, { entry, message, ...extra });
+  };
 
   let result: esbuild.BuildResult<{ metafile: true }>;
   try {

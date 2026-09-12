@@ -40,6 +40,9 @@ export async function runServe(options: ServeOptions, io: ServeIo): Promise<numb
   let artifactsPath: string | undefined;
   let port: number | undefined;
   let configPath: string | undefined;
+  // Only this invocation's own discovery file may be removed on the way out. A second `serve`
+  // that fails to bind must leave the running daemon's `daemon.json` alone.
+  let wroteInfo = false;
 
   try {
     const config = await loadConfig({ cwd: io.cwd, configPath: options.config });
@@ -66,6 +69,7 @@ export async function runServe(options: ServeOptions, io: ServeIo): Promise<numb
 
     daemon = await startDaemon({ host, port, token, version: io.version, headless: target, defaultTarget: target ? config.defaultTarget : undefined, log });
     await writeDaemonInfo(config.artifactsPath, { url: daemon.url, pid: process.pid, startedAt: Date.now(), version: io.version, defaultTarget: target ? config.defaultTarget : undefined });
+    wroteInfo = true;
     output.result({ url: daemon.url, targets: daemon.targets(), defaultTarget: target ? config.defaultTarget : undefined, bridgePort: options.bridgePort ?? config.bridge.port });
   } catch (error) {
     const shape = toErrorShape(error);
@@ -95,6 +99,6 @@ export async function runServe(options: ServeOptions, io: ServeIo): Promise<numb
   async function cleanup(): Promise<void> {
     await daemon?.close().catch(() => undefined);
     await target?.dispose().catch(() => undefined);
-    if (artifactsPath) await removeDaemonInfo(artifactsPath).catch(() => undefined);
+    if (wroteInfo && artifactsPath) await removeDaemonInfo(artifactsPath).catch(() => undefined);
   }
 }

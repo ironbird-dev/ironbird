@@ -105,6 +105,9 @@ describe('runServe', () => {
     expect(portStr).toBeTruthy();
     const usedPort = parseInt(portStr as string, 10);
 
+    const infoBefore = await readDaemonInfo(path.join(example, '.ironbird'));
+    expect(infoBefore?.url).toBe(url);
+
     // Try to start second daemon on the same port
     const run2 = start(example, { port: usedPort });
     const errorLine = await firstLine(run2);
@@ -113,9 +116,14 @@ describe('runServe', () => {
     expect(error?.code).toBe('INVALID_CONFIG');
     expect(String(error?.message)).toContain(String(usedPort));
 
+    // The failed second serve never wrote daemon.json, so it must not delete the running
+    // daemon's discovery file on its way out.
+    expect(await readDaemonInfo(path.join(example, '.ironbird'))).toEqual(infoBefore);
+
     // Clean up first daemon
     run1.stop();
     expect(await run1.exit).toBe(0);
+    expect(await readDaemonInfo(path.join(example, '.ironbird'))).toBeUndefined();
   });
 
   it('knows loopback hosts', () => {

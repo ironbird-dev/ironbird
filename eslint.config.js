@@ -11,6 +11,20 @@ const coreOnlyZod = {
   ],
 };
 
+const coreForbiddenGlobals = [
+  { name: 'window', message: 'core has no DOM' },
+  { name: 'document', message: 'core has no DOM' },
+  { name: 'process', message: 'core runs in Hermes; there is no process' },
+];
+
+const coreForbiddenTimers = [
+  { name: 'setTimeout', message: 'Take time from the injected Clock (AGENTS.md hard rule 9). Only clock.ts and scheduler.ts may use global timers.' },
+  { name: 'setInterval', message: 'Take time from the injected Clock (AGENTS.md hard rule 9).' },
+  { name: 'clearTimeout', message: 'Take time from the injected Clock (AGENTS.md hard rule 9).' },
+  { name: 'clearInterval', message: 'Take time from the injected Clock (AGENTS.md hard rule 9).' },
+  { name: 'setImmediate', message: 'Take time from the injected Clock (AGENTS.md hard rule 9). Only clock.ts and scheduler.ts may use global timers.' },
+];
+
 export default tseslint.config(
   { ignores: ['**/dist/**', '**/node_modules/**', '**/.ironbird/**', '**/coverage/**', '**/.superpowers/**', '**/test/fixtures/**'] },
   js.configs.recommended,
@@ -28,25 +42,17 @@ export default tseslint.config(
     files: ['packages/core/src/**/*.ts'],
     rules: {
       'no-restricted-imports': ['error', coreOnlyZod],
-      'no-restricted-globals': [
-        'error',
-        { name: 'window', message: 'core has no DOM' },
-        { name: 'document', message: 'core has no DOM' },
-        { name: 'process', message: 'core runs in Hermes; there is no process' },
-      ],
+      'no-restricted-globals': ['error', ...coreForbiddenGlobals],
     },
   },
   {
     files: ['packages/core/src/**/*.ts'],
     ignores: ['packages/core/src/clock.ts', 'packages/core/src/scheduler.ts', 'packages/core/src/**/*.test.ts'],
     rules: {
-      'no-restricted-globals': [
-        'error',
-        { name: 'setTimeout', message: 'Take time from the injected Clock (AGENTS.md hard rule 9). Only clock.ts and scheduler.ts may use global timers.' },
-        { name: 'setInterval', message: 'Take time from the injected Clock (AGENTS.md hard rule 9).' },
-        { name: 'clearTimeout', message: 'Take time from the injected Clock (AGENTS.md hard rule 9).' },
-        { name: 'clearInterval', message: 'Take time from the injected Clock (AGENTS.md hard rule 9).' },
-      ],
+      // Flat config replaces a rule's options rather than merging them, so this list repeats the
+      // DOM and process entries above: dropping them here would un-ban them for every core file
+      // this block covers.
+      'no-restricted-globals': ['error', ...coreForbiddenGlobals, ...coreForbiddenTimers],
       'no-restricted-properties': [
         'error',
         { object: 'Date', property: 'now', message: 'Use clock.now() or scheduler.now() (AGENTS.md hard rule 9).' },
