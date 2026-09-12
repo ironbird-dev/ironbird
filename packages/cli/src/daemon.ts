@@ -11,6 +11,9 @@ export interface DaemonOptions {
   headless?: HeadlessTarget;
   defaultTarget?: string;
   log?: (line: string) => void;
+  /** Test hook: overrides the SSE keepalive ping interval (default 15_000ms) so tests can observe
+   * ping behavior without waiting out the real interval. */
+  pingIntervalMs?: number;
 }
 
 export interface Daemon {
@@ -156,6 +159,11 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       aborted = true;
       cleanup();
     });
+    // A late socket error (e.g. an ECONNRESET after headers are already flushed) must not reach
+    // Node as an unhandled 'error' event on `res` — an EventEmitter that emits 'error' with no
+    // listener throws, which would crash the process. Attaching this here, before anything is
+    // ever written, means any such error just runs the same teardown as a normal disconnect.
+    res.on('error', () => cleanup());
 
     let streamEnded = false;
     const endStream = (): void => {
@@ -165,10 +173,12 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     };
     // A client that vanished between event-loop turns can make `res.write` throw, and a value
     // that fails to serialize can make `JSON.stringify` throw: either must tear the subscription
-    // down and end the response exactly once right here, instead of propagating out of an
-    // event/state callback into the request handler's try/catch, which would log it as a daemon
-    // fault and then attempt to send a second, JSON error response on a stream whose headers are
-    // already flushed. Both serialization and the socket write happen inside the guard.
+    // down and end the response exactly once right here, instead of propagating out of a backlog
+    // frame, a live event/state callback, or the backlog-failure error frame below, and up into
+    // the request handler's try/catch, which would log it as a daemon fault and then attempt to
+    // send a second, JSON error response on a stream whose headers are already flushed. Every call
+    // site routes its serialization through the `produce` thunk so it also runs inside this guard,
+    // not just the socket write.
     const guarded = (produce: () => string): void => {
       try {
         res.write(produce());
@@ -198,8 +208,10 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       // The subscription is live but no backlog was ever flushed, so there's nothing to
       // reconcile: tear down and end the stream with a single error frame instead of letting
       // this reach the daemon-fault handler (the client already got a 200 SSE response head).
+      // Serializing the error shape inside `guarded` (rather than eagerly before calling it) means
+      // a value that itself fails to serialize can't escape as an unhandled throw here either.
       cleanup();
-      writeRaw(`event: error\ndata: ${JSON.stringify(toErrorShape(error))}\n\n`);
+      guarded(() => `event: error\ndata: ${JSON.stringify(toErrorShape(error))}\n\n`);
       endStream();
       return;
     }
@@ -207,11 +219,24 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       cleanup();
       return;
     }
-    for (const event of backlog.events) write('event', event);
+    // `cleanup()` runs inside `guarded` the moment a write or a serialization fails, but that
+    // doesn't stop either loop from running to completion on its own, and nothing past this point
+    // must run once it has: the stream is already ended, so subscribing to more state here would
+    // never be released (`cleanup` is latched by `cleaned` and won't call `offState`/clear `ping`
+    // for handles it hasn't seen yet), and arming the ping interval would write to a dead response
+    // forever. So every loop bails out as soon as `cleaned` flips, and the function returns before
+    // reaching the state subscription or the ping timer below.
+    for (const event of backlog.events) {
+      write('event', event);
+      if (cleaned) break;
+    }
+    if (cleaned) return;
     const lastBacklogSeq = backlog.events.length > 0 ? backlog.events[backlog.events.length - 1]!.seq : since;
     for (const event of liveBuffer) {
       if (event.seq > lastBacklogSeq) write('event', event);
+      if (cleaned) break;
     }
+    if (cleaned) return;
     buffering = false;
 
     let pendingRev: number | undefined;
@@ -231,7 +256,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       pendingRev = rev;
       if (!throttle) flush();
     });
-    handles.ping = setInterval(() => writeRaw(': ping\n\n'), PING_INTERVAL_MS);
+    handles.ping = setInterval(() => writeRaw(': ping\n\n'), options.pingIntervalMs ?? PING_INTERVAL_MS);
   };
 
   const server = createServer((req, res) => {

@@ -2,7 +2,7 @@ import { createTarget, defineCommands, defineHeadless } from '@ironbird/core';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { counterDefinition } from '../test/helpers/counter-app';
 import { isLoopbackHost, startDaemon, type Daemon } from './daemon';
@@ -167,6 +167,72 @@ describe('startDaemon', () => {
       if (chunk.value) decoder.decode(chunk.value, { stream: true });
     }
     expect(done).toBe(true);
+    expect(logs.filter((line) => line.includes('daemon fault'))).toEqual([]);
+  });
+
+  it('does not leak the ping timer or state listener after a mid-backlog teardown', async () => {
+    const logs: string[] = [];
+    // Records the unserializable BigInt event during boot, before the stream ever connects, so it
+    // is already in the backlog when `handleStream` reads it (the failure must happen in the
+    // backlog loop, not the live-buffer loop). `counter.add` is included so a later rpc dispatch
+    // can exercise `onState` against this same session.
+    const bigIntCounter = defineHeadless((context) => {
+      context.recorder.record('app', 'weird', { big: 10n });
+      let count = 0;
+      const listeners = new Set<() => void>();
+      const target = createTarget({
+        commands: defineCommands({ 'counter.add': z.object({ by: z.number().int() }) }),
+        dispatch: ({ payload }) => {
+          count += (payload as { by: number }).by;
+          listeners.forEach((l) => l());
+        },
+        getState: () => ({ count }),
+        subscribe: (l) => {
+          listeners.add(l);
+          return () => listeners.delete(l);
+        },
+      });
+      return { target };
+    });
+    target = await createHeadlessTarget({ definition: bigIntCounter, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
+    // A short ping interval (rather than the 15s default) is what makes the leaked timer fire
+    // within the test's lifetime instead of just after it.
+    daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: 'headless', pingIntervalMs: 20, log: (line) => logs.push(line) });
+
+    // The bug under test is that `handleStream` keeps running past a mid-backlog teardown and
+    // still calls `target.onState(...)` (and arms the ping interval) even though the response
+    // already ended. Spying directly on `onState` makes that leak deterministic to observe: in
+    // this Node/undici combination, writing to an already-ended-and-destroyed ServerResponse
+    // silently no-ops (returns false) instead of throwing or emitting an 'error' event — verified
+    // empirically against the unfixed code, where the leaked ping fired repeatedly and the leaked
+    // state listener fired on the later dispatch below, and neither surfaced as a Vitest failure
+    // on its own. So the spy is what actually turns this test red before the fix; the wait, the
+    // rpc call, and the "no daemon fault" check below are kept as belt-and-suspenders behavioral
+    // checks that a correct teardown produces no visible side effects, though they cannot by
+    // themselves distinguish leaked-but-silently-ignored writes from no leak at all here.
+    const onStateSpy = vi.spyOn(target, 'onState');
+
+    const response = await fetch(`${daemon.url}/v1/stream?target=headless&since=0`);
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let done = false;
+    while (!done) {
+      const chunk = await reader.read();
+      done = chunk.done;
+      if (chunk.value) decoder.decode(chunk.value, { stream: true });
+    }
+    expect(done).toBe(true);
+
+    // The stream already tore down because of the BigInt failure above; a correct `handleStream`
+    // must never reach the `target.onState(...)` registration for it.
+    expect(onStateSpy).not.toHaveBeenCalled();
+
+    // Wait past several ping intervals so a leaked ping timer would have fired multiple times.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    const dispatched = await rpc(daemon, { op: 'dispatch', params: { name: 'counter.add', payload: { by: 1 } } });
+    expect(dispatched.json).toMatchObject({ ok: true });
     expect(logs.filter((line) => line.includes('daemon fault'))).toEqual([]);
   });
 
