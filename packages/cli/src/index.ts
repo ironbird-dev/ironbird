@@ -6,3 +6,7 @@ export { conditionHolds, deepEqual, parseCondition } from './conditions';
 export type { Condition } from './conditions';
 export { MUTATING_OPS, QUEUED_OPS, createHeadlessTarget } from './headless-target';
 export type { HeadlessTarget, HeadlessTargetOptions } from './headless-target';
+export { DAEMON_INFO_FILE, readDaemonInfo, removeDaemonInfo, writeDaemonInfo } from './daemon-info';
+export type { DaemonInfo } from './daemon-info';
+export { startDaemon } from './daemon';
+export type { Daemon, DaemonOptions } from './daemon';

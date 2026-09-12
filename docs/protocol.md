@@ -38,7 +38,7 @@ The headless target runs inside the daemon and implements the same operations wi
 }
 ```
 
-A successful operation returns `{ "ok": true, "result": { ... } }`. A failed operation returns `{ "ok": false, "error": { "code": "...", "message": "...", "details": { ... } } }`. Both use HTTP 200. Other statuses are reserved for transport problems: 401 for a missing or wrong token, 404 for unknown routes, and 500 for daemon faults.
+A successful operation returns `{ "ok": true, "target": "<id>", "result": { ... } }`, where `target` is the id the operation ran against and is absent for daemon-only operations such as `status`. A failed operation returns `{ "ok": false, "error": { "code": "...", "message": "...", "details": { ... } } }`. Both use HTTP 200. Other statuses are reserved for transport problems: 401 for a missing or wrong token, 404 for unknown routes, and 500 for daemon faults.
 
 When the daemon was started with a token, requests must include `Authorization: Bearer <token>`.
 
@@ -106,7 +106,7 @@ A daemon session serves one app: the app id of the headless target, or of the fi
 }
 ```
 
-Failures use the same `ok: false` error shape as the client API. Mutating operations (`dispatch`, `fakeControl`, `clockAdvance`, `reset`, `snapshotLoad`) are processed one at a time per target, in arrival order. Read-only operations (`describe`, `getState`, `events`, `settle`, `waitFor`, `fakeCalls`, `snapshotSave`) are not queued behind them, so a pending `waitFor` never blocks the operation that would satisfy it. `reset` is the exception among mutating operations: it is not queued, so it can recover a target whose dispatch never settles; any operation still waiting in the queue, or in flight, fails with `TARGET_DISCONNECTED`. Operations that arrive while a reset is in progress run after it, against the new session. The daemon applies a request timeout (default 30 s) and fails a request with `TARGET_DISCONNECTED` if the connection drops before a response arrives.
+Failures use the same `ok: false` error shape as the client API. Mutating operations (`dispatch`, `fakeControl`, `clockAdvance`, `reset`, `snapshotLoad`) are processed one at a time per target, in arrival order. Read-only operations (`describe`, `getState`, `events`, `settle`, `waitFor`, `fakeCalls`, `snapshotSave`, `clockNow`) are not queued behind them, so a pending `waitFor` never blocks the operation that would satisfy it. `reset` is the exception among mutating operations: it is not queued, so it can recover a target whose dispatch never settles; any operation still waiting in the queue, or in flight, fails with `TARGET_DISCONNECTED`. Operations that arrive while a reset is in progress run after it, against the new session. The daemon applies a request timeout (default 30 s) and fails a request with `TARGET_DISCONNECTED` if the connection drops before a response arrives.
 
 ### 3.3 Notifications
 
