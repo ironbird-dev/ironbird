@@ -7,7 +7,7 @@
   },
   "scripts": {
     "build": "pnpm --filter './packages/*' -r run build",
-    "test": "vitest run --project unit",
+    "test": "vitest run --project unit --project serial",
     "test:device": "vitest run --project device",
     "lint": "eslint .",
     "typecheck": "pnpm -r run typecheck",

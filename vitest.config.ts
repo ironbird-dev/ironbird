@@ -7,10 +7,23 @@ export default defineConfig({
         test: {
           name: 'unit',
           include: ['packages/*/src/**/*.test.ts', 'examples/*/src/**/*.test.ts', 'packages/*/test/**/*.test.ts'],
-          exclude: ['**/*.device.test.ts', '**/node_modules/**', '**/dist/**'],
+          exclude: [
+            '**/*.device.test.ts',
+            '**/node_modules/**',
+            '**/dist/**',
+            'packages/cli/test/**',
+            'packages/cli/src/cli/commands/serve.test.ts',
+          ],
+        },
+      },
+      {
+        test: {
+          name: 'serial',
           // cli.integration.test.ts and cli/commands/serve.test.ts both drive real daemons
           // against the shared examples/checkout/.ironbird/daemon.json; running test files
           // in parallel lets one suite's daemon.json writes/removals race the other's.
+          include: ['packages/cli/test/**/*.test.ts', 'packages/cli/src/cli/commands/serve.test.ts'],
+          exclude: ['**/node_modules/**', '**/dist/**'],
           fileParallelism: false,
         },
       },

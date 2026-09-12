@@ -22,24 +22,30 @@ async function ironbird(...args: string[]): Promise<Result> {
     return { code: 0, json: JSON.parse(lines[0] ?? '{}') as Record<string, unknown>, lines };
   } catch (error) {
     const failure = error as { code: number; stdout: string };
-    const lines = failure.stdout.trim().split('\n');
+    const lines = (failure.stdout ?? '').trim().split('\n');
     return { code: failure.code, json: JSON.parse(lines[0] || '{}') as Record<string, unknown>, lines };
   }
 }
 
-let daemon: ChildProcess;
+let daemon: ChildProcess | undefined;
+let exited: Promise<number | null>;
 
 beforeAll(async () => {
   daemon = spawn('node', [bin, 'serve', '--port', '0'], { cwd: example, env, stdio: ['ignore', 'pipe', 'inherit'] });
+  exited = new Promise<number | null>((resolve) => {
+    daemon?.once('exit', (code) => resolve(code));
+  });
   await new Promise<void>((resolve, reject) => {
-    daemon.stdout?.once('data', () => resolve());
-    daemon.once('exit', (code) => reject(new Error(`serve exited early with ${code}`)));
+    daemon?.stdout?.once('data', () => resolve());
+    void exited.then((code) => reject(new Error(`serve exited early with ${code}`)));
   });
 }, 30_000);
 
 afterAll(async () => {
-  daemon.kill('SIGTERM');
-  await new Promise<void>((resolve) => daemon.once('exit', () => resolve()));
+  if (daemon) {
+    if (daemon.exitCode === null) daemon.kill('SIGTERM');
+    await exited;
+  }
   await rm(path.join(example, '.ironbird/daemon.json'), { force: true });
 });
 

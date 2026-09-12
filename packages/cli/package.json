@@ -34,7 +34,7 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --project unit"
+    "test": "vitest run --project unit --project serial"
   },
   "dependencies": {
     "@ironbird/core": "workspace:*",
