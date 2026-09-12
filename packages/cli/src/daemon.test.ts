@@ -148,6 +148,21 @@ describe('startDaemon', () => {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     let text = '';
+    // Timestamps each `event: state` frame the moment the chunk carrying it is decoded, so the
+    // burst below can be checked against wall-clock time rather than a fixed frame count (see the
+    // bounds below). `processedFrames` is how many complete (`\n\n`-terminated) frames have
+    // already been accounted for, so a frame split across two chunks is only counted once, against
+    // the chunk that completes it.
+    let processedFrames = 0;
+    const stateFrameTimes: number[] = [];
+    const recordStateFrames = (arrivalMs: number): void => {
+      const frames = text.split('\n\n');
+      const complete = text.endsWith('\n\n') ? frames.filter((frame) => frame.length > 0) : frames.slice(0, -1);
+      for (let i = processedFrames; i < complete.length; i += 1) {
+        if (complete[i]!.startsWith('event: state')) stateFrameTimes.push(arrivalMs);
+      }
+      processedFrames = complete.length;
+    };
     // Reuses one in-flight reader.read() across iterations instead of issuing a fresh one each
     // time the 20ms timeout wins the race: a stream reader queues concurrent read() calls and
     // resolves them in the order they were issued, so calling read() again before the previous
@@ -161,30 +176,47 @@ describe('startDaemon', () => {
         const chunk = await Promise.race([pendingRead, new Promise<{ value: undefined; done: false }>((resolve) => setTimeout(() => resolve({ value: undefined, done: false }), 20))]);
         if (chunk.value) {
           text += decoder.decode(chunk.value, { stream: true });
+          recordStateFrames(Date.now());
           pendingRead = undefined;
         }
       }
     };
-    const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
     await drain(50);
+    const t0 = Date.now();
     // Spread the burst across several 100 ms throttle windows (12 dispatches, 30 ms apart, 360 ms
     // total) instead of firing it all at once, so a throttle that doesn't cap correctly per
     // window is exposed instead of accidentally passing because everything landed in one window.
+    // Draining (rather than plain sleeping) between dispatches keeps the reader pulling frames as
+    // they're actually written instead of letting them queue up unread until the final drain,
+    // which would otherwise collapse their real arrival times together and make every gap below
+    // measure close to 0 regardless of how the server actually paced its writes.
     for (let i = 0; i < 12; i += 1) {
       await rpc(d, { op: 'dispatch', params: { name: 'counter.add', payload: { by: 1 } } });
-      await sleep(30);
+      await drain(30);
     }
     await drain(200);
+    const elapsed = Date.now() - t0;
     const stateFrames = text.split('\n\n').filter((frame) => frame.startsWith('event: state'));
-    // One-write-per-100ms throttling (write immediately, then re-arm only while something is
-    // still pending) yields about 4-5 frames for this burst: one right away, then roughly one
-    // per 100 ms window while dispatches keep arriving. The pre-fix throttle (which re-armed a
-    // fixed STATE_THROTTLE_MS timer unconditionally after every write, letting the schedule drift
-    // and double-fire near window boundaries) yields 7 or more frames for the same burst. These
-    // bounds pin the fixed rate and fail against the old timer.
+    // A correct throttle (write immediately, then re-arm only while something is still pending)
+    // produces 2 + floor(burstSpan / 100) frames for a sustained burst, and burstSpan grows with
+    // rpc round-trip latency, so a fixed frame-count cap is inherently flaky on a slower machine.
+    // Deriving the cap from `elapsed` (measured from just before the first dispatch to just after
+    // the final drain) tracks that instead. As a scratch check, reverting `flush` in daemon.ts so
+    // it never re-arms its timeout after a write leaves `throttle` permanently unset, so every
+    // later update fires `flush` again immediately with no throttling at all: measured against
+    // this test, that produced all 12 frames roughly 44-50 ms apart (one per dispatch) inside a
+    // ~760 ms elapsed window, which both the derived count bound (12 > ceil(760/100)+1 = 9) and
+    // the minimum-gap assertion below (~44ms < 80ms) correctly rejected.
     expect(stateFrames.length).toBeGreaterThanOrEqual(3);
-    expect(stateFrames.length).toBeLessThanOrEqual(5);
+    expect(stateFrames.length).toBeLessThanOrEqual(Math.ceil(elapsed / 100) + 1);
     expect(stateFrames[stateFrames.length - 1]).toContain('"rev":12');
+    // The throttle never writes two state frames back to back, so consecutive `event: state`
+    // frames must be at least 80 ms apart (a bit under the 100 ms window, to absorb scheduling
+    // jitter). Frames the reader picks up out of the same chunk share that chunk's arrival
+    // timestamp, i.e. a gap of 0 — correctly failing this assertion, since the throttle should
+    // never let two land together.
+    const gaps = stateFrameTimes.slice(1).map((time, index) => time - stateFrameTimes[index]!);
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(80);
     controller.abort();
   });
 

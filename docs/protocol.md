@@ -46,7 +46,7 @@ When the daemon was started with a token, requests must include `Authorization: 
 
 ### 2.2 Streams
 
-`GET /v1/stream?target=<id>&since=<seq>` returns Server-Sent Events. Event types are `event` for recorded events, `state` for revision changes, and `target` for connects and disconnects. The CLI uses this for `events --follow` and `watch`.
+`GET /v1/stream?target=<id>&since=<seq>` returns Server-Sent Events. Event types are `event` for recorded events, `state` for revision changes, `target` for connects and disconnects, and a terminal `error` carrying an `ErrorShape` when the backlog read fails. The CLI uses this for `events --follow` and `watch`.
 
 ## 3. Target channel
 

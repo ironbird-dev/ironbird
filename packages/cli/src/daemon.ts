@@ -134,10 +134,6 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     }
     const since = Number(url.searchParams.get('since') ?? '0') || 0;
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-    const write = (kind: string, data: unknown): void => {
-      res.write(`event: ${kind}\ndata: ${JSON.stringify(data)}\n\n`);
-    };
-    res.write(': connected\n\n');
 
     // Registered before the backlog await below so a client disconnect (or a backlog read that
     // throws) while we're still awaiting it is handled here rather than leaking the subscription,
@@ -160,6 +156,28 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       aborted = true;
       cleanup();
     });
+
+    let streamEnded = false;
+    const endStream = (): void => {
+      if (streamEnded) return;
+      streamEnded = true;
+      res.end();
+    };
+    // A client that vanished between event-loop turns can make `res.write` throw (and, in
+    // principle, a value that fails to serialize would make `JSON.stringify` throw first): either
+    // must tear the subscription down and end the response exactly once right here, instead of
+    // propagating out of an event/state callback into the request handler's try/catch, which would
+    // log it as a daemon fault and then attempt to send a second, JSON error response on a stream
+    // whose headers are already flushed.
+    const write = (kind: string, data: unknown): void => {
+      try {
+        res.write(`event: ${kind}\ndata: ${JSON.stringify(data)}\n\n`);
+      } catch {
+        cleanup();
+        endStream();
+      }
+    };
+    res.write(': connected\n\n');
 
     // Subscribe before awaiting the backlog so an event recorded during that await isn't lost
     // between the snapshot and the subscription. Anything that arrives while we're still
