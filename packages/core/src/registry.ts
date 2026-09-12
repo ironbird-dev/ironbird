@@ -6,10 +6,17 @@ export type Schemas = Record<string, z.ZodType>;
 
 export interface CommandRegistry<T extends Schemas = Schemas> {
   readonly schemas: T;
-  names(): Array<keyof T & string>;
-  has(name: string): name is keyof T & string;
+  names(): string[];
+  /**
+   * Type predicate is written with the method's own type parameter `K`, not bare `keyof T`,
+   * for the same reason `parse` below is: a bare `keyof T` (or a method type-parameter
+   * constrained by it, as this and `parse` originally were) makes TS6's generic-method
+   * variance check treat `T` as invariant, so `CommandRegistry<{...}>` stops being assignable
+   * to the bare `CommandRegistry` that targets, the daemon, and fakes hold.
+   */
+  has<K extends string>(name: K): name is K & keyof T;
   /** Throws IronbirdError with UNKNOWN_COMMAND or INVALID_PAYLOAD. */
-  parse<K extends keyof T & string>(name: K, payload: unknown): z.output<T[K]>;
+  parse<K extends string>(name: K, payload: unknown): z.output<T[K & keyof T]>;
   describe(): Record<string, CommandDescription>;
 }
 
@@ -75,7 +82,11 @@ export function defineCommands<const T extends Schemas>(schemas: T): CommandRegi
   return {
     schemas,
     names: () => [...names],
-    has,
+    // `has` is a plain, non-generic function (its own type is exact: `name is keyof T & string`
+    // for this concrete T), while the interface declares a generic `has<K extends string>`.
+    // The cast reflects that: for any K, narrowing `name` to `keyof T & string` also narrows it
+    // to `K & keyof T` whenever the runtime check is true, which is exactly what `has` computes.
+    has: has as <K extends string>(name: K) => name is K & keyof T,
     parse(name, payload) {
       if (!has(name)) {
         throw new IronbirdError('UNKNOWN_COMMAND', `Unknown command ${String(name)}`, {
@@ -91,7 +102,7 @@ export function defineCommands<const T extends Schemas>(schemas: T): CommandRegi
           issues: result.error.issues.map((issue) => ({ path: issue.path, message: issue.message, code: issue.code })),
         });
       }
-      return result.data as z.output<T[typeof name]>;
+      return result.data as z.output<T[typeof name & keyof T]>;
     },
     describe() {
       const out: Record<string, CommandDescription> = {};

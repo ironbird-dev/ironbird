@@ -21,10 +21,10 @@ function defineCommands<const T extends Schemas>(schemas: T): CommandRegistry<T>
 
 interface CommandRegistry<T extends Schemas = Schemas> {
   readonly schemas: T;
-  names(): Array<keyof T & string>;
-  has(name: string): name is keyof T & string;
+  names(): string[];
+  has<K extends string>(name: K): name is K & keyof T;
   /** Throws IronbirdError with UNKNOWN_COMMAND or INVALID_PAYLOAD. */
-  parse<K extends keyof T & string>(name: K, payload: unknown): z.output<T[K]>;
+  parse<K extends string>(name: K, payload: unknown): z.output<T[K & keyof T]>;
   describe(): Record<string, { description?: string; payload: JsonSchema }>;
 }
 
@@ -33,7 +33,7 @@ type CommandOf<R extends CommandRegistry> = {
 }[keyof R['schemas'] & string];
 ```
 
-Conventions: namespace names by feature with dots (`payment.start`). Commands without a payload use `z.object({})`, and an omitted payload is treated as `{}`. Use `.describe()` on schemas; agents see that text. Schemas using transforms or refinements still validate, but their JSON Schema under-describes them, so `describe()` logs a warning for each.
+Conventions: namespace names by feature with dots (`payment.start`). Commands without a payload use `z.object({})`, and an omitted payload is treated as `{}`. Use `.describe()` on schemas; agents see that text. Schemas using transforms or refinements still validate, but their JSON Schema under-describes them, so `describe()` logs a warning for each. `CommandRegistry<T>` is assignable to the plain `CommandRegistry` that targets and the daemon hold, so a literal-keyed registry never needs a cast.
 
 ```ts
 export const commands = defineCommands({

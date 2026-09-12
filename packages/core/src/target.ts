@@ -1,12 +1,7 @@
 import { IronbirdError, messageOf } from './errors';
 import type { CommandOf, CommandRegistry } from './registry';
 
-// TS6's generic-method variance check rejects `R extends CommandRegistry` at call sites with a
-// concrete literal-keyed registry (the `parse<K extends keyof T & string>` method makes
-// `CommandRegistry<T>` invariant in T); `CommandRegistry<any>` is the standard bound-widening
-// escape hatch and has no runtime effect.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export interface TargetDefinition<R extends CommandRegistry<any>, S> {
+export interface TargetDefinition<R extends CommandRegistry, S> {
   commands: R;
   dispatch(command: CommandOf<R>): void | Promise<void>;
   getState(): S;
@@ -28,8 +23,7 @@ export interface Target<S = unknown> {
   restore?(snapshot: unknown): Promise<void>;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see TargetDefinition above
-export function createTarget<R extends CommandRegistry<any>, S>(definition: TargetDefinition<R, S>): Target<S> {
+export function createTarget<R extends CommandRegistry, S>(definition: TargetDefinition<R, S>): Target<S> {
   const registry: CommandRegistry = definition.commands;
   const listeners = new Set<() => void>();
   let rev = 0;

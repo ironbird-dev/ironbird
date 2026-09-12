@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { isIronbirdError } from './errors';
+import type { CommandRegistry } from './registry';
 import { defineCommands, suggestNames } from './registry';
 
 const commands = defineCommands({
@@ -62,6 +63,12 @@ describe('defineCommands', () => {
     expect(payload.properties['qty']?.type).toBe('integer');
     expect(payload.required).toEqual(['sku', 'qty']);
     expect(described['cart.addItem']?.payload).not.toHaveProperty('$schema');
+  });
+
+  it('is assignable to the untyped registry shape used by targets and the daemon', () => {
+    const widened: CommandRegistry = commands;
+    expect(widened.names()).toEqual(['cart.addItem', 'cart.clear', 'payment.start']);
+    expect(widened.parse('cart.clear', undefined)).toEqual({});
   });
 
   it('warns once per command whose schema uses transforms or refinements', () => {
