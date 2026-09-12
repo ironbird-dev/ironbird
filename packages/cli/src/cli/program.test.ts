@@ -153,6 +153,25 @@ describe('buildProgram', () => {
     expect(h.stdout).toEqual(['{"error":{"code":"INTERNAL","message":"Malformed error frame from daemon"}}\n']);
   });
 
+  it('events --follow with TTY outputs error frame as JSON lines', async () => {
+    const h = harness(
+      { events: { events: [{ seq: 4, t: 0, source: 's', name: 'a' }], nextSeq: 4, truncated: false } },
+      {
+        isTTY: true,
+        streamFrames: [
+          { kind: 'event', data: { seq: 9, name: 'streamed' } },
+          { kind: 'error', data: { code: 'TARGET_DISCONNECTED', message: 'gone' } },
+        ],
+      },
+    );
+    expect(await h.run(['events', '--follow'])).toBe(1);
+    expect(h.stdout).toEqual([
+      '{"seq":4,"t":0,"source":"s","name":"a"}\n',
+      '{"seq":9,"name":"streamed"}\n',
+      '{"error":{"code":"TARGET_DISCONNECTED","message":"gone"}}\n',
+    ]);
+  });
+
   it('exits 5 when the daemon is unreachable and 2 for unknown commands', async () => {
     const down = harness({ status: new IronbirdError('NO_TARGET', 'Daemon unreachable at http://127.0.0.1:4567; run ironbird serve', { url: 'x' }) });
     expect(await down.run(['status'])).toBe(5);

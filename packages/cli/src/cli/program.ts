@@ -219,10 +219,10 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
             } else if (kind === 'error') {
               const shape = asErrorShape(data);
               if (shape) {
-                ctx.output.error(shape);
+                io.stdout(`${JSON.stringify({ error: shape })}\n`);
                 followExit = exitCodeForError(shape.code);
               } else {
-                ctx.output.error({ code: 'INTERNAL', message: 'Malformed error frame from daemon' });
+                io.stdout(`${JSON.stringify({ error: { code: 'INTERNAL', message: 'Malformed error frame from daemon' } })}\n`);
                 followExit = 1;
               }
             }
