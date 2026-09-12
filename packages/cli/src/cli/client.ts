@@ -44,7 +44,12 @@ export function createDaemonClient(options: { url: string; token?: string; fetch
         throw unreachable();
       }
       const status = response.status;
-      const bodyText = await response.text();
+      let bodyText: string;
+      try {
+        bodyText = await response.text();
+      } catch {
+        throw new IronbirdError('TARGET_DISCONNECTED', `Daemon at ${url} closed the connection before the response completed`, { target: target ?? 'daemon', op });
+      }
       let parsed: unknown;
       try {
         parsed = JSON.parse(bodyText);
@@ -61,10 +66,8 @@ export function createDaemonClient(options: { url: string; token?: string; fetch
       if (status !== 200 || !isJsonObject) throw unexpectedResponse(status, bodyText);
 
       const envelope = parsed as RpcEnvelope;
-      if (envelope.ok) return envelope.result as T;
-      const finalErrorEnvelope = asErrorEnvelope(envelope);
-      if (!finalErrorEnvelope) throw unexpectedResponse(status, bodyText);
-      throw new IronbirdError(finalErrorEnvelope.code, finalErrorEnvelope.message, finalErrorEnvelope.details);
+      if (envelope.ok === true) return envelope.result as T;
+      throw unexpectedResponse(status, bodyText);
     },
     async stream({ target, since = 0, signal, onMessage }) {
       const query = new URLSearchParams({ ...(target ? { target } : {}), since: String(since) });
@@ -87,7 +90,18 @@ export function createDaemonClient(options: { url: string; token?: string; fetch
         const errorEnvelope = asErrorEnvelope(parsed);
         throw new IronbirdError('UNAUTHORIZED', errorEnvelope?.message ?? 'Token missing or wrong for this daemon');
       }
-      if (status !== 200) throw unexpectedResponse(status, await response.text().catch(() => ''));
+      if (status !== 200) {
+        const bodyText = await response.text().catch(() => '');
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(bodyText);
+        } catch {
+          parsed = undefined;
+        }
+        const errorEnvelope = asErrorEnvelope(parsed);
+        if (errorEnvelope) throw new IronbirdError(errorEnvelope.code, errorEnvelope.message, errorEnvelope.details);
+        throw unexpectedResponse(status, bodyText);
+      }
       if (!response.body) return;
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -119,7 +133,6 @@ export function createDaemonClient(options: { url: string; token?: string; fetch
               try {
                 payload = JSON.parse(data.join('\n'));
               } catch {
-                await reader.cancel().catch(() => {});
                 throw new IronbirdError('TARGET_DISCONNECTED', `Stream from ${url} sent an unparsable ${kind} frame`, { target, op: 'stream' });
               }
               onMessage(kind, payload);

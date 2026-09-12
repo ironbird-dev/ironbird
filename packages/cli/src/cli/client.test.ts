@@ -97,6 +97,23 @@ describe('createDaemonClient.rpc', () => {
     const nullErrorResult = await nullError.rpc('status').catch((caught: unknown) => caught);
     expect(isIronbirdError(nullErrorResult) && nullErrorResult.code).toBe('INTERNAL');
   });
+
+  it('rejects with TARGET_DISCONNECTED when the response body stream errors during text()', async () => {
+    const fetchMock: FetchMock = vi.fn(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const encoder = new TextEncoder();
+          controller.enqueue(encoder.encode('{"ok":true'));
+          controller.error(new TypeError('terminated'));
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+    const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: fetchMock });
+    const error = await client.rpc('status').catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('TARGET_DISCONNECTED');
+    expect(isIronbirdError(error) && error.message).toContain('closed the connection before the response completed');
+  });
 });
 
 describe('createDaemonClient.stream', () => {
@@ -201,6 +218,15 @@ describe('createDaemonClient.stream', () => {
       ['state', { rev: 1 }],
       ['state', { rev: 2 }],
     ]);
+  });
+
+  it('unwraps a 500 with an error envelope and throws as IronbirdError', async () => {
+    const response = chunkedResponse([JSON.stringify({ ok: false, error: { code: 'INTERNAL', message: 'boom' } })], { status: 500 });
+    const fetchMock: FetchMock = vi.fn(async () => response);
+    const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: fetchMock });
+    const error = await client.stream({ signal: new AbortController().signal, onMessage: () => {} }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('INTERNAL');
+    expect(isIronbirdError(error) && error.message).toBe('boom');
   });
 });
 
