@@ -116,6 +116,13 @@ describe('createDaemonClient.rpc', () => {
   });
 });
 
+describe('createDaemonClient.call', () => {
+  it('call exposes the envelope target', async () => {
+    const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: vi.fn(async () => jsonResponse({ ok: true, target: 'headless', result: { rev: 1 } })) });
+    await expect(client.call('getState')).resolves.toEqual({ target: 'headless', result: { rev: 1 } });
+  });
+});
+
 describe('createDaemonClient.stream', () => {
   it('parses server-sent events until aborted', async () => {
     const body = new ReadableStream<Uint8Array>({

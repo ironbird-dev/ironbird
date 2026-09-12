@@ -3,15 +3,33 @@
   "version": "0.0.0",
   "description": "The ironbird daemon and CLI",
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "exports": {
-    ".": { "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
     "./config": {
-      "import": { "types": "./dist/config-entry.d.ts", "default": "./dist/config-entry.js" },
-      "require": { "types": "./dist/config-entry.d.cts", "default": "./dist/config-entry.cjs" }
+      "import": {
+        "types": "./dist/config-entry.d.ts",
+        "default": "./dist/config-entry.js"
+      },
+      "require": {
+        "types": "./dist/config-entry.d.cts",
+        "default": "./dist/config-entry.cjs"
+      }
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
+  "bin": {
+    "ironbird": "./dist/bin.js"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -19,6 +37,7 @@
   },
   "dependencies": {
     "@ironbird/core": "workspace:*",
+    "commander": "^15.0.0",
     "esbuild": "^0.25.0",
     "zod": "^4.0.0"
   }

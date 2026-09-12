@@ -10,3 +10,7 @@ export { DAEMON_INFO_FILE, readDaemonInfo, removeDaemonInfo, writeDaemonInfo } f
 export type { DaemonInfo } from './daemon-info';
 export { isLoopbackHost, startDaemon } from './daemon';
 export type { Daemon, DaemonOptions } from './daemon';
+export { buildProgram } from './cli/program';
+export type { ProgramIo } from './cli/program';
+export { runServe } from './cli/commands/serve';
+export type { ServeIo, ServeOptions } from './cli/commands/serve';

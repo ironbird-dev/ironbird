@@ -4,13 +4,14 @@ import { readDaemonInfo } from '../daemon-info';
 
 export interface DaemonClient {
   readonly url: string;
+  call<T = unknown>(op: string, params?: Record<string, unknown>, target?: string): Promise<{ target?: string; result: T }>;
   rpc<T = unknown>(op: string, params?: Record<string, unknown>, target?: string): Promise<T>;
   stream(options: { target?: string; since?: number; signal: AbortSignal; onMessage: (kind: 'event' | 'state' | 'target' | 'error', data: unknown) => void }): Promise<void>;
 }
 
 export const DEFAULT_DAEMON_URL = 'http://127.0.0.1:4567';
 
-type RpcEnvelope = { ok: true; result: unknown } | { ok: false; error: ErrorShape };
+type RpcEnvelope = { ok: true; target?: string; result: unknown } | { ok: false; error: ErrorShape };
 
 /** Recognizes a parsed JSON body shaped like the protocol's failure envelope, `{ ok: false, error }`,
  * where `error` is itself an object with a string `code` and `message`. */
@@ -34,9 +35,9 @@ export function createDaemonClient(options: { url: string; token?: string; fetch
   const unexpectedResponse = (status: number, bodyText: string): IronbirdError =>
     new IronbirdError('INTERNAL', `Daemon at ${url} returned an unexpected response (HTTP ${status})`, { url, status, body: bodyText.slice(0, 200) });
 
-  return {
+  const client: DaemonClient = {
     url,
-    async rpc<T>(op: string, params: Record<string, unknown> = {}, target?: string): Promise<T> {
+    async call<T>(op: string, params: Record<string, unknown> = {}, target?: string): Promise<{ target?: string; result: T }> {
       let response: Response;
       try {
         response = await doFetch(`${url}/v1/rpc`, { method: 'POST', headers: headers(), body: JSON.stringify({ op, target, params }) });
@@ -66,8 +67,11 @@ export function createDaemonClient(options: { url: string; token?: string; fetch
       if (status !== 200 || !isJsonObject) throw unexpectedResponse(status, bodyText);
 
       const envelope = parsed as RpcEnvelope;
-      if (envelope.ok === true) return envelope.result as T;
+      if (envelope.ok === true) return envelope.target === undefined ? { result: envelope.result as T } : { target: envelope.target, result: envelope.result as T };
       throw unexpectedResponse(status, bodyText);
+    },
+    async rpc<T>(op: string, params: Record<string, unknown> = {}, target?: string): Promise<T> {
+      return (await client.call<T>(op, params, target)).result;
     },
     async stream({ target, since = 0, signal, onMessage }) {
       const query = new URLSearchParams({ ...(target ? { target } : {}), since: String(since) });
@@ -153,6 +157,7 @@ export function createDaemonClient(options: { url: string; token?: string; fetch
       }
     },
   };
+  return client;
 }
 
 async function findArtifactsDir(cwd: string): Promise<string | undefined> {
