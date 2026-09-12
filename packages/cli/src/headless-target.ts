@@ -60,6 +60,11 @@ interface PendingOp {
   reject: (error: unknown) => void;
 }
 
+interface InFlightOp {
+  op: string;
+  reject: (error: unknown) => void;
+}
+
 const str = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
 const num = (value: unknown, fallback: number): number => (typeof value === 'number' && Number.isFinite(value) ? value : fallback);
 
@@ -70,6 +75,10 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
   const warned = new Set<string>();
   let queue: Promise<unknown> = Promise.resolve();
   const pendingOps = new Set<PendingOp>();
+  // Ops whose action is actually executing against the app, as opposed to still waiting its turn
+  // in `pendingOps`. `reset` and `dispose` reject these too, so a mutating call whose app promise
+  // never settles (a wedged `dispatch`) doesn't stay pending forever.
+  const inFlight = new Set<InFlightOp>();
   // `epoch` is the one source of truth for which session an operation belongs to. Both `reset`
   // and `dispose` bump it as their first statement, before any await, so every operation that
   // started earlier is invalidated the instant recovery begins rather than once a new session
@@ -107,8 +116,28 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     return session;
   };
 
-  const abandoned = (op: string): IronbirdError =>
-    new IronbirdError('TARGET_DISCONNECTED', `Target was reset before ${op} completed`, { target: 'headless', op });
+  const abandoned = (op: string, cause: 'reset' | 'dispose'): IronbirdError =>
+    new IronbirdError('TARGET_DISCONNECTED', `Target was ${cause === 'reset' ? 'reset' : 'disposed'} before ${op} completed`, { target: 'headless', op });
+
+  // Once `disposed` is true it never becomes false again, so it tells the epoch-mismatch fallback
+  // checks (reached when an action settles on its own rather than via `inFlight` abandonment)
+  // which of the two invalidated it.
+  const abandonCause = (): 'reset' | 'dispose' => (disposed ? 'dispose' : 'reset');
+
+  // Wraps a promise so that a `reset` or `dispose` racing against it rejects it immediately
+  // instead of leaving it to settle (or hang) on its own. The entry is removed once either side
+  // wins; an abandonment that arrives after the real promise already won is a no-op.
+  const raceAbandon = <T>(op: string, promise: Promise<T>): Promise<T> => {
+    const entry: InFlightOp = { op, reject: () => {} };
+    const abandon = new Promise<never>((_, reject) => {
+      entry.reject = reject;
+    });
+    abandon.catch(() => undefined);
+    inFlight.add(entry);
+    return Promise.race([promise, abandon]).finally(() => {
+      inFlight.delete(entry);
+    });
+  };
 
   const snapshotOf = (current: Session, path: string): unknown => {
     const { value, warnings } = serializeState(getAtPath(current.app.target.getState(), path));
@@ -136,12 +165,14 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     const path = str(params['path']);
     const settle = settleOptions(params);
     const since = current.recorder.since(0).nextSeq;
-    await action();
-    if (epoch !== startedEpoch) throw abandoned(op);
+    await raceAbandon(op, action());
+    if (epoch !== startedEpoch) throw abandoned(op, abandonCause());
     await current.clock.advance(0);
-    if (epoch !== startedEpoch) throw abandoned(op);
-    const settleResult: SettleResult | null = settle ? await current.tracker.whenIdle({ timeoutMs: settle.timeoutMs, mode: 'quiescent' }) : null;
-    if (epoch !== startedEpoch) throw abandoned(op);
+    if (epoch !== startedEpoch) throw abandoned(op, abandonCause());
+    const settleResult: SettleResult | null = settle
+      ? await raceAbandon(op, current.tracker.whenIdle({ timeoutMs: settle.timeoutMs, mode: 'quiescent' }))
+      : null;
+    if (epoch !== startedEpoch) throw abandoned(op, abandonCause());
     return { target: 'headless', rev: current.app.target.revision(), path, state: snapshotOf(current, path), events: current.recorder.since(since).events, settle: settleResult };
   };
 
@@ -179,7 +210,12 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
       // it ever settles, it must not run against the freshly booted session.
       const waiting = [...pendingOps];
       pendingOps.clear();
-      for (const entry of waiting) entry.reject(abandoned(entry.op));
+      for (const entry of waiting) entry.reject(abandoned(entry.op, 'reset'));
+      // Same for anything already executing against the session being torn down: a wedged
+      // `dispatch` must not stay pending forever just because reset is recovering the target.
+      const executing = [...inFlight];
+      inFlight.clear();
+      for (const entry of executing) entry.reject(abandoned(entry.op, 'reset'));
       warned.clear();
       if (previous) await disposeSession(previous);
       let next: Session;
@@ -188,6 +224,12 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
       } catch (error) {
         bootError = error instanceof IronbirdError ? error : new IronbirdError('INTERNAL', `Reset failed: ${messageOf(error)}`, { message: messageOf(error) });
         throw bootError;
+      }
+      // `dispose` may have run while `boot()` was in flight: nothing will ever use this session,
+      // so tear it down immediately rather than installing it, keeping every boot's disposal exact.
+      if (disposed) {
+        await disposeSession(next);
+        throw new IronbirdError('UNSUPPORTED', 'Target is disposed', { op: 'reset', target: 'headless' });
       }
       session = next;
       bootError = undefined;
@@ -234,14 +276,14 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
           throw new IronbirdError('WAIT_TIMEOUT', `Condition on ${path || '<root>'} not met within ${timeoutMs} ms`, { path, value, pending: current.tracker.pending() });
         }
         await stateChangeOrSleep(current, Math.min(16, remaining));
-        if (epoch !== startedEpoch) throw abandoned('waitFor');
+        if (epoch !== startedEpoch) throw abandoned('waitFor', abandonCause());
       }
     },
     settle: async (params) => {
       const startedEpoch = epoch;
       const current = requireSession('settle');
       const result = await current.tracker.whenIdle({ timeoutMs: num(params['timeoutMs'], options.settleTimeoutMs), mode: 'quiescent' });
-      if (epoch !== startedEpoch) throw abandoned('settle');
+      if (epoch !== startedEpoch) throw abandoned('settle', abandonCause());
       return result;
     },
     events: (params) => requireSession('events').recorder.since(num(params['since'], 0), num(params['limit'], Number.POSITIVE_INFINITY)),
@@ -276,6 +318,12 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
       if (!handler) throw new IronbirdError('UNSUPPORTED', `The headless target doesn't support ${op}`, { op, target: 'headless' });
       if (disposed) throw new IronbirdError('UNSUPPORTED', 'Target is disposed', { op, target: 'headless' });
       if (op === 'reset') return handler(params);
+      // A reset in progress leaves `session` cleared for its dispose/boot window. An op that
+      // starts here would see no session and fail as if disposed, which is wrong and drops work,
+      // so it waits its turn and then runs against whatever session the reset installs. Looping
+      // covers a reset that starts during the wait too. If the reset fails, `requireSession` below
+      // rethrows `bootError` as it already does.
+      while (resetting) await resetting.catch(() => undefined);
       if (!QUEUED_OPS.has(op)) return handler(params);
       const myTurn = queue;
       return new Promise((resolve, reject) => {
@@ -288,7 +336,7 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
           .then(async () => {
             pendingOps.delete(entry);
             if (epoch !== entry.enqueuedEpoch) {
-              reject(abandoned(op));
+              reject(abandoned(op, abandonCause()));
               return;
             }
             try {
@@ -320,7 +368,10 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
       epoch += 1;
       const waiting = [...pendingOps];
       pendingOps.clear();
-      for (const entry of waiting) entry.reject(abandoned(entry.op));
+      for (const entry of waiting) entry.reject(abandoned(entry.op, 'dispose'));
+      const executing = [...inFlight];
+      inFlight.clear();
+      for (const entry of executing) entry.reject(abandoned(entry.op, 'dispose'));
       disposing = (async () => {
         // Awaiting an in-flight reset first is what keeps the count exact: whatever session it
         // installs becomes the one this call disposes.
