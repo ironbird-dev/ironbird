@@ -1,7 +1,9 @@
+import { createTarget, defineCommands, defineHeadless } from '@ironbird/core';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { counterDefinition } from '../test/helpers/counter-app';
 import { isLoopbackHost, startDaemon, type Daemon } from './daemon';
 import { readDaemonInfo, removeDaemonInfo, writeDaemonInfo } from './daemon-info';
@@ -119,6 +121,26 @@ describe('startDaemon', () => {
     expect(logs.filter((line) => line.includes('daemon fault'))).toEqual([]);
   });
 
+  it('ends the stream with an error frame and no daemon fault when the backlog read fails', async () => {
+    const logs: string[] = [];
+    let boots = 0;
+    const failsOnReset = defineHeadless(() => {
+      boots += 1;
+      if (boots > 1) throw new Error('boot exploded');
+      const target = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({ boots }) });
+      return { target };
+    });
+    target = await createHeadlessTarget({ definition: failsOnReset, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
+    daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: 'headless', log: (line) => logs.push(line) });
+    await rpc(daemon, { op: 'reset' });
+    const response = await fetch(`${daemon.url}/v1/stream?target=headless&since=0`);
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain('event: error');
+    expect(text).toContain('"code":"INTERNAL"');
+    expect(logs.filter((line) => line.includes('daemon fault'))).toEqual([]);
+  });
+
   it('throttles state notifications to at most one per 100 ms after the first', async () => {
     const d = await boot();
     const controller = new AbortController();
@@ -143,13 +165,26 @@ describe('startDaemon', () => {
         }
       }
     };
+    const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
     await drain(50);
-    for (let i = 0; i < 20; i += 1) await rpc(d, { op: 'dispatch', params: { name: 'counter.add', payload: { by: 1 } } });
-    await drain(350);
+    // Spread the burst across several 100 ms throttle windows (12 dispatches, 30 ms apart, 360 ms
+    // total) instead of firing it all at once, so a throttle that doesn't cap correctly per
+    // window is exposed instead of accidentally passing because everything landed in one window.
+    for (let i = 0; i < 12; i += 1) {
+      await rpc(d, { op: 'dispatch', params: { name: 'counter.add', payload: { by: 1 } } });
+      await sleep(30);
+    }
+    await drain(200);
     const stateFrames = text.split('\n\n').filter((frame) => frame.startsWith('event: state'));
-    expect(stateFrames.length).toBeGreaterThanOrEqual(2);
+    // One-write-per-100ms throttling (write immediately, then re-arm only while something is
+    // still pending) yields about 4-5 frames for this burst: one right away, then roughly one
+    // per 100 ms window while dispatches keep arriving. The pre-fix throttle (which re-armed a
+    // fixed STATE_THROTTLE_MS timer unconditionally after every write, letting the schedule drift
+    // and double-fire near window boundaries) yields 7 or more frames for the same burst. These
+    // bounds pin the fixed rate and fail against the old timer.
+    expect(stateFrames.length).toBeGreaterThanOrEqual(3);
     expect(stateFrames.length).toBeLessThanOrEqual(5);
-    expect(stateFrames[stateFrames.length - 1]).toContain('"rev":20');
+    expect(stateFrames[stateFrames.length - 1]).toContain('"rev":12');
     controller.abort();
   });
 
@@ -160,6 +195,8 @@ describe('startDaemon', () => {
     expect(isLoopbackHost('::1')).toBe(true);
     expect(isLoopbackHost('localhost')).toBe(true);
     expect(isLoopbackHost('0.0.0.0')).toBe(false);
+    expect(isLoopbackHost('127.example.com')).toBe(false);
+    expect(isLoopbackHost('::ffff:127.0.0.1')).toBe(true);
   });
 
   it('close() is idempotent', async () => {

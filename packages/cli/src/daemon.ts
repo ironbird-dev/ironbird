@@ -25,10 +25,13 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const STATE_THROTTLE_MS = 100;
 const PING_INTERVAL_MS = 15_000;
 
+const IPV4_LOOPBACK = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+const IPV4_MAPPED_LOOPBACK = /^::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+
 /** Loopback hosts may run without a token (see spec R3); anything else must be paired with one. */
 export function isLoopbackHost(host: string): boolean {
   const normalized = host.toLowerCase();
-  return normalized === 'localhost' || normalized === '::1' || normalized.startsWith('127.');
+  return normalized === 'localhost' || normalized === '::1' || IPV4_LOOPBACK.test(normalized) || IPV4_MAPPED_LOOPBACK.test(normalized);
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -136,17 +139,54 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     };
     res.write(': connected\n\n');
 
+    // Registered before the backlog await below so a client disconnect (or a backlog read that
+    // throws) while we're still awaiting it is handled here rather than leaking the subscription,
+    // leaving stray timers, or falling through to the daemon-fault handler.
+    let aborted = false;
+    // A holder object rather than separate `let`s: each of these is assigned exactly once, once
+    // its value becomes available, but `cleanup` (below) must be able to reference it beforehand.
+    const handles: { offEvent?: () => void; offState?: () => void; ping?: NodeJS.Timeout } = {};
+    let throttle: NodeJS.Timeout | undefined;
+    let cleaned = false;
+    const cleanup = (): void => {
+      if (cleaned) return;
+      cleaned = true;
+      handles.offEvent?.();
+      handles.offState?.();
+      if (handles.ping) clearInterval(handles.ping);
+      if (throttle) clearTimeout(throttle);
+    };
+    req.on('close', () => {
+      aborted = true;
+      cleanup();
+    });
+
     // Subscribe before awaiting the backlog so an event recorded during that await isn't lost
     // between the snapshot and the subscription. Anything that arrives while we're still
     // buffering is held here and reconciled against the backlog by seq once it's in hand.
     let buffering = true;
     const liveBuffer: RecordedEvent[] = [];
-    const offEvent = target.onEvent((event) => {
+    handles.offEvent = target.onEvent((event) => {
       if (buffering) liveBuffer.push(event);
       else write('event', event);
     });
 
-    const backlog = (await target.run('events', { since })) as { events: RecordedEvent[] };
+    let backlog: { events: RecordedEvent[] };
+    try {
+      backlog = (await target.run('events', { since })) as { events: RecordedEvent[] };
+    } catch (error) {
+      // The subscription is live but no backlog was ever flushed, so there's nothing to
+      // reconcile: tear down and end the stream with a single error frame instead of letting
+      // this reach the daemon-fault handler (the client already got a 200 SSE response head).
+      cleanup();
+      res.write(`event: error\ndata: ${JSON.stringify(toErrorShape(error))}\n\n`);
+      res.end();
+      return;
+    }
+    if (aborted || req.destroyed) {
+      cleanup();
+      return;
+    }
     for (const event of backlog.events) write('event', event);
     const lastBacklogSeq = backlog.events.length > 0 ? backlog.events[backlog.events.length - 1]!.seq : since;
     for (const event of liveBuffer) {
@@ -155,7 +195,6 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     buffering = false;
 
     let pendingRev: number | undefined;
-    let throttle: NodeJS.Timeout | undefined;
     // Writes immediately on the first update after a quiet period, then re-arms for another
     // STATE_THROTTLE_MS as long as there's something to flush, so a sustained burst is capped at
     // one write per window instead of overshooting it.
@@ -168,17 +207,11 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       pendingRev = undefined;
       throttle = setTimeout(flush, STATE_THROTTLE_MS);
     };
-    const offState = target.onState((rev) => {
+    handles.offState = target.onState((rev) => {
       pendingRev = rev;
       if (!throttle) flush();
     });
-    const ping = setInterval(() => res.write(': ping\n\n'), PING_INTERVAL_MS);
-    req.on('close', () => {
-      offEvent();
-      offState();
-      clearInterval(ping);
-      if (throttle) clearTimeout(throttle);
-    });
+    handles.ping = setInterval(() => res.write(': ping\n\n'), PING_INTERVAL_MS);
   };
 
   const server = createServer((req, res) => {
