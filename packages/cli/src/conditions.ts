@@ -1,0 +1,46 @@
+import { IronbirdError } from '@ironbird/core';
+
+export type Condition = { equals: unknown } | { notEquals: unknown } | { exists: boolean } | { matches: string };
+
+const KEYS = ['equals', 'notEquals', 'exists', 'matches'] as const;
+
+export function parseCondition(params: Record<string, unknown>): Condition {
+  const present = KEYS.filter((key) => key in params);
+  if (present.length !== 1) {
+    throw new IronbirdError('INVALID_PAYLOAD', 'waitFor needs exactly one of equals, notEquals, exists, matches', {
+      name: 'waitFor',
+      issues: [{ path: [], message: `expected exactly one condition, got ${present.length}` }],
+    });
+  }
+  const key = present[0] as (typeof KEYS)[number];
+  switch (key) {
+    case 'equals':
+      return { equals: params['equals'] };
+    case 'notEquals':
+      return { notEquals: params['notEquals'] };
+    case 'exists':
+      return { exists: params['exists'] !== false };
+    case 'matches':
+      return { matches: String(params['matches']) };
+  }
+}
+
+export function deepEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((item, index) => deepEqual(item, b[index]));
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every((key) => Object.prototype.hasOwnProperty.call(right, key) && deepEqual(left[key], right[key]));
+}
+
+export function conditionHolds(value: unknown, condition: Condition): boolean {
+  if ('equals' in condition) return deepEqual(value, condition.equals);
+  if ('notEquals' in condition) return !deepEqual(value, condition.notEquals);
+  if ('exists' in condition) return (value !== undefined) === condition.exists;
+  if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') return false;
+  return new RegExp(condition.matches).test(String(value));
+}
