@@ -25,3 +25,5 @@ export { MAX_FIRINGS_PER_ADVANCE, createManualClock, createRealClock } from './c
 export type { Clock, ManualClock, ScheduledTimer, TimerId } from './clock';
 export { createEventRecorder } from './recorder';
 export type { EventRecorder } from './recorder';
+export { FAKE_PORT_MARK, QUIESCENT_STABLE_YIELDS, createTracker, isFakePort, markFakePort } from './tracker';
+export type { Tracker } from './tracker';
