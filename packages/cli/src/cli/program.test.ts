@@ -11,7 +11,12 @@ interface Call {
 
 type Responder = unknown | ((params: Record<string, unknown>) => unknown);
 
-function harness(responses: Record<string, Responder>, options: { isTTY?: boolean } = {}) {
+interface StreamFrame {
+  kind: 'event' | 'state' | 'target' | 'error';
+  data: unknown;
+}
+
+function harness(responses: Record<string, Responder>, options: { isTTY?: boolean; streamFrames?: StreamFrame[]; createClient?: () => DaemonClient } = {}) {
   const calls: Call[] = [];
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -29,7 +34,8 @@ function harness(responses: Record<string, Responder>, options: { isTTY?: boolea
       return (await this.call(op, params, target)).result as never;
     },
     async stream({ onMessage }) {
-      onMessage('event', { seq: 9, name: 'streamed' });
+      const frames = options.streamFrames ?? [{ kind: 'event', data: { seq: 9, name: 'streamed' } }];
+      for (const frame of frames) onMessage(frame.kind, frame.data);
     },
   };
   const { run } = buildProgram({
@@ -39,7 +45,7 @@ function harness(responses: Record<string, Responder>, options: { isTTY?: boolea
     stdout: (t) => stdout.push(t),
     stderr: (t) => stderr.push(t),
     version: '0.0.0-test',
-    createClient: () => client,
+    createClient: options.createClient ?? (() => client),
     signal: AbortSignal.abort(),
   });
   return { run, calls, stdout, stderr, out: () => JSON.parse(stdout.join('')) as Record<string, unknown> };
@@ -127,6 +133,26 @@ describe('buildProgram', () => {
     expect(h.stdout).toEqual(['{"seq":4,"t":0,"source":"s","name":"a"}\n', '{"seq":9,"name":"streamed"}\n']);
   });
 
+  it('events --follow prints an error frame then resolves with its mapped exit code', async () => {
+    const h = harness(
+      { events: { events: [], nextSeq: 0, truncated: false } },
+      {
+        streamFrames: [
+          { kind: 'event', data: { seq: 9, name: 'streamed' } },
+          { kind: 'error', data: { code: 'TARGET_DISCONNECTED', message: 'gone' } },
+        ],
+      },
+    );
+    expect(await h.run(['events', '--follow'])).toBe(1);
+    expect(h.stdout).toEqual(['{"seq":9,"name":"streamed"}\n', '{"error":{"code":"TARGET_DISCONNECTED","message":"gone"}}\n']);
+  });
+
+  it('events --follow reports a malformed error frame as INTERNAL and exits 1', async () => {
+    const h = harness({ events: { events: [], nextSeq: 0, truncated: false } }, { streamFrames: [{ kind: 'error', data: 'nope' }] });
+    expect(await h.run(['events', '--follow'])).toBe(1);
+    expect(h.stdout).toEqual(['{"error":{"code":"INTERNAL","message":"Malformed error frame from daemon"}}\n']);
+  });
+
   it('exits 5 when the daemon is unreachable and 2 for unknown commands', async () => {
     const down = harness({ status: new IronbirdError('NO_TARGET', 'Daemon unreachable at http://127.0.0.1:4567; run ironbird serve', { url: 'x' }) });
     expect(await down.run(['status'])).toBe(5);
@@ -135,6 +161,20 @@ describe('buildProgram', () => {
     expect(await unknown.run(['frobnicate'])).toBe(2);
     expect(unknown.stderr.join('')).toContain("unknown command 'frobnicate'");
     expect(await unknown.run(['--help'])).toBe(0);
+  });
+
+  it('honors --json for an error raised before the client resolves', async () => {
+    const h = harness(
+      {},
+      {
+        isTTY: true,
+        createClient: () => {
+          throw new IronbirdError('NO_TARGET', 'Daemon unreachable at http://127.0.0.1:4567; run ironbird serve', { url: 'x' });
+        },
+      },
+    );
+    expect(await h.run(['status', '--json'])).toBe(5);
+    expect(h.stdout).toEqual(['{"error":{"code":"NO_TARGET","message":"Daemon unreachable at http://127.0.0.1:4567; run ironbird serve","details":{"url":"x"}}}\n']);
   });
 
   it('prints readable text in a TTY unless --json is passed', async () => {

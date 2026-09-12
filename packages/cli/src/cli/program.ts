@@ -33,7 +33,15 @@ interface Context {
   target: string | undefined;
 }
 
-type Outcome = { value: unknown; exit?: number } | undefined;
+type Outcome = { value?: unknown; exit?: number } | undefined;
+
+/** Recognizes a stream frame shaped like an ErrorShape (an object with string `code` and `message`). */
+function asErrorShape(data: unknown): ErrorShape | undefined {
+  if (data === null || typeof data !== 'object') return undefined;
+  const candidate = data as { code?: unknown; message?: unknown };
+  if (typeof candidate.code !== 'string' || typeof candidate.message !== 'string') return undefined;
+  return candidate as ErrorShape;
+}
 
 const integer = (value: string): number => {
   const parsed = Number(value);
@@ -87,12 +95,13 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
     (fn: (ctx: Context, ...args: never[]) => Promise<Outcome>) =>
     async (...args: unknown[]): Promise<void> => {
       const command = args[args.length - 1] as Command;
-      let output = createOutput({ json: !io.isTTY, write: io.stdout });
+      const opts = command.optsWithGlobals<GlobalOptions>();
+      let output = createOutput({ json: Boolean(opts.json) || !io.isTTY, write: io.stdout });
       try {
         const ctx = await context(command);
         output = ctx.output;
         const outcome = await fn(ctx, ...(args.slice(0, -1) as never[]));
-        if (outcome) output.result(outcome.value);
+        if (outcome && 'value' in outcome) output.result(outcome.value);
         exitCode = outcome?.exit ?? 0;
       } catch (error) {
         if (error instanceof UsageError || error instanceof InvalidArgumentError) {
@@ -199,6 +208,7 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
         const envelope = await ctx.client.call<{ events: unknown[]; nextSeq: number; truncated: boolean }>('events', params, ctx.target);
         if (!opts.follow) return { value: withTarget(envelope) };
         for (const event of envelope.result.events) io.stdout(`${JSON.stringify(event)}\n`);
+        let followExit = 0;
         await ctx.client.stream({
           target: ctx.target,
           since: envelope.result.nextSeq,
@@ -207,13 +217,18 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
             if (kind === 'event') {
               io.stdout(`${JSON.stringify(data)}\n`);
             } else if (kind === 'error') {
-              const shape = data as ErrorShape;
-              ctx.output.error(shape);
-              exitCode = exitCodeForError(shape.code);
+              const shape = asErrorShape(data);
+              if (shape) {
+                ctx.output.error(shape);
+                followExit = exitCodeForError(shape.code);
+              } else {
+                ctx.output.error({ code: 'INTERNAL', message: 'Malformed error frame from daemon' });
+                followExit = 1;
+              }
             }
           },
         });
-        return undefined;
+        return { exit: followExit };
       }),
     );
 
