@@ -38,12 +38,15 @@ export async function runServe(options: ServeOptions, io: ServeIo): Promise<numb
   let target: HeadlessTarget | undefined;
   let daemon: Daemon | undefined;
   let artifactsPath: string | undefined;
+  let port: number | undefined;
+  let configPath: string | undefined;
 
   try {
     const config = await loadConfig({ cwd: io.cwd, configPath: options.config });
     artifactsPath = config.artifactsPath;
+    configPath = config.configPath;
     const host = options.host ?? config.daemon.host;
-    const port = options.port ?? config.daemon.port;
+    port = options.port ?? config.daemon.port;
     let token = options.token ?? io.env['IRONBIRD_TOKEN'];
     if (!isLoopback(host) && !token) {
       token = randomBytes(16).toString('hex');
@@ -68,9 +71,14 @@ export async function runServe(options: ServeOptions, io: ServeIo): Promise<numb
     const shape = toErrorShape(error);
     const code = (error as { code?: string }).code;
     if (code === 'EADDRINUSE') {
-      output.error({ code: 'INTERNAL', message: `Port ${options.port ?? 'from config'} is already in use; stop the other daemon or pass --port`, details: { message: shape.message } });
+      const message = `Port ${port ?? 'unknown'} is already in use; stop the other daemon or pass --port`;
+      output.error({
+        code: 'INVALID_CONFIG',
+        message,
+        details: { file: configPath, issues: [{ path: ['daemon', 'port'], message }] },
+      });
       await cleanup();
-      return 2;
+      return exitCodeForError('INVALID_CONFIG');
     }
     output.error(shape);
     await cleanup();

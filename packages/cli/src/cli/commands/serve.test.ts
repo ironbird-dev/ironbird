@@ -82,6 +82,42 @@ describe('runServe', () => {
     expect(await run.exit).toBe(0);
   });
 
+  it('--no-headless skips a configured headless entry', async () => {
+    temp = await mkdtemp(path.join(tmpdir(), 'ironbird-serve-'));
+    const headlessPath = path.resolve(__dirname, '../../../../../examples/checkout/src/ironbird/headless.ts');
+    await writeFile(path.join(temp, 'ironbird.config.ts'), `export default { headless: '${headlessPath}' };`);
+    const run = start(temp, { headless: false });
+    const line = await firstLine(run);
+    expect(line['targets']).toEqual([]);
+    expect(line['defaultTarget']).toBeUndefined();
+    run.stop();
+    expect(await run.exit).toBe(0);
+  });
+
+  it('port in use exits 2 with INVALID_CONFIG and shows the port number', async () => {
+    // Start first daemon on port 0 to get a random available port
+    const run1 = start(example);
+    const line1 = await firstLine(run1);
+    const url = line1['url'] as string;
+    const portMatch = url.match(/:(\d+)$/);
+    expect(portMatch).toBeTruthy();
+    const portStr = portMatch?.[1];
+    expect(portStr).toBeTruthy();
+    const usedPort = parseInt(portStr as string, 10);
+
+    // Try to start second daemon on the same port
+    const run2 = start(example, { port: usedPort });
+    const errorLine = await firstLine(run2);
+    expect(await run2.exit).toBe(2);
+    const error = errorLine['error'] as { code?: string; message?: string } | undefined;
+    expect(error?.code).toBe('INVALID_CONFIG');
+    expect(String(error?.message)).toContain(String(usedPort));
+
+    // Clean up first daemon
+    run1.stop();
+    expect(await run1.exit).toBe(0);
+  });
+
   it('knows loopback hosts', () => {
     expect(isLoopback('127.0.0.1')).toBe(true);
     expect(isLoopback('localhost')).toBe(true);
