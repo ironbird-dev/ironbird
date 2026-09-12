@@ -72,15 +72,15 @@ function operationTimeoutMs(params: Record<string, unknown>): number {
 }
 
 /**
- * The wall-clock bound for one request: at least `requestTimeoutMs`, and always at least 5 s past
- * whatever operation-specific timeout the caller asked for, so the request timeout can never fire
- * before the operation's own timeout would have (see docs/protocol.md §3.2). A `waitFor` or
- * `settle` racing a condition that never holds still resolves on its own — with `WAIT_TIMEOUT` or
- * `idle: false` — well inside this bound; the bound only catches an operation that never resolves
- * at all.
+ * The wall-clock bound for one request: at least `requestTimeoutMs`, or if the operation carries
+ * its own timeout, at least 5 s past it, so the request timeout can never fire before the operation's
+ * own timeout would have (see docs/protocol.md §3.2). A `waitFor` or `settle` racing a condition
+ * that never holds still resolves on its own — with `WAIT_TIMEOUT` or `idle: false` — well inside
+ * this bound; the bound only catches an operation that never resolves at all.
  */
 function requestBoundFor(requestTimeoutMs: number, params: Record<string, unknown>): number {
-  return Math.max(requestTimeoutMs, operationTimeoutMs(params) + 5_000);
+  const opTimeout = operationTimeoutMs(params);
+  return opTimeout > 0 ? Math.max(requestTimeoutMs, opTimeout + 5_000) : requestTimeoutMs;
 }
 
 const IPV4_LOOPBACK = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;

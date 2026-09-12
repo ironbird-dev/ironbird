@@ -365,7 +365,7 @@ describe('startDaemon', () => {
     expect(foreign.status).toBe(200);
   });
 
-  it('fails a target operation that never settles with TARGET_DISCONNECTED, floored 5s past its own timeout, and keeps serving status', async () => {
+  it('fails a target operation that never settles with TARGET_DISCONNECTED, and keeps serving status', async () => {
     const wedged = defineHeadless(() => {
       const app = createTarget({
         commands: defineCommands({ 'hang.forever': z.object({}) }),
@@ -375,9 +375,7 @@ describe('startDaemon', () => {
       return { target: app };
     });
     target = await createHeadlessTarget({ definition: wedged, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
-    // requestTimeoutMs is deliberately tiny, but this request carries no timeoutMs/settle.timeoutMs
-    // of its own, so the bound floors at 5s past that (see requestBoundFor in daemon.ts) rather
-    // than at the 50ms configured here.
+    // requestTimeoutMs is deliberately tiny; with no operation-specific timeout, the bound uses it directly.
     daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: 'headless', requestTimeoutMs: 50, log: () => {} });
     const startedAt = Date.now();
     const wedgedResponse = await rpc(daemon, { op: 'dispatch', params: { name: 'hang.forever' } });
@@ -385,11 +383,10 @@ describe('startDaemon', () => {
     expect(wedgedResponse.json).toMatchObject({ ok: false, error: { code: 'TARGET_DISCONNECTED', details: { target: 'headless', op: 'dispatch' } } });
     expect(String((wedgedResponse.json['error'] as { message: string }).message)).toContain('ironbird reset');
     const elapsed = Date.now() - startedAt;
-    expect(elapsed).toBeGreaterThanOrEqual(5_000);
-    expect(elapsed).toBeLessThan(7_000);
+    expect(elapsed).toBeLessThan(1_000);
     // The daemon itself is still healthy; only the wedged operation failed.
     expect((await rpc(daemon, { op: 'status' })).json).toMatchObject({ ok: true });
-  }, 10_000);
+  });
 
   it('never truncates a waitFor whose own timeoutMs outlives a tiny request timeout', async () => {
     target = await createHeadlessTarget({ definition: counterDefinition, appId: 'com.example.test', settleTimeoutMs: 500, env: {}, log: () => {} });

@@ -12,3 +12,4 @@ Pre-merge fixes for the M0 headless loop.
 - A config file that fails to load reports `INVALID_CONFIG` with `{ file, issues }`, and an unknown top-level key in `ironbird.config.ts` is now an error rather than being ignored.
 - A `serve` that fails to bind no longer deletes a running daemon's `.ironbird/daemon.json`.
 - `@ironbird/cli` no longer re-exports the unused `MUTATING_OPS`.
+- `createHeadlessTarget` accepts `entryPath`, reported as `details.entry` on boot failures; the daemon's request bound follows the operation's own timeout.
