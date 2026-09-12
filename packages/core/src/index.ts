@@ -1,1 +1,18 @@
-export const PROTOCOL_VERSION = 1 as const;
+export { ERROR_CODES, IronbirdError, PROTOCOL_VERSION, isIronbirdError, messageOf, toErrorShape } from './errors';
+export type { ErrorCode } from './errors';
+export type {
+  Capability,
+  CommandDescription,
+  Description,
+  ErrorShape,
+  FakeCall,
+  JsonSchema,
+  PendingItem,
+  Platform,
+  RecordedEvent,
+  ScenarioResult,
+  Screenshot,
+  SettleResult,
+  StepResult,
+  TargetInfo,
+} from './protocol';
