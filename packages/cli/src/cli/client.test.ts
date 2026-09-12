@@ -11,6 +11,27 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
+/** Builds a Response whose body is a ReadableStream fed by the given chunks, enqueued in order
+ * (so a single SSE frame can be split arbitrarily across chunks). When `neverCloses` is set, the
+ * stream is left open and, if a `signal` is given, errors out (like an aborted fetch would) the
+ * moment that signal fires. */
+function chunkedResponse(chunks: string[], options: { status?: number; neverCloses?: boolean; signal?: AbortSignal } = {}): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      if (!options.neverCloses) {
+        controller.close();
+        return;
+      }
+      options.signal?.addEventListener('abort', () => {
+        controller.error(new DOMException('The operation was aborted.', 'AbortError'));
+      });
+    },
+  });
+  return new Response(body, { status: options.status ?? 200 });
+}
+
 describe('createDaemonClient.rpc', () => {
   it('posts the operation with the bearer token and returns result', async () => {
     const fetchMock: FetchMock = vi.fn(async () => jsonResponse({ ok: true, result: { rev: 3 } }));
@@ -41,6 +62,31 @@ describe('createDaemonClient.rpc', () => {
     expect(isIronbirdError(downError) && downError.code).toBe('NO_TARGET');
     expect(isIronbirdError(downError) && downError.message).toBe('Daemon unreachable at http://127.0.0.1:1; run ironbird serve');
   });
+
+  it('uses the daemon message for a 401 error envelope', async () => {
+    const fetchMock: FetchMock = vi.fn(async () => jsonResponse({ ok: false, error: { code: 'UNAUTHORIZED', message: 'Token missing or wrong' } }, 401));
+    const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: fetchMock });
+    const error = await client.rpc('status').catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('UNAUTHORIZED');
+    expect(isIronbirdError(error) && error.message).toBe('Token missing or wrong');
+  });
+
+  it('throws a 500 ok:false envelope as its IronbirdError', async () => {
+    const fetchMock: FetchMock = vi.fn(async () => jsonResponse({ ok: false, error: { code: 'INTERNAL', message: 'boom' } }, 500));
+    const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: fetchMock });
+    const error = await client.rpc('status').catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('INTERNAL');
+    expect(isIronbirdError(error) && error.message).toBe('boom');
+  });
+
+  it('rejects with INTERNAL when a 200 body is not JSON', async () => {
+    const fetchMock: FetchMock = vi.fn(async () => new Response('<html>nope</html>', { status: 200 }));
+    const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: fetchMock });
+    const error = await client.rpc('status').catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('INTERNAL');
+    expect(isIronbirdError(error) && error.details).toMatchObject({ url: 'http://127.0.0.1:4567', status: 200 });
+    expect(isIronbirdError(error) && (error.details as { body?: string }).body).toContain('<html>nope</html>');
+  });
 });
 
 describe('createDaemonClient.stream', () => {
@@ -62,6 +108,60 @@ describe('createDaemonClient.stream', () => {
       ['state', { rev: 2 }],
     ]);
     expect((fetchMock.mock.calls[0] as [string])[0]).toBe('http://127.0.0.1:4567/v1/stream?target=headless&since=0');
+  });
+
+  it('handles a frame split mid-line across chunks, a CRLF-terminated frame, and ignores a comment', async () => {
+    const response = chunkedResponse([
+      ': ping\n',
+      'event: eve',
+      'nt\ndata: {"seq":1,"na',
+      'me":"a"}\n\n',
+      'event: state\r\ndata: {"rev":2}\r\n\r\n',
+    ]);
+    const fetchMock: FetchMock = vi.fn(async () => response);
+    const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: fetchMock });
+    const seen: Array<[string, unknown]> = [];
+    await client.stream({ signal: new AbortController().signal, onMessage: (kind, data) => seen.push([kind, data]) });
+    expect(seen).toEqual([
+      ['event', { seq: 1, name: 'a' }],
+      ['state', { rev: 2 }],
+    ]);
+  });
+
+  it('delivers a terminal error frame to onMessage and resolves', async () => {
+    const response = chunkedResponse(['event: error\ndata: {"code":"TARGET_DISCONNECTED","message":"bye"}\n\n']);
+    const fetchMock: FetchMock = vi.fn(async () => response);
+    const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: fetchMock });
+    const seen: Array<[string, unknown]> = [];
+    await expect(
+      client.stream({ signal: new AbortController().signal, onMessage: (kind, data) => seen.push([kind, data]) }),
+    ).resolves.toBeUndefined();
+    expect(seen).toEqual([['error', { code: 'TARGET_DISCONNECTED', message: 'bye' }]]);
+  });
+
+  it('resolves quietly when aborted mid-stream', async () => {
+    const abortController = new AbortController();
+    const response = chunkedResponse(['event: state\ndata: {"rev":1}\n\n'], { neverCloses: true, signal: abortController.signal });
+    const fetchMock: FetchMock = vi.fn(async () => response);
+    const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: fetchMock });
+    const seen: Array<[string, unknown]> = [];
+    await expect(
+      client.stream({
+        signal: abortController.signal,
+        onMessage: (kind, data) => {
+          seen.push([kind, data]);
+          abortController.abort();
+        },
+      }),
+    ).resolves.toBeUndefined();
+    expect(seen).toEqual([['state', { rev: 1 }]]);
+  });
+
+  it('rejects a non-200 status (e.g. 404) with an IronbirdError', async () => {
+    const fetchMock: FetchMock = vi.fn(async () => new Response('not found', { status: 404 }));
+    const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: fetchMock });
+    const error = await client.stream({ signal: new AbortController().signal, onMessage: () => {} }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('INTERNAL');
   });
 });
 
