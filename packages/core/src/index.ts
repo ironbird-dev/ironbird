@@ -16,3 +16,6 @@ export type {
   StepResult,
   TargetInfo,
 } from './protocol';
+export { getAtPath, parsePath } from './paths';
+export { serializeState } from './serialize';
+export type { SerializationWarning } from './serialize';
