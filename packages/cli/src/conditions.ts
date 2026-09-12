@@ -20,8 +20,19 @@ export function parseCondition(params: Record<string, unknown>): Condition {
       return { notEquals: params['notEquals'] };
     case 'exists':
       return { exists: params['exists'] !== false };
-    case 'matches':
-      return { matches: String(params['matches']) };
+    case 'matches': {
+      const pattern = String(params['matches']);
+      try {
+        new RegExp(pattern);
+      } catch (caught) {
+        const message = caught instanceof Error ? caught.message : String(caught);
+        throw new IronbirdError('INVALID_PAYLOAD', `matches is not a valid regular expression: ${message}`, {
+          name: 'waitFor',
+          issues: [{ path: ['matches'], message }],
+        });
+      }
+      return { matches: pattern };
+    }
   }
 }
 

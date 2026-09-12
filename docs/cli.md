@@ -182,7 +182,7 @@ Headless only; remote targets return `UNSUPPORTED`. `advance` prints a step resu
 ironbird reset
 ```
 
-Headless only. Disposes the headless app, recreates it with a fresh context, and prints `{ target, rev, path, value }`.
+Headless only. Disposes the headless app, recreates it with a fresh context, and prints `{ target, rev, path, value }`. Event sequence numbers restart at 1 after a reset, so call `events` without `--since` once before paging again.
 
 ### screenshot
 

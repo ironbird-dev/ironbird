@@ -43,7 +43,6 @@ interface Session {
   recorder: EventRecorder;
   tracker: Tracker;
   app: HeadlessApp;
-  connectedAt: number;
   unsubscribe: () => void;
 }
 
@@ -59,6 +58,7 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
   const stateListeners = new Set<(rev: number) => void>();
   const warned = new Set<string>();
   let queue: Promise<unknown> = Promise.resolve();
+  const connectedAt = Date.now();
 
   const boot = async (): Promise<Session> => {
     const clock = createManualClock({ now: options.clockStart ? Date.parse(options.clockStart) : 0 });
@@ -67,7 +67,7 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     const app = await options.definition.create({ clock, recorder, tracker, env: options.env });
     const offEvents = recorder.subscribe((event) => eventListeners.forEach((listener) => listener(event)));
     const offState = app.target.subscribe(() => stateListeners.forEach((listener) => listener(app.target.revision())));
-    return { clock, recorder, tracker, app, connectedAt: Date.now(), unsubscribe: () => (offEvents(), offState()) };
+    return { clock, recorder, tracker, app, unsubscribe: () => (offEvents(), offState()) };
   };
 
   let session = await boot();
@@ -107,21 +107,31 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     return { target: 'headless', rev: session.app.target.revision(), path, state: snapshot(path), events: session.recorder.since(since).events, settle: settleResult };
   };
 
-  const nextStateChange = (): Promise<void> =>
-    new Promise((resolve) => {
-      const off = session.app.target.subscribe(() => {
-        off();
-        resolve();
-      });
+  const waitForStateChangeOrSleep = async (ms: number): Promise<void> => {
+    let off: () => void = () => {};
+    const changed = new Promise<void>((resolve) => {
+      off = session.app.target.subscribe(() => resolve());
     });
+    try {
+      await Promise.race([changed, sleep(ms)]);
+    } finally {
+      off();
+    }
+  };
 
   const ops: Record<string, (params: Params) => unknown | Promise<unknown>> = {
-    describe: (): Description => ({
-      app: { id: options.appId, platform: 'headless' },
-      commands: session.app.target.commands.describe(),
-      fakes: {},
-      capabilities: ['settle', 'events', ...(session.app.fakes?.length ? (['fakes'] as const) : []), 'clock', 'reset', ...session.app.target.capabilities],
-    }),
+    describe: (): Description => {
+      const fakes: Description['fakes'] = {};
+      for (const fake of session.app.fakes ?? []) {
+        fakes[fake.name] = { ...(fake.description === undefined ? {} : { description: fake.description }), controls: fake.controls.describe() };
+      }
+      return {
+        app: { id: options.appId, platform: 'headless' },
+        commands: session.app.target.commands.describe(),
+        fakes,
+        capabilities: ['settle', 'events', ...(session.app.fakes?.length ? (['fakes'] as const) : []), 'clock', 'reset', ...session.app.target.capabilities],
+      };
+    },
     dispatch: (params) => step(params, () => session.app.target.dispatch(str(params['name']), params['payload'])),
     getState: (params) => {
       const path = str(params['path']);
@@ -139,7 +149,7 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
         if (remaining <= 0) {
           throw new IronbirdError('WAIT_TIMEOUT', `Condition on ${path || '<root>'} not met within ${timeoutMs} ms`, { path, value, pending: session.tracker.pending() });
         }
-        await Promise.race([nextStateChange(), sleep(Math.min(16, remaining))]);
+        await waitForStateChangeOrSleep(Math.min(16, remaining));
       }
     },
     settle: (params) => session.tracker.whenIdle({ timeoutMs: num(params['timeoutMs'], options.settleTimeoutMs), mode: 'quiescent' }),
@@ -154,7 +164,10 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     },
     clockNow: () => ({ now: session.clock.now() }),
     reset: async () => {
+      // Not queued (see `run`): a stuck dispatch must not block recovery, so reset abandons
+      // whatever is still waiting in the queue instead of waiting its turn behind it.
       await disposeSession(session);
+      queue = Promise.resolve();
       session = await boot();
       warned.clear();
       return { rev: session.app.target.revision(), path: '', value: snapshot('') };
@@ -163,11 +176,12 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
 
   return {
     id: 'headless',
-    info: () => ({ id: 'headless', platform: 'headless', appId: options.appId, connectedAt: session.connectedAt, rev: session.app.target.revision() }),
-    run(op, params) {
+    info: () => ({ id: 'headless', platform: 'headless', appId: options.appId, connectedAt, rev: session.app.target.revision() }),
+    async run(op, params) {
       const handler = ops[op];
-      if (!handler) return Promise.reject(new IronbirdError('UNSUPPORTED', `The headless target doesn't support ${op}`, { op, target: 'headless' }));
-      if (!MUTATING_OPS.has(op)) return Promise.resolve(handler(params));
+      if (!handler) throw new IronbirdError('UNSUPPORTED', `The headless target doesn't support ${op}`, { op, target: 'headless' });
+      if (op === 'reset') return handler(params);
+      if (!MUTATING_OPS.has(op)) return handler(params);
       const next = queue.then(() => handler(params));
       queue = next.catch(() => undefined);
       return next;

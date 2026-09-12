@@ -199,7 +199,7 @@ The app sends `hello` with the protocol version, app id, platform, and capabilit
 
 On disconnect, in-flight requests fail with `TARGET_DISCONNECTED` and are not retried, because the command may already have been applied. The bridge reconnects with exponential backoff from 500 ms to 5 s.
 
-Each target processes mutating operations (`dispatch`, `fakeControl`, `clockAdvance`, `reset`, `snapshotLoad`) one at a time, in arrival order, because concurrency among them would make results depend on timing. Read-only operations (`describe`, `getState`, `events`, `settle`, `waitFor`, `fakeCalls`, `snapshotSave`) run alongside them, so a pending `wait` never blocks the `clock advance` or command that would satisfy it.
+Each target processes mutating operations (`dispatch`, `fakeControl`, `clockAdvance`, `reset`, `snapshotLoad`) one at a time, in arrival order, because concurrency among them would make results depend on timing. Read-only operations (`describe`, `getState`, `events`, `settle`, `waitFor`, `fakeCalls`, `snapshotSave`) run alongside them, so a pending `wait` never blocks the `clock advance` or command that would satisfy it. `reset` skips the queue itself, so it can recover a target stuck behind a dispatch that never settles, abandoning whatever else was still queued.
 
 ## 8. Target selection
 

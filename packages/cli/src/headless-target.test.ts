@@ -165,4 +165,57 @@ describe('createHeadlessTarget', () => {
     expect(events).toEqual(['loaded']);
     expect(revs).toEqual([1, 2]);
   });
+
+  it('describe lists wired fakes with their controls', async () => {
+    const fakeControls = defineCommands({ emit: z.object({ event: z.string() }) });
+    const withFake = defineHeadless(({ clock }) => {
+      const target = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({ now: clock.now() }) });
+      const fake = { name: 'reader', description: 'Fake reader', port: {}, controls: fakeControls, control: async () => {}, calls: () => [] };
+      return { target, fakes: [fake] };
+    });
+    const t = await createHeadlessTarget({ definition: withFake, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
+    const description = (await t.run('describe', {})) as { fakes: Record<string, { description?: string; controls: Record<string, unknown> }>; capabilities: string[] };
+    expect(description.capabilities).toContain('fakes');
+    expect(description.fakes['reader']?.description).toBe('Fake reader');
+    expect(Object.keys(description.fakes['reader']?.controls ?? {})).toEqual(['emit']);
+    await t.dispose();
+  });
+
+  it('rejects a malformed matches pattern with INVALID_PAYLOAD', async () => {
+    const t = await boot();
+    const error = await t.run('waitFor', { path: 'status', matches: '[', timeoutMs: 10 }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('INVALID_PAYLOAD');
+  });
+
+  it('keeps accepting mutating operations after one fails', async () => {
+    const t = await boot({ WHO: 'now' });
+    await expect(t.run('dispatch', { name: 'boom.now' })).rejects.toMatchObject({ code: 'DISPATCH_FAILED' });
+    const result = (await t.run('dispatch', { name: 'counter.add', payload: { by: 1 }, path: 'count' })) as { state: number };
+    expect(result.state).toBe(1);
+  });
+
+  it('reset recovers a target whose dispatch never settles', async () => {
+    const stuck = defineHeadless(() => {
+      let count = 0;
+      const target = createTarget({
+        commands: defineCommands({ 'hang.forever': z.object({}), 'count.add': z.object({}) }),
+        dispatch: ({ name }) => {
+          if (name === 'hang.forever') return new Promise<void>(() => {});
+          count += 1;
+        },
+        getState: () => ({ count }),
+      });
+      return { target };
+    });
+    const t = await createHeadlessTarget({ definition: stuck, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
+    const hanging = t.run('dispatch', { name: 'hang.forever' });
+    const queued = t.run('dispatch', { name: 'count.add' });
+    const reset = await t.run('reset', {});
+    expect(reset).toEqual({ rev: 0, path: '', value: { count: 0 } });
+    const after = (await t.run('dispatch', { name: 'count.add', path: 'count' })) as { state: number };
+    expect(after.state).toBe(1);
+    void hanging;
+    queued.catch(() => undefined);
+    await t.dispose();
+  });
 });
