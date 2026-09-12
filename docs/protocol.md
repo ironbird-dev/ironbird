@@ -4,6 +4,7 @@
 |---|---|
 | Status | Draft |
 | `PROTOCOL_VERSION` | `1` |
+| Last updated | 2026-09-11 |
 | Related | [architecture.md](architecture.md) · [cli.md](cli.md) · [api.md](api.md) |
 
 ironbird has two transports that carry the same operations:
@@ -64,7 +65,7 @@ The app sends `hello` immediately after connecting:
 }
 ```
 
-The `marker` field keeps the marker string referenced whenever the bridge is present in a bundle, which is what lets `ironbird verify-bundle` detect it after minification.
+The `marker` field keeps the marker string referenced whenever the bridge is present in a bundle, which is what lets `ironbird verify-bundle` detect it after minification. The constant is defined in `@ironbird/react-native` only. `@ironbird/core` can ship in release bundles, so it must never contain the string.
 
 The daemon answers with `welcome` or `reject`:
 
@@ -76,7 +77,7 @@ The daemon answers with `welcome` or `reject`:
 { "type": "reject", "code": "PROTOCOL_MISMATCH", "message": "Daemon speaks protocol 1; bridge speaks protocol 2" }
 ```
 
-After `reject`, the daemon closes the socket with close code 4001 for `PROTOCOL_MISMATCH` or 4003 for `UNAUTHORIZED`. After `welcome`, the daemon sends a `describe` request and caches the result for the life of the connection.
+A daemon session serves one app: the app id of the headless target, or of the first bridge to connect when there is no headless entry. A `hello` with a different app id is rejected with `APP_MISMATCH`. After `reject`, the daemon closes the socket with close code 4001 for `PROTOCOL_MISMATCH`, 4002 for `APP_MISMATCH`, or 4003 for `UNAUTHORIZED`. After `welcome`, the daemon sends a `describe` request and caches the result for the life of the connection. Target ids are assigned per platform in connection order and reserved across disconnects; the rule is in [architecture.md §7.3](architecture.md#73-connection-lifecycle).
 
 ### 3.2 Requests and responses
 
@@ -105,7 +106,7 @@ After `reject`, the daemon closes the socket with close code 4001 for `PROTOCOL_
 }
 ```
 
-Failures use the same `ok: false` error shape as the client API. Targets process requests one at a time, in arrival order. The daemon applies a request timeout (default 30 s) and fails a request with `TARGET_DISCONNECTED` if the connection drops before a response arrives.
+Failures use the same `ok: false` error shape as the client API. Mutating operations (`dispatch`, `fakeControl`, `clockAdvance`, `reset`, `snapshotLoad`) are processed one at a time per target, in arrival order. Read-only operations (`describe`, `getState`, `events`, `settle`, `waitFor`, `fakeCalls`, `snapshotSave`) are not queued behind them, so a pending `waitFor` never blocks the operation that would satisfy it. The daemon applies a request timeout (default 30 s) and fails a request with `TARGET_DISCONNECTED` if the connection drops before a response arrives.
 
 ### 3.3 Notifications
 
@@ -144,6 +145,7 @@ The daemon sends `{ "type": "ping", "t": <number> }` every 5 s, and the app repl
 | `fakeControl` | `fake`, `control`, `payload?`, `path?`, `settle?` | `StepResult` | ✓ | ✓ when fakes are wired into the build |
 | `fakeCalls` (P1) | `fake`, `since?` | `{ calls }` | ✓ | ✓ when fakes are wired into the build |
 | `clockAdvance` | `ms`, `path?` | `StepResult` plus `now` | ✓ | `UNSUPPORTED` in v1 |
+| `clockNow` | none | `{ now }` | ✓ | `UNSUPPORTED` in v1 |
 | `snapshotSave` (P1) | none | `{ rev, snapshot }` | if the target persists | if the target persists |
 | `snapshotLoad` (P1) | `snapshot` | `{ rev, path, value }` | if the target restores | if the target restores |
 | `reset` | none | `{ rev, path, value }` | ✓ | `UNSUPPORTED` |
@@ -156,8 +158,10 @@ The daemon sends `{ "type": "ping", "t": <number> }` every 5 s, and the app repl
 |---|---|---|
 | `status` | none | `{ version, protocol, uptimeMs, targets: TargetInfo[] }` |
 | `screenshot` | `target?`, `device?`, `out?` | `Screenshot` |
-| `step` | `name`, `payload?`, `target?`, `device?`, `path?`, `settleTimeoutMs?` | `StepResult` plus `screenshot: Screenshot` and `settledBeforeCapture: boolean` |
+| `step` | `name`, `payload?`, `target?`, `device?`, `path?`, `settle?` | `StepResult` plus `screenshot: Screenshot` and `settledBeforeCapture: boolean` |
 | `scenarioRun` | `file`, `target?`, `bail?` | `ScenarioResult` |
+
+`settle` in `step` has the same shape as in `dispatch`. `step` captures the screenshot after settling ends, whether or not it reached idle, and `settle: false` captures right after the dispatch.
 
 ## 5. Types
 
@@ -248,6 +252,8 @@ interface ErrorShape {
 }
 ```
 
+Capabilities say which operations a target supports, and an operation whose capability is absent fails with `UNSUPPORTED`. The headless target declares `settle`, `events`, `fakes`, `clock`, and `reset`, plus `persist` and `restore` when its `Target` implements them. A remote target declares `settle` and `events`, `fakes` when fakes are wired into the build, and `persist` and `restore` from its `Target`; it never declares `clock` or `reset` in v1.
+
 ## 6. Error codes
 
 | Code | Raised when | `details` |
@@ -267,6 +273,7 @@ interface ErrorShape {
 | `HEADLESS_LOAD_FAILED` | The headless entry failed to load | `{ entry, message, importChain? }` |
 | `CLOCK_RUNAWAY` | `clockAdvance` exceeded 10,000 timer firings | `{ labels }` |
 | `PROTOCOL_MISMATCH` | Handshake versions differ | `{ daemon, bridge }` |
+| `APP_MISMATCH` | A bridge's app id differs from the app this daemon session serves | `{ expected, received }` |
 | `UNAUTHORIZED` | Token missing or wrong | none |
 | `INTERNAL` | A bug in ironbird | `{ message }` |
 
@@ -274,7 +281,7 @@ Settle timeouts are not errors, because the command has already been applied; th
 
 ## 7. Serialization
 
-State values follow `JSON.stringify` rules, with one exception: values that JSON would silently drop or flatten, namely functions, `Map`, `Set`, class instances other than `Date`, and cyclic references, are replaced with `{ "$unserializable": "<kind>" }`. Each affected path produces one `UNSERIALIZABLE_STATE` warning per connection.
+State values follow `JSON.stringify` rules: `Date` serializes through `toJSON`, and `undefined` properties are omitted, so optional fields never produce warnings. Values that JSON would throw on or silently flatten, namely functions, `BigInt`, `NaN`, `Infinity`, `Map`, `Set`, class instances other than `Date`, and cyclic references, are replaced with `{ "$unserializable": "<kind>" }`. Each affected path produces one `UNSERIALIZABLE_STATE` warning per connection.
 
 ## 8. Versioning
 

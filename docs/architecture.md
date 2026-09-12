@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-09-10 |
+| Last updated | 2026-09-11 |
 | Related | [spec.md](spec.md) · [protocol.md](protocol.md) · [api.md](api.md) · [ADRs](adr/) |
 
 ## 1. Context
@@ -16,8 +16,8 @@ The shape follows what Shopify described for its native apps: business logic sep
 
 1. **Commands, not taps.** Agents change state through declared, validated commands and fake controls, and never through arbitrary code ([ADR-0001](adr/0001-commands-only-agent-surface.md)).
 2. **One protocol, any target.** An operation means the same thing against headless and remote targets, so scenarios and agent habits transfer ([ADR-0002](adr/0002-one-daemon-many-targets.md)).
-3. **Deterministic by default in headless mode.** Manual clock, scripted fakes, operations processed one at a time. Nothing moves unless the agent moves it.
-4. **Zero production footprint.** Pure JavaScript, a dev-only bridge, and verifiable absence from release bundles ([ADR-0003](adr/0003-app-dials-out-over-websocket.md), [ADR-0005](adr/0005-pure-javascript-no-native-code.md)).
+3. **Deterministic by default in headless mode.** Manual clock, scripted fakes, mutating operations processed one at a time. Nothing moves unless the agent moves it.
+4. **No bridge in production.** Pure JavaScript, a dev-only bridge that is verifiably absent from release bundles, and a core whose tracker and recorder are switched off outside dev builds ([ADR-0003](adr/0003-app-dials-out-over-websocket.md), [ADR-0005](adr/0005-pure-javascript-no-native-code.md)).
 5. **Checks decide; agents gather evidence.** Pass or fail comes from state conditions and exit codes, never from a model's reading of a screenshot.
 6. **Adopt one flow at a time.** A single feature store can be wired up while the rest of the app stays untouched.
 
@@ -63,6 +63,8 @@ The daemon is the only long-lived process. CLI invocations and the MCP server ar
 
 Dependencies point one way. Every package may depend on core, and core depends on nothing but Zod. The CLI never imports `@ironbird/react-native`.
 
+`@ironbird/core` is the one package that can end up in a release bundle, because app code imports its `Clock`, tracker, and recorder. That is acceptable: core does no I/O, opens no connections, and never contains the bridge marker, and apps create the tracker and recorder with `enabled: __DEV__` so both are inert in release builds. The bridge, in `@ironbird/react-native`, is the only part that must be absent, and `verify-bundle` checks for it.
+
 ## 5. Integrating an app
 
 Recommended layout inside an app:
@@ -71,7 +73,8 @@ Recommended layout inside an app:
 src/
   core/                    your app logic: stores or state machines, no react-native imports
     ports.ts               interfaces for api, storage, reader, analytics, clock
-    instance.ts            the instance the UI uses, wired with real adapters
+    adapters/              real implementations of the ports; may import react-native
+    instance.ts            the instance the UI uses, wired with real adapters, tracker, and recorder
   ironbird/
     commands.ts            defineCommands(...)
     target.ts              toTarget(app): adapts your core to a Target
@@ -82,7 +85,7 @@ ironbird.config.ts
 ironbird/scenarios/*.yaml
 ```
 
-Everything under `src/core/` and `src/ironbird/`, except `device.ts`, must be importable in Node. Two mechanisms keep it that way: an ESLint `no-restricted-imports` rule in the app, and the daemon's load-time error, which names the import chain when a `react-native` import sneaks in. The UI keeps using the same core instance it always did; ironbird only adds a second way in.
+Everything under `src/core/` and `src/ironbird/` must be importable in Node, except the parts that touch the real world: `core/adapters/`, `core/instance.ts`, and `ironbird/device.ts`. Two mechanisms keep it that way: an ESLint `no-restricted-imports` rule in the app, and the daemon's load-time error, which names the import chain when a `react-native` import sneaks in. The UI keeps using the same core instance it always did; ironbird only adds a second way in.
 
 Adoption can start with one feature. For example, a checkout store gets commands, a target, and fakes for the card reader and payment API, while navigation, settings, and everything else stay as they are.
 
@@ -108,7 +111,7 @@ Code under test takes time from an injected `Clock`. Headless mode uses a `Manua
 
 ### 6.5 Effect tracking and settle
 
-The tracker records promise-returning port calls made through `tracker.wrap`, plus timers on a real clock that are due within a threshold (default 1 s). Ports created by fakes are recognized automatically. Every step ends by settling, with three possible outcomes:
+The tracker records promise-returning port calls made through `tracker.wrap`, plus timers on a real clock that are due within a threshold (default 1 s). Wrapping is always explicit, so the app chooses the label; when the port being wrapped is a `FakeInstance.port`, which the fake tags with a private symbol, its calls are marked `fake: true`. Every step ends by settling, with three possible outcomes:
 
 | Outcome | Meaning | Typical next move |
 |---|---|---|
@@ -118,23 +121,23 @@ The tracker records promise-returning port calls made through `tracker.wrap`, pl
 
 Quiescence counts only fake-backed effects, because a real network call that hasn't changed anything for a few milliseconds is still in progress. Results list pending labels and, in headless mode, how far away the next manual-clock timer is.
 
-Remote settle adds the UI. The bridge dispatches, yields a macrotask so subscriptions and React scheduling can begin, waits until the tracker is idle, waits N animation frames (default 2), and re-checks the tracker before reporting idle:
+Remote settle adds the UI. The bridge dispatches, yields a macrotask so subscriptions and React scheduling can begin, waits until the tracker is idle, waits N animation frames (default 2), and re-checks the tracker before reporting idle. Time comes from the `Clock` given to `startBridge`, which defaults to the real clock and is shared with the tracker, so the no-device bridge tests can drive settle with a manual clock. `requestAnimationFrame` is a rendering signal, not a clock, and is used directly:
 
 ```ts
-async function settle({ frames = 2, timeoutMs = 5000 }) {
-  const started = Date.now();
-  await nextMacrotask();
-  while (Date.now() - started < timeoutMs) {
+async function settle({ clock, frames = 2, timeoutMs = 5000 }) {
+  const started = clock.now();
+  await nextMacrotask(clock);
+  while (clock.now() - started < timeoutMs) {
     if (tracker.pending().length === 0) {
       await animationFrames(frames);
       if (tracker.pending().length === 0) {
-        return { idle: true, quiescent: false, waitedMs: Date.now() - started, pending: [] };
+        return { idle: true, quiescent: false, waitedMs: clock.now() - started, pending: [] };
       }
     } else {
-      await Promise.race([nextTrackerChange(tracker), delay(16)]);
+      await Promise.race([nextTrackerChange(tracker), delay(clock, 16)]);
     }
   }
-  return { idle: false, quiescent: false, waitedMs: Date.now() - started, pending: tracker.pending() };
+  return { idle: false, quiescent: false, waitedMs: clock.now() - started, pending: tracker.pending() };
 }
 ```
 
@@ -146,7 +149,7 @@ The recorder is a bounded, append-only log with monotonic sequence numbers and c
 
 ### 6.7 State, paths, and serialization
 
-State that crosses the protocol must be JSON-serializable. Dates serialize through `toJSON`. Functions, `Map`, `Set`, class instances, and cyclic references are replaced with `{ "$unserializable": "<kind>" }` and reported once per path. Paths are dot-separated, with numeric segments for array indices. Results can be narrowed to a subtree with a path to keep agent context small.
+State that crosses the protocol must be JSON-serializable. Dates serialize through `toJSON`, and `undefined` properties are omitted as in JSON. Functions, `BigInt`, `NaN`, `Infinity`, `Map`, `Set`, class instances other than `Date`, and cyclic references are replaced with `{ "$unserializable": "<kind>" }` and reported once per path. Paths are dot-separated, with numeric segments for array indices. Results can be narrowed to a subtree with a path to keep agent context small.
 
 ## 7. Flows
 
@@ -190,11 +193,13 @@ sequenceDiagram
 
 ### 7.3 Connection lifecycle
 
-The app sends `hello` with the protocol version, app id, platform, and capabilities. The daemon replies with `welcome` and a target id, or `reject` with a reason, then requests `describe` and caches the app's commands and fakes. Target ids stay stable across reconnects (`ios`, `android`, or `ios-2` when a second iOS app connects), so a Metro reload doesn't break `--target ios`.
+A daemon session serves one app. Its targets are the headless instance, when a headless entry is configured, plus one remote target per connected dev build of that app, so the same app on two simulators gives two targets. The session's app id comes from the headless target's description, or from the first bridge to connect when there is no headless entry; a later `hello` with a different app id is rejected with `APP_MISMATCH`. Serving several apps from one session is P2.
+
+The app sends `hello` with the protocol version, app id, platform, and capabilities. The daemon replies with `welcome` and a target id, or `reject` with a reason, then requests `describe` and caches the app's commands and fakes. Target ids are assigned per platform in connection order: `ios`, then `ios-2`, and likewise `android`. When a connection drops, its id stays reserved and disappears from `status`, and the next `hello` for that platform takes the lowest reserved id, so a Metro reload keeps `--target ios` working. When two builds on the same platform reload at once they can swap ids; there is no device identity without native code, so the mapping from id to device stays manual until Q4 is resolved.
 
 On disconnect, in-flight requests fail with `TARGET_DISCONNECTED` and are not retried, because the command may already have been applied. The bridge reconnects with exponential backoff from 500 ms to 5 s.
 
-Each target processes operations one at a time, in arrival order. Concurrency within a target would make results depend on timing, which defeats the purpose.
+Each target processes mutating operations (`dispatch`, `fakeControl`, `clockAdvance`, `reset`, `snapshotLoad`) one at a time, in arrival order, because concurrency among them would make results depend on timing. Read-only operations (`describe`, `getState`, `events`, `settle`, `waitFor`, `fakeCalls`, `snapshotSave`) run alongside them, so a pending `wait` never blocks the `clock advance` or command that would satisfy it.
 
 ## 8. Target selection
 
@@ -206,6 +211,7 @@ When `--target` is omitted, operations use `defaultTarget` from config, which is
 |---|---|
 | Bridge shipped in a release or OTA bundle | `__DEV__` guard; bridge marker kept alive in the `hello` message; `ironbird verify-bundle` in CI for release builds and production exports |
 | Another host or process driving a dev build | Daemon binds 127.0.0.1 by default; any non-loopback bind requires a token on both the HTTP API and the bridge handshake |
+| `@ironbird/core` in a release bundle | Expected, because app code imports its `Clock`; core has no I/O, no network code, and no bridge marker, and its tracker and recorder are created with `enabled: __DEV__` |
 | Code injection through the agent surface | No evaluation operations exist; only declared commands and controls, validated inside the app ([ADR-0001](adr/0001-commands-only-agent-surface.md)) |
 | Malformed or hostile daemon messages | The bridge validates message shapes and payloads and rejects unknown operations |
 | Sensitive data in artifacts | State, events, and screenshots may contain personal data; `.ironbird/` is gitignored by the setup template, and `doctor` warns if it isn't |
@@ -244,6 +250,9 @@ When `--target` is omitted, operations use `defaultTarget` from config, which is
 | MCP exposes a generic `ironbird_send` tool rather than one tool per app command | Here: keeps the tool list stable as apps connect and disconnect, and scales to large command sets. Per-command tools are P2 |
 | Scenario files are YAML | Here: easy for agents and humans to write and review, and familiar to Maestro users |
 | Clock control is headless-only in v0 | Here: controlling time on device interacts badly with animations and real I/O |
+| One app per daemon session in v0 | Here: config, scenarios, and the headless entry are per app; several apps per session is P2 |
+| Read-only operations bypass the per-target queue | Here: a `wait` must not block the operation that satisfies it, and reads don't affect ordering |
+| `@ironbird/core` may ship in release bundles; the bridge never does | Here: app code needs core's `Clock`; the tracker and recorder are inert outside dev builds, and the marker lives only in `@ironbird/react-native` |
 
 ## 13. What we'd revisit as it grows
 

@@ -44,18 +44,18 @@ Intended tooling: pnpm workspaces, TypeScript in strict mode, Vitest for package
 
 1. `@ironbird/core` imports only `zod`. No `react-native`, no `node:*` modules, no DOM or browser globals. It must run unmodified in Node and Hermes. Lint enforces this.
 2. No arbitrary code execution anywhere. No `eval`, no `new Function`, and no protocol operation that runs caller-supplied code. Agents act only through declared commands and fake controls ([ADR-0001](docs/adr/0001-commands-only-agent-surface.md)).
-3. The bridge stays dev-only. `startBridge` must no-op when `__DEV__` is false unless `allowInNonDevBuilds` is set, and the bridge marker must stay referenced in the `hello` message so `ironbird verify-bundle` can detect it after minification.
+3. The bridge stays dev-only. `startBridge` must no-op when `__DEV__` is false unless `allowInNonDevBuilds` is set, and the bridge marker must stay referenced in the `hello` message so `ironbird verify-bundle` can detect it after minification. The marker constant is defined in `@ironbird/react-native` and nowhere else: `@ironbird/core` ships in release bundles, so the string must not appear in it or in any other package.
 4. Validate every payload where it is applied, including inside the app. Never trust the daemon.
 5. Protocol changes update [docs/protocol.md](docs/protocol.md) in the same PR. Breaking changes bump `PROTOCOL_VERSION` and need an ADR.
 6. Public API or CLI changes update [docs/api.md](docs/api.md) or [docs/cli.md](docs/cli.md) in the same PR and include a changeset.
 7. New runtime dependencies in `core` or `react-native` need an ADR. New dependencies in `cli` need a one-line justification in the PR.
 8. Errors that cross a package boundary are `IronbirdError` with a code from the protocol error table. No bare string throws.
-9. Headless determinism is a feature. Library code and example app logic take time from the injected `Clock`, never from global `setTimeout`, `setInterval`, or `Date.now`.
+9. Headless determinism is a feature. Library code and example app logic take time from the injected `Clock`, never from global `setTimeout`, `setInterval`, or `Date.now`. The bridge is library code too: it uses the `Clock` passed to `startBridge`, which defaults to the real clock. `requestAnimationFrame` is a rendering signal rather than a clock and may be used directly.
 
 ## Conventions
 
 - Named exports only, except `ironbird.config.ts` and headless definition files, which use default exports.
-- Public APIs take durations in milliseconds; the CLI accepts `ms`, `s`, and `m` suffixes.
+- Public APIs, the protocol, and MCP tools take durations in milliseconds; only the CLI accepts `ms`, `s`, and `m` suffixes.
 - CLI output is JSON when stdout isn't a TTY or `--json` is passed, and its shapes must match docs/cli.md.
 - Tests live next to code as `*.test.ts`. Device tests are named `*.device.test.ts` and are excluded from `pnpm test`.
 - Packages publish ESM and CommonJS builds with type declarations.

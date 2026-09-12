@@ -3,6 +3,7 @@
 | | |
 |---|---|
 | Status | Draft; signatures will change during M0–M2 |
+| Last updated | 2026-09-11 |
 | Related | [protocol.md](protocol.md) for wire types and error codes · [cli.md](cli.md) for the CLI |
 
 Priority markers match [spec.md](spec.md): **P0** ships in 0.1, **P1** is planned for 0.1 if milestones hold.
@@ -70,6 +71,8 @@ interface Target<S = unknown> {
 }
 ```
 
+`capabilities` lists only what the `Target` itself provides. The daemon and bridge add `settle`, `events`, `fakes`, `clock`, and `reset` as appropriate when they describe the target; see [protocol.md §5](protocol.md#5-types).
+
 Example with an XState actor, adapted by hand (the `@ironbird/xstate` adapter does this for you):
 
 ```ts
@@ -135,10 +138,10 @@ interface Tracker {
   onChange(listener: () => void): () => void;
 }
 
-function createTracker(options?: { clock?: Clock; timerThresholdMs?: number }): Tracker;
+function createTracker(options?: { clock?: Clock; timerThresholdMs?: number; enabled?: boolean }): Tracker;
 ```
 
-With a real clock, timers due within `timerThresholdMs` (default 1,000) count as pending. Manual-clock timers never count. Ports created by fakes are recognized automatically and marked `fake: true`, which is what allows `mode: 'quiescent'` to finish without advancing time. `PendingItem` and `SettleResult` are defined in [protocol.md](protocol.md#5-types).
+With a real clock, timers due within `timerThresholdMs` (default 1,000) count as pending. Manual-clock timers never count. Wrapping is always explicit, so the app chooses the label; when the port passed to `wrap` is a `FakeInstance.port`, which the fake tags with a private symbol, its calls are marked `fake: true`, which is what allows `mode: 'quiescent'` to finish without advancing time. With `enabled: false` (app code passes `enabled: __DEV__`), `wrap` returns the port untouched, `track` returns the promise untouched, `pending()` is empty, and `whenIdle` resolves idle at once, so release builds carry no tracking. `PendingItem` and `SettleResult` are defined in [protocol.md](protocol.md#5-types).
 
 ### defineFake (P0)
 
@@ -244,10 +247,10 @@ interface EventRecorder {
   clear(): void;
 }
 
-function createEventRecorder(options?: { clock?: Clock; limit?: number }): EventRecorder;
+function createEventRecorder(options?: { clock?: Clock; limit?: number; enabled?: boolean }): EventRecorder;
 ```
 
-`limit` defaults to 10,000. To capture analytics, wrap your analytics adapter so each call also records: `recorder.record('analytics', name, properties)`.
+`limit` defaults to 10,000. With `enabled: false`, `record` is a no-op and `since` returns nothing, so release builds carry no event log. To capture analytics, wrap your analytics adapter so each call also records: `recorder.record('analytics', name, properties)`.
 
 ### defineHeadless (P0)
 
@@ -297,6 +300,7 @@ interface BridgeOptions {
   tracker?: Tracker;
   recorder?: EventRecorder;
   fakes?: FakeInstance[];
+  clock?: Clock;                                                // default createRealClock(); share it with the tracker
   appId?: string;                                               // default 'app'
   url?: string;                                                 // default 'ws://localhost:4568'
   token?: string;
@@ -317,20 +321,38 @@ Behavior:
 
 - When `__DEV__` is false and `allowInNonDevBuilds` isn't set, `startBridge` logs one warning and returns an inert handle.
 - Platform comes from `Platform.OS`.
+- Settle timing uses `clock`, never `Date.now` or global timers, so the bridge can be tested in Node with a manual clock. Animation frames come from `requestAnimationFrame`.
 - iOS Simulator reaches the daemon at `localhost`. Android emulators need `adb reverse tcp:4568 tcp:4568`, which `ironbird serve` runs automatically when `adb` is available. Physical devices use the host's LAN address, and the daemon must be started with `--host` and a token.
 - Every incoming payload is validated against the app's own registry before dispatch.
 
-Wiring, using the layout from [architecture.md §5](architecture.md#5-integrating-an-app):
+Wiring, using the layout from [architecture.md §5](architecture.md#5-integrating-an-app). The tracker and recorder are created in `instance.ts`, which only the app loads, with `enabled: __DEV__` so release builds carry neither:
+
+```ts
+// src/core/instance.ts
+import { createEventRecorder, createRealClock, createTracker } from '@ironbird/core';
+import { realApi, realReader } from './adapters';
+import { createAppCore } from './app';
+
+export const clock = createRealClock();
+export const tracker = createTracker({ clock, enabled: __DEV__ });
+export const recorder = createEventRecorder({ clock, enabled: __DEV__ });
+export const appCore = createAppCore({
+  reader: tracker.wrap(realReader, 'reader'),
+  api: tracker.wrap(realApi, 'api'),
+  clock,
+});
+```
 
 ```ts
 // src/ironbird/device.ts
 import { startBridge } from '@ironbird/react-native';
-import { appCore, recorder, tracker } from '../core/instance';
+import { appCore, clock, recorder, tracker } from '../core/instance';
 import { toTarget } from './target';
 
 export function startIronbird() {
   return startBridge({
     target: toTarget(appCore),
+    clock,
     tracker,
     recorder,
     appId: 'com.example.checkout',

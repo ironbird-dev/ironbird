@@ -23,7 +23,7 @@ The app opens a WebSocket connection to the daemon, by default `ws://localhost:4
 | Toolchain coupling | None |
 | Fit with commands-only | Full |
 
-**Pros:** Works in Expo and bare apps with no rebuild; the app controls when it connects; one daemon serves many apps.
+**Pros:** Works in Expo and bare apps with no rebuild; the app controls when it connects; one daemon serves the same app on several devices.
 
 **Cons:** Needs reconnection logic; devices on a LAN need host addressing and a token.
 

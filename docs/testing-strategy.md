@@ -3,6 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
+| Last updated | 2026-09-11 |
 | Related | [spec.md](spec.md) · [roadmap.md](roadmap.md) · [AGENTS.md](../AGENTS.md) |
 
 ironbird's tests have two jobs: prove that ironbird works, and measure how far its results can be trusted. The second job matters as much as the first, because a verification tool that is quietly wrong is worse than having none.
@@ -14,8 +15,8 @@ ironbird's tests have two jobs: prove that ironbird works, and measure how far i
 | Unit | Vitest | Every commit | Registry validation and suggestions, path resolution, serialization placeholders, recorder sequencing, manual clock ordering, tracker idle and quiescence logic, scenario parsing |
 | Property | Vitest with fast-check | Every commit | Clock, tracker, recorder, and serialization invariants (below) |
 | Protocol contract | Vitest | Every commit | Shared message fixtures that both the daemon and the bridge must accept and produce; fixtures are kept per protocol version |
-| Daemon integration | Vitest in Node | Every commit | Every CLI command against the example app's headless entry: outputs, error codes, exit codes, reset isolation, two concurrent clients |
-| Bridge integration, no device | Vitest in Node | Every commit | The real bridge running in Node with shims for `Platform`, `requestAnimationFrame`, and `WebSocket`, connected to a real daemon: handshake, reconnection, request ordering, settle timeouts, the dev-only guard |
+| Daemon integration | Vitest in Node | Every commit | Every CLI command against the example app's headless entry: outputs, error codes, exit codes, reset isolation, two concurrent clients including a `wait` in one satisfied by a `clock advance` in the other |
+| Bridge integration, no device | Vitest in Node | Every commit | The real bridge running in Node with shims for `Platform`, `requestAnimationFrame`, and `WebSocket` and a manual clock, connected to a real daemon: handshake, reconnection, the app-id check, request ordering, settle timeouts, the dev-only guard |
 | Device end to end | Vitest on a macOS runner with iOS Simulator and an Android emulator | Nightly and before each release | Example app: 300-step stale-screenshot run, Metro reload reconnection, `step` latency, `verify-bundle` against real release and export output |
 | Agent evals | Scripted sessions with a coding agent | Per milestone from M3, and before each release | Fresh-session tasks on the example app; task success rate and false "verified" claims |
 
@@ -28,14 +29,14 @@ Device tests are named `*.device.test.ts` and are excluded from `pnpm test`.
 - Cleared timers never fire.
 - Recorder sequence numbers strictly increase, and `since(n)` never returns an event with `seq <= n`.
 - The tracker reports idle only when no wrapped promise is unresolved.
-- Serialization never throws for any input, including cyclic values, and marks every non-JSON value.
+- Serialization never throws for any input, including cyclic values and `BigInt`, omits `undefined` properties, and marks every other non-JSON value.
 
 ## Example test cases
 
 **Settle reports pending effects on timeout**
-- Given a remote target whose wrapped `api.submit` never resolves
-- When the agent runs `ironbird send checkout.submit --settle-timeout 200ms`
-- Then the result has `idle: false` and `pending` contains `api.submit`, the revision reflects the dispatch, and the CLI exits 3
+- Given a remote target whose wrapped `reader.collectPayment` never resolves
+- When the agent runs `ironbird send payment.start '{"method":"card"}' --settle-timeout 200ms`
+- Then the result has `idle: false` and `pending` contains `reader.collectPayment`, the revision reflects the dispatch, and the CLI exits 3
 
 **Quiescence in headless mode**
 - Given the fake reader's `collectPayment` is scheduled 1,200 ms ahead on the manual clock
@@ -50,7 +51,7 @@ Device tests are named `*.device.test.ts` and are excluded from `pnpm test`.
 **Bridge absent from production output**
 - Given the example app exported with `npx expo export` in production mode
 - When `ironbird verify-bundle dist` runs
-- Then it exits 0, and it exits 1 against a deliberately broken build that imports the bridge outside the `__DEV__` branch
+- Then it exits 0, including when the export contains `@ironbird/core`, and it exits 1 against a deliberately broken build that imports the bridge outside the `__DEV__` branch
 
 **Invalid payload never reaches app code**
 - Given `cart.addItem` requires `qty` to be a positive integer
@@ -61,6 +62,11 @@ Device tests are named `*.device.test.ts` and are excluded from `pnpm test`.
 - Given `src/core/pricing.ts` imports a module that imports `react-native`
 - When `ironbird serve` starts
 - Then it exits 2 with `HEADLESS_LOAD_FAILED`, and `importChain` lists `headless.ts → … → pricing.ts → react-native`
+
+**Disabled tracker and recorder are inert**
+- Given `createTracker({ enabled: false })` and `createEventRecorder({ enabled: false })`
+- When a wrapped port method is called and an event is recorded
+- Then `wrap` returned the same object it was given, `pending()` is empty, and `since()` returns no events
 
 ## Coverage targets
 

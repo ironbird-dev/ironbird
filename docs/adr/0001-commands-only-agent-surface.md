@@ -38,7 +38,7 @@ Agents change state only through commands declared by the app and controls decla
 | Reproducibility | Low: snippets depend on internal names and module state, and don't run headlessly |
 | Safety | Low: a code execution channel into every dev build |
 
-**Pros:** Zero setup; convenient for one-off exploration.
+**Pros:** Zero setup; convenient for one-off exploration. react-native-ai-devtools (ExecBro) is a current example, pairing a run-JS tool with logs, network, screenshots, and taps.
 
 **Cons:** Encourages poking internals rather than exercising behavior; not portable between targets; hard to audit.
 

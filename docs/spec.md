@@ -4,7 +4,7 @@
 |---|---|
 | Status | Draft |
 | Version | 0.1 (pre-implementation) |
-| Last updated | 2026-09-10 |
+| Last updated | 2026-09-11 |
 | Related | [architecture.md](architecture.md) · [roadmap.md](roadmap.md) |
 
 ## Problem statement
@@ -23,7 +23,7 @@ On 2026-09-10 Shopify described its answer for native apps: business logic decou
 | | | Stale screenshots over 300 consecutive steps | ≤ 1% |
 | G3 | Deterministic reproduction | Final-state divergences across 100 headless runs of one scenario | 0 |
 | G4 | Low integration cost | Time for an RN engineer to wire a first flow into an existing app from the docs alone | ≤ 1 working day |
-| G5 | Zero production footprint | Release or OTA bundles in CI that contain the bridge | 0 |
+| G5 | No bridge in production | Release or OTA bundles in CI that contain the bridge | 0 |
 
 ## Non-goals
 
@@ -88,8 +88,9 @@ On 2026-09-10 Shopify described its answer for native apps: business logic decou
 - [ ] A `react-native` import anywhere in the headless import graph fails with `HEADLESS_LOAD_FAILED`, naming the import chain
 - [ ] `ironbird reset` disposes the app and recreates it with a fresh clock, recorder, tracker, and fakes
 - [ ] Binds to 127.0.0.1 by default; a non-loopback host requires a token
+- [ ] A daemon session serves one app: a bridge whose app id differs from the session's app is rejected with `APP_MISMATCH`
 
-**R4. Core CLI.** `status`, `commands`, `fakes`, `send`, `state`, `wait`, `settle`, `events`, `fake`, `clock advance`, `reset`.
+**R4. Core CLI.** `status`, `commands`, `fakes`, `send`, `state`, `wait`, `settle`, `events`, `fake`, `clock advance`, `clock now`, `reset`.
 - [ ] JSON output when stdout isn't a TTY or `--json` is passed
 - [ ] Exit codes follow [cli.md](cli.md#exit-codes)
 - [ ] A `wait` timeout exits 4 and returns the last value at the path plus pending effects
@@ -99,6 +100,7 @@ On 2026-09-10 Shopify described its answer for native apps: business logic decou
 - [ ] `advance` fires due timers in time order and lets promise jobs run between them
 - [ ] `tracker.wrap` tracks promise-returning port methods by label
 - [ ] Settle results distinguish idle (nothing pending) from quiescent (only fake-backed work pending, waiting on the clock or a control)
+- [ ] `createTracker({ enabled: false })` returns an inert tracker whose `wrap` returns the port untouched, so release builds carry no effect tracking
 
 **R6. Fakes with controls.**
 - [ ] `defineFake` declares controls with Zod schemas, and they appear in `ironbird fakes`
@@ -107,6 +109,7 @@ On 2026-09-10 Shopify described its answer for native apps: business logic decou
 **R7. Event recorder.**
 - [ ] Events carry monotonic sequence numbers; `events --since <seq>` returns only newer events
 - [ ] The buffer is bounded (default 10,000 events) and reports truncation
+- [ ] `createEventRecorder({ enabled: false })` returns an inert recorder, so release builds carry no event log
 
 **R8. React Native bridge.**
 - [ ] `startBridge` connects out to the daemon over WebSocket and reconnects with backoff after reloads
@@ -184,10 +187,10 @@ These targets are hypotheses to revisit after the first pilots.
 | Q4 | How do we map a connected app to a specific simulator when several are booted, without native code? | Engineering | No; config fallback exists |
 | Q5 | Are JS-only signals enough to settle around UI-thread animations (for example Reanimated), layout animations, and image decoding, or is an optional native add-on needed? | Engineering | Investigate in M1 |
 | Q6 | Should fast-check arbitraries be derived from Zod schemas with an existing library or a minimal in-house generator? | Engineering | M4 |
-| Q7 | License: MIT or Apache-2.0? | Maintainer | Before the repository goes public |
+| Q7 | License: MIT or Apache-2.0? | Maintainer | Before the first npm publish, at the end of M0 |
 | Q8 | Do we support apps still on Zod 3, and how? | Engineering | Before 0.1 |
 | Q9 | Does the bridge work in Expo Go? Expected yes, since it has no native code | Engineering | Verify in M1 |
-| Q10 | Is "ironbird" clear of trademark conflicts for a developer tool? | Maintainer | Before the repository goes public |
+| Q10 | Is "ironbird" clear of trademark conflicts for a developer tool? | Maintainer | Before the first npm publish, at the end of M0 |
 
 ## Timeline and phasing
 

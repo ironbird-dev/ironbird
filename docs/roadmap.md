@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-09-10 |
+| Last updated | 2026-09-11 |
 | Related | [spec.md](spec.md) (requirement and question IDs) · [testing-strategy.md](testing-strategy.md) |
 
 Estimates assume focused effort and describe a sequence, not calendar dates. Each milestone ends with a short demo and a go/no-go decision against its exit criteria.
@@ -28,7 +28,8 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 - [ ] Choose a license (Q7) and add `LICENSE`
 - [ ] Trademark search for "ironbird" in software and developer tools (Q10)
 - [ ] Review ADR-0001 through ADR-0005 and mark each Accepted, amended, or rejected
-- [ ] Create `ironbird-dev/ironbird`, push these docs as the first commit, protect `main`, require 2FA for org members
+- [x] Create `ironbird-dev/ironbird` and push these docs as the first commit
+- [ ] Protect `main` and require 2FA for org members
 - [ ] Enable 2FA on the npm org and plan to publish from GitHub Actions with npm trusted publishing rather than long-lived tokens
 
 ## M0: Headless loop
@@ -37,9 +38,9 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 
 - Monorepo scaffold, lint boundaries, and CI running unit and integration tests
 - `@ironbird/core`: registry, `createTarget`, manual clock, tracker, recorder, `defineHeadless`, `IronbirdError`
-- `@ironbird/cli`: `serve` (headless only), `status`, `commands`, `send`, `state`, `wait`, `settle`, `events`, `clock advance`, `reset`
+- `@ironbird/cli`: `serve` (headless only), `status`, `commands`, `send`, `state`, `wait`, `settle`, `events`, `clock advance`, `clock now`, `reset`
 - Release pipeline: Changesets plus trusted publishing from GitHub Actions; publish `0.0.x` pre-releases of `ironbird` and `@ironbird/*` at the end of M0, which also secures the unscoped name
-- `examples/checkout` app logic: a cart and payment state machine, a fake card reader, a fake payment API, and a planted ordering bug behind `PLANT_RACE=1`. In the planted bug, a duplicated or early `payment.succeeded` event completes the order before the server confirms the total, producing a completed order with a zero total
+- `examples/checkout` app logic: a cart and payment state machine, a hand-written fake card reader and fake payment API scheduled on the manual clock (M2 turns them into `defineFake` fakes with controls), and a planted ordering bug behind `PLANT_RACE=1`. In the planted bug, a duplicated or early `payment.succeeded` event completes the order before the server confirms the total, producing a completed order with a zero total
 
 **Exit criteria**
 
@@ -52,6 +53,7 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 **Scope:** R8–R10, R12. Investigate Q5; verify Q9.
 
 - `@ironbird/react-native`: `startBridge`, handshake, reconnection, settle detection
+- Real-clock timer tracking in the tracker, so remote settle waits for short timers as well as wrapped effects
 - Daemon: WebSocket target channel, target ids, `screenshot`, `step`, `verify-bundle`
 - Example app screens wired to the same core used in M0
 - Measurement harness for stale screenshots and step latency
@@ -70,9 +72,8 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 
 **Scope:** R6, R11. R16 if time allows.
 
-- `defineFake`, controls, the `fakes` and `fake` commands, call recording
+- `defineFake`, controls, the `fakes` and `fake` commands, call recording; the example's hand-written fakes become `defineFake` fakes with controls
 - Scenario runner with YAML steps, optional steps, and structured failure output with artifacts
-- Real-clock timer tracking for remote settle
 
 **Exit criteria**
 

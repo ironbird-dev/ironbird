@@ -92,7 +92,7 @@ if (__DEV__) {
 An agent session:
 
 ```sh
-ironbird serve                                          # daemon with the headless target
+ironbird serve &                                        # daemon with the headless target; it runs in the foreground
 ironbird commands                                       # names, descriptions, JSON Schemas
 ironbird send cart.addItem '{"sku":"cut-45","qty":1}'
 ironbird send payment.start '{"method":"card"}'
@@ -115,7 +115,7 @@ ironbird step payment.start '{"method":"card"}' --target ios   # dev build: stat
 
 ## What ironbird is not
 
-It is not a UI automation tool, a state management library, or a way to run arbitrary code inside your app, and it never ships in release builds. See [non-goals](docs/spec.md#non-goals).
+It is not a UI automation tool, a state management library, or a way to run arbitrary code inside your app. The bridge never ships in release builds, and the parts of `@ironbird/core` that can, the clock, tracker, and recorder, are switched off outside dev builds. See [non-goals](docs/spec.md#non-goals).
 
 ## Documentation
 
@@ -133,4 +133,4 @@ It is not a UI automation tool, a state management library, or a way to run arbi
 
 ## License
 
-To be decided before the first publish (open question Q7 in the spec).
+To be decided before the first npm publish at the end of M0 (open question Q7 in the spec).

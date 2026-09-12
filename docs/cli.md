@@ -3,6 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
+| Last updated | 2026-09-11 |
 | Related | [protocol.md](protocol.md) · [api.md](api.md) |
 
 The `ironbird` binary ships in `@ironbird/cli` and requires Node 22 or newer. The unscoped `ironbird` package exposes the same binary, so `npx ironbird <command>` works without a local install. Every command except `serve`, `doctor`, `verify-bundle`, and `mcp` talks to a running daemon.
@@ -27,7 +28,7 @@ Payloads are JSON, and an omitted payload means `{}`. Condition values for `--eq
 |---|---|---|
 | 0 | Success, including headless steps that end quiescent | |
 | 1 | Operation failed | `INVALID_PAYLOAD`, `UNKNOWN_COMMAND`, `UNKNOWN_FAKE`, `UNKNOWN_CONTROL`, `DISPATCH_FAILED`, `UNSUPPORTED`, `SCREENSHOT_FAILED`, `TARGET_DISCONNECTED`, `CLOCK_RUNAWAY`, `INTERNAL` |
-| 2 | Usage or configuration error | Bad arguments, `AMBIGUOUS_TARGET`, `AMBIGUOUS_DEVICE`, `HEADLESS_LOAD_FAILED`, `UNAUTHORIZED`, `PROTOCOL_MISMATCH` |
+| 2 | Usage or configuration error | Bad arguments, `AMBIGUOUS_TARGET`, `AMBIGUOUS_DEVICE`, `HEADLESS_LOAD_FAILED`, `UNAUTHORIZED`, `PROTOCOL_MISMATCH`, `APP_MISMATCH` |
 | 3 | Applied, but not settled within the timeout | See `settle` in the result |
 | 4 | Condition or assertion not met | `WAIT_TIMEOUT`, a failed scenario step |
 | 5 | Nothing to talk to | Daemon unreachable, `NO_TARGET` |
@@ -68,6 +69,8 @@ Errors print to stdout as JSON too, so agents parse one stream:
 ```
 
 In a TTY, the same data is printed in a readable form.
+
+The CLI prints the daemon's `result` object, adding `target` to results that don't already carry it, such as `state` and `reset`. Errors are the daemon's `error` object under an `error` key, without the `ok` envelope described in [protocol.md](protocol.md#21-rpc).
 
 ## Commands
 
@@ -129,7 +132,7 @@ Prints `{ target, rev, path, value }`.
 ironbird wait <path> (--equals <value> | --not-equals <value> | --exists | --matches <regex>) [--timeout <duration>]
 ```
 
-Waits until the condition holds (default timeout 5 s). In headless mode `wait` doesn't advance the clock, so advance time first when the condition depends on it. A timeout exits 4 and prints the last value and pending effects.
+Waits until the condition holds (default timeout 5 s). In headless mode `wait` doesn't advance the clock, so advance time first when the condition depends on it. A pending `wait` doesn't block other clients, so a `clock advance` or `send` from another shell can satisfy it. A timeout exits 4 and prints the last value and pending effects.
 
 ```sh
 ironbird wait payment.status --equals awaitingServerEcho --timeout 2s
@@ -171,7 +174,7 @@ ironbird clock advance <duration> [--path <path>]
 ironbird clock now
 ```
 
-Headless only; remote targets return `UNSUPPORTED`. `advance` prints a step result with `now` added.
+Headless only; remote targets return `UNSUPPORTED`. `advance` prints a step result with `now` added. `now` prints `{ target, now }`.
 
 ### reset
 
@@ -192,10 +195,10 @@ Captures the iOS Simulator with `xcrun simctl io <device> screenshot` or an Andr
 ### step
 
 ```text
-ironbird step <command> [payload] [--device <udid|serial>] [--path <path>] [--settle-timeout <duration>]
+ironbird step <command> [payload] [--device <udid|serial>] [--path <path>] [--no-settle] [--settle-timeout <duration>]
 ```
 
-Remote targets only. Sends, settles, and captures a screenshot, then prints a step result plus `screenshot` and `settledBeforeCapture`. The screenshot is captured even when settling times out, so the agent can see what went wrong, and the CLI still exits 3.
+Remote targets only. Sends, settles, and captures a screenshot, then prints a step result plus `screenshot` and `settledBeforeCapture`. The screenshot is captured even when settling times out, so the agent can see what went wrong, and the CLI still exits 3. With `--no-settle` the capture happens right after the dispatch.
 
 ### scenario run
 
@@ -276,6 +279,8 @@ steps:
     control: emit
     payload: { event: payment.succeeded }
     repeat: 2
+  - screenshot: after-duplicate-success
+    optional: true          # skipped on headless targets
   - clock: 30s
     optional: true          # skipped on remote targets
   - wait: payment.status
@@ -283,8 +288,6 @@ steps:
     timeout: 2s
   - expect: order.total
     notEquals: 0
-  - screenshot: after-duplicate-success
-    optional: true          # skipped on headless targets
 ```
 
 | Step | Fields | Supported on |
@@ -298,7 +301,7 @@ steps:
 | `reset` | `reset: true` | Headless |
 | `snapshot` (P1) | `snapshot: { save: <file> }` or `snapshot: { load: <file> }` | Targets that persist or restore |
 
-Conditions are `equals`, `notEquals`, `exists` (`true` or `false`), and `matches` (a regular expression string). Any step can set `optional: true`, which skips it with a notice when the target doesn't support it; unsupported steps without that flag fail with `UNSUPPORTED`.
+Conditions are `equals`, `notEquals`, `exists` (`true` or `false`), and `matches` (a regular expression string). Any step can set `optional: true`, which skips it with a notice when the target doesn't support it; unsupported steps without that flag fail with `UNSUPPORTED`. The runner stops at the first failing step, and `skipped` lists the optional steps it skipped before that point.
 
 A failing run against the headless target prints:
 
@@ -308,8 +311,8 @@ A failing run against the headless target prints:
   "target": "headless",
   "passed": false,
   "durationMs": 41,
-  "failedStep": { "index": 6, "step": { "expect": "order.total", "notEquals": 0 }, "actual": 0 },
-  "skipped": [7],
+  "failedStep": { "index": 7, "step": { "expect": "order.total", "notEquals": 0 }, "actual": 0 },
+  "skipped": [4],
   "artifacts": ".ironbird/runs/2026-09-10T18-04-12Z/"
 }
 ```
@@ -321,14 +324,15 @@ A failing run against the headless target prints:
 | `ironbird_status` | none | Daemon and target status |
 | `ironbird_describe` | `target?` | Commands and fakes with JSON Schemas |
 | `ironbird_send` | `command`, `payload?`, `target?`, `path?`, `settle?` | Step result |
-| `ironbird_step` | `command`, `payload?`, `target?`, `path?` | Step result, plus the screenshot as image content |
+| `ironbird_step` | `command`, `payload?`, `target?`, `path?`, `settle?` | Step result, plus the screenshot as image content |
 | `ironbird_state` | `path?`, `target?` | Value at the path |
 | `ironbird_wait` | `path`, one condition, `timeoutMs?`, `target?` | Value, or a `WAIT_TIMEOUT` error |
 | `ironbird_fake` | `fake`, `control`, `payload?`, `target?` | Step result |
 | `ironbird_events` | `since?`, `limit?`, `target?` | Events |
-| `ironbird_clock_advance` | `duration` | Step result |
+| `ironbird_clock_advance` | `ms` | Step result plus `now` |
+| `ironbird_clock_now` | none | `{ now }` |
 | `ironbird_screenshot` | `target?`, `device?` | Image content |
 | `ironbird_run_scenario` | `file`, `target?` | Scenario result |
 | `ironbird_reset` | none | State |
 
-Operation failures come back as tool results with `isError: true` and the same error JSON the CLI prints.
+Operation failures come back as tool results with `isError: true` and the same error JSON the CLI prints. Durations such as `ms` and `timeoutMs` are milliseconds, as in the protocol; only the CLI accepts suffixes.
