@@ -1,6 +1,6 @@
 import { IronbirdError } from '@ironbird/core';
 
-export type Condition = { equals: unknown } | { notEquals: unknown } | { exists: boolean } | { matches: string };
+export type Condition = { equals: unknown } | { notEquals: unknown } | { exists: boolean } | { matches: RegExp };
 
 const KEYS = ['equals', 'notEquals', 'exists', 'matches'] as const;
 
@@ -18,12 +18,26 @@ export function parseCondition(params: Record<string, unknown>): Condition {
       return { equals: params['equals'] };
     case 'notEquals':
       return { notEquals: params['notEquals'] };
-    case 'exists':
-      return { exists: params['exists'] !== false };
+    case 'exists': {
+      const exists = params['exists'];
+      if (typeof exists !== 'boolean') {
+        throw new IronbirdError('INVALID_PAYLOAD', 'exists must be a boolean', {
+          name: 'waitFor',
+          issues: [{ path: ['exists'], message: 'expected a boolean' }],
+        });
+      }
+      return { exists };
+    }
     case 'matches': {
-      const pattern = String(params['matches']);
+      const pattern = params['matches'];
+      if (typeof pattern !== 'string') {
+        throw new IronbirdError('INVALID_PAYLOAD', 'matches must be a string', {
+          name: 'waitFor',
+          issues: [{ path: ['matches'], message: 'expected a string' }],
+        });
+      }
       try {
-        new RegExp(pattern);
+        return { matches: new RegExp(pattern) };
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : String(caught);
         throw new IronbirdError('INVALID_PAYLOAD', `matches is not a valid regular expression: ${message}`, {
@@ -31,7 +45,6 @@ export function parseCondition(params: Record<string, unknown>): Condition {
           issues: [{ path: ['matches'], message }],
         });
       }
-      return { matches: pattern };
     }
   }
 }
@@ -53,5 +66,5 @@ export function conditionHolds(value: unknown, condition: Condition): boolean {
   if ('notEquals' in condition) return !deepEqual(value, condition.notEquals);
   if ('exists' in condition) return (value !== undefined) === condition.exists;
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') return false;
-  return new RegExp(condition.matches).test(String(value));
+  return condition.matches.test(String(value));
 }

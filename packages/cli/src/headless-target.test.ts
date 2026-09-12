@@ -215,7 +215,62 @@ describe('createHeadlessTarget', () => {
     const after = (await t.run('dispatch', { name: 'count.add', path: 'count' })) as { state: number };
     expect(after.state).toBe(1);
     void hanging;
-    queued.catch(() => undefined);
+    await expect(queued).rejects.toMatchObject({ code: 'TARGET_DISCONNECTED' });
     await t.dispose();
+  });
+
+  it('rejects queued and in-flight operations that a reset abandons', async () => {
+    let release: (() => void) | undefined;
+    const slow = defineHeadless(() => {
+      let count = 0;
+      const target = createTarget({
+        commands: defineCommands({ 'slow.add': z.object({}), 'count.add': z.object({}) }),
+        dispatch: ({ name }) => {
+          if (name === 'slow.add')
+            return new Promise<void>((resolve) => {
+              release = () => {
+                count += 1;
+                resolve();
+              };
+            });
+          count += 1;
+        },
+        getState: () => ({ count }),
+      });
+      return { target };
+    });
+    const t = await createHeadlessTarget({ definition: slow, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
+    const inFlight = t.run('dispatch', { name: 'slow.add' });
+    const queued = t.run('dispatch', { name: 'count.add' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await t.run('reset', {});
+    release?.();
+    await expect(inFlight).rejects.toMatchObject({ code: 'TARGET_DISCONNECTED' });
+    await expect(queued).rejects.toMatchObject({ code: 'TARGET_DISCONNECTED' });
+    expect(await t.run('getState', { path: 'count' })).toMatchObject({ value: 0 });
+    await t.dispose();
+  });
+
+  it('collapses concurrent resets and disposes every session exactly once', async () => {
+    const disposed: number[] = [];
+    let created = 0;
+    const counted = defineHeadless(() => {
+      const id = ++created;
+      const target = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({ id }) });
+      return {
+        target,
+        dispose: () => {
+          disposed.push(id);
+        },
+      };
+    });
+    const t = await createHeadlessTarget({ definition: counted, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
+    const [a, b] = await Promise.all([t.run('reset', {}), t.run('reset', {})]);
+    expect(a).toEqual(b);
+    expect(created).toBe(2);
+    expect(disposed).toEqual([1]);
+    await t.dispose();
+    expect(disposed).toEqual([1, 2]);
+    await expect(t.run('reset', {})).rejects.toMatchObject({ code: 'UNSUPPORTED' });
   });
 });
