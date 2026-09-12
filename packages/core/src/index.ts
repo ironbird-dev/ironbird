@@ -21,3 +21,5 @@ export { serializeState } from './serialize';
 export type { SerializationWarning } from './serialize';
 export { defineCommands, suggestNames } from './registry';
 export type { CommandOf, CommandRegistry, Schemas } from './registry';
+export { MAX_FIRINGS_PER_ADVANCE, createManualClock, createRealClock } from './clock';
+export type { Clock, ManualClock, ScheduledTimer, TimerId } from './clock';
