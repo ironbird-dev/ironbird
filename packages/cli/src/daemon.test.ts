@@ -141,6 +141,35 @@ describe('startDaemon', () => {
     expect(logs.filter((line) => line.includes('daemon fault'))).toEqual([]);
   });
 
+  it('closes the stream when an event contains an unserializable value (BigInt) and logs no daemon fault', async () => {
+    const logs: string[] = [];
+    const bigIntEmitter = defineHeadless((context) => {
+      // Record an event with BigInt immediately; it will be in the backlog when the stream loads
+      context.recorder.record('app', 'weird', { big: 10n });
+      const target = createTarget({
+        commands: defineCommands({ 'noop': z.object({}) }),
+        dispatch: () => {},
+        getState: () => ({}),
+      });
+      return { target };
+    });
+    target = await createHeadlessTarget({ definition: bigIntEmitter, appId: 'a', settleTimeoutMs: 100, env: {}, log: () => {} });
+    daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: 'headless', log: (line) => logs.push(line) });
+    const response = await fetch(`${daemon.url}/v1/stream?target=headless&since=0`);
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let done = false;
+    // Keep reading until the stream closes (which happens when the BigInt serialization error is caught)
+    while (!done) {
+      const chunk = await reader.read();
+      done = chunk.done;
+      if (chunk.value) decoder.decode(chunk.value, { stream: true });
+    }
+    expect(done).toBe(true);
+    expect(logs.filter((line) => line.includes('daemon fault'))).toEqual([]);
+  });
+
   it('throttles state notifications to at most one per 100 ms after the first', async () => {
     const d = await boot();
     const controller = new AbortController();
@@ -195,7 +224,7 @@ describe('startDaemon', () => {
     // elapsed window). A per-frame minimum-gap assertion was tried too but removed: an event-loop
     // stall on the client side can coalesce two correctly spaced frames into a single chunk, so
     // their recorded arrival times collapse to the same instant and the assertion fails on a
-    // correct throttle, not just a broken one.
+    // correct throttle, not just a broken one. On a machine so slow that this burst takes over about 1.1 s, the elapsed bound stops distinguishing a broken throttle; the scratch check measured about 0.77 s.
     expect(stateFrames.length).toBeGreaterThanOrEqual(3);
     expect(stateFrames.length).toBeLessThanOrEqual(Math.ceil(elapsed / 100) + 1);
     expect(stateFrames[stateFrames.length - 1]).toContain('"rev":12');

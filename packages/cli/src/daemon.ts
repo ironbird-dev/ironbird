@@ -163,23 +163,22 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       streamEnded = true;
       res.end();
     };
-    // A client that vanished between event-loop turns can make `res.write` throw (and, in
-    // principle, a value that fails to serialize would make `JSON.stringify` throw first): either
-    // must tear the subscription down and end the response exactly once right here, instead of
-    // propagating out of an event/state callback into the request handler's try/catch, which would
-    // log it as a daemon fault and then attempt to send a second, JSON error response on a stream
-    // whose headers are already flushed.
-    const writeRaw = (text: string): void => {
+    // A client that vanished between event-loop turns can make `res.write` throw, and a value
+    // that fails to serialize can make `JSON.stringify` throw: either must tear the subscription
+    // down and end the response exactly once right here, instead of propagating out of an
+    // event/state callback into the request handler's try/catch, which would log it as a daemon
+    // fault and then attempt to send a second, JSON error response on a stream whose headers are
+    // already flushed. Both serialization and the socket write happen inside the guard.
+    const guarded = (produce: () => string): void => {
       try {
-        res.write(text);
+        res.write(produce());
       } catch {
         cleanup();
         endStream();
       }
     };
-    const write = (kind: string, data: unknown): void => {
-      writeRaw(`event: ${kind}\ndata: ${JSON.stringify(data)}\n\n`);
-    };
+    const writeRaw = (text: string): void => guarded(() => text);
+    const write = (kind: string, data: unknown): void => guarded(() => `event: ${kind}\ndata: ${JSON.stringify(data)}\n\n`);
     writeRaw(': connected\n\n');
 
     // Subscribe before awaiting the backlog so an event recorded during that await isn't lost
