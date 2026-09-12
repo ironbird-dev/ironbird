@@ -38,6 +38,8 @@ These are the workspace scripts.
 | Run the example on iOS | `pnpm example:ios` |
 | Add a release note | `pnpm changeset` |
 
+Run `pnpm build` before `pnpm typecheck` on a fresh checkout: packages that import another workspace package resolve its types from that package's `dist`.
+
 Tooling: pnpm workspaces, TypeScript in strict mode, Vitest for packages, Jest with React Native Testing Library inside `examples/`, ESLint for import boundaries, and Changesets for releases. Vitest runs with `test.projects`: `unit` is the default and `device` holds `*.device.test.ts`.
 
 ## Hard rules
