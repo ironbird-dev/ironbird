@@ -1,4 +1,8 @@
-import { z } from 'zod';
+// A type-only import on purpose: evaluating zod costs tens of milliseconds and every CLI client
+// command imports core, so core must not load zod itself. JSON Schema comes from each schema's own
+// `toJSONSchema` method (zod 4.2+), and scripts/verify-build.mjs fails the build if a core entry
+// imports zod at load time.
+import type { z } from 'zod';
 import { IronbirdError } from './errors';
 import type { CommandDescription, JsonSchema } from './protocol';
 
@@ -121,7 +125,7 @@ export function defineCommands<const T extends Schemas>(schemas: T): CommandRegi
         if (hasUnrepresentableFeatures(schema)) {
           console.warn(`ironbird: command ${name} uses transforms or refinements that JSON Schema can't express; agents see an under-described payload`);
         }
-        const payload = z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }) as JsonSchema;
+        const payload = schema.toJSONSchema({ io: 'input', unrepresentable: 'any' }) as JsonSchema;
         delete payload['$schema'];
         out[name] = schema.description === undefined ? { payload } : { description: schema.description, payload };
       }
