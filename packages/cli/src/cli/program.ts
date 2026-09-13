@@ -1,7 +1,7 @@
 import { IronbirdError, suggestNames, toErrorShape, type Description, type ErrorShape, type SettleResult, type StepResult } from '@ironbird/core';
 import { Command, CommanderError, InvalidArgumentError } from 'commander';
 import { createDaemonClient, resolveDaemon, type DaemonClient } from './client';
-import { runServe } from './commands/serve';
+import type { runServe } from './commands/serve';
 import { UsageError, parseDuration } from './durations';
 import { exitCodeForError, exitCodeForStep } from './exit-codes';
 import { createOutput, type Output } from './output';
@@ -124,7 +124,9 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
     .option('--no-headless', 'do not load the headless entry')
     .action(async (opts: { port?: number; bridgePort?: number; host?: string; headless: boolean }, command: Command) => {
       const globals = command.optsWithGlobals<GlobalOptions>();
-      const serve = io.serve ?? runServe;
+      // Loaded on demand: the serve module pulls in esbuild, the zod config schema, the daemon, and
+      // the headless target. The client commands never need any of that, so keep it off their startup path.
+      const serve = io.serve ?? (await import('./commands/serve')).runServe;
       exitCode = await serve(
         { port: opts.port, bridgePort: opts.bridgePort, host: opts.host, headless: opts.headless, token: globals.token, config: globals.config, json: Boolean(globals.json) || !io.isTTY },
         { cwd: io.cwd, env: io.env, stdout: io.stdout, stderr: io.stderr, version: io.version, signal: signal() },
