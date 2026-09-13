@@ -4,3 +4,5 @@ coverage/
 .ironbird/
 *.tsbuildinfo
 .DS_Store
+.claude
+
