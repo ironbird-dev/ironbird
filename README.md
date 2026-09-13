@@ -133,4 +133,4 @@ It is not a UI automation tool, a state management library, or a way to run arbi
 
 ## License
 
-To be decided before the first npm publish at the end of M0 (open question Q7 in the spec).
+[MIT](LICENSE). Each published package ships its own copy of the license file.

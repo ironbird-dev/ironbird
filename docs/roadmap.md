@@ -25,7 +25,7 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 
 - [x] `@ironbird` npm org claimed (Q1)
 - [x] GitHub org `ironbird-dev` created (Q1)
-- [ ] Choose a license (Q7) and add `LICENSE`
+- [x] Choose a license (Q7) and add `LICENSE` (MIT, 2026-09-12)
 - [ ] Trademark search for "ironbird" in software and developer tools (Q10)
 - [ ] Review ADR-0001 through ADR-0005 and mark each Accepted, amended, or rejected
 - [x] Create `ironbird-dev/ironbird` and push these docs as the first commit

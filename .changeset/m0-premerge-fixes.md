@@ -13,3 +13,4 @@ Pre-merge fixes for the M0 headless loop.
 - A `serve` that fails to bind no longer deletes a running daemon's `.ironbird/daemon.json`.
 - `@ironbird/cli` no longer re-exports the unused `MUTATING_OPS`.
 - `createHeadlessTarget` accepts `entryPath`, reported as `details.entry` on boot failures; the daemon's request bound follows the operation's own timeout.
+- The published packages declare the MIT license and their repository directory, and each ships a `LICENSE` file.

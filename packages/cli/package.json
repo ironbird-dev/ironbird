@@ -2,6 +2,12 @@
   "name": "@ironbird/cli",
   "version": "0.0.0",
   "description": "The ironbird daemon and CLI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ironbird-dev/ironbird.git",
+    "directory": "packages/cli"
+  },
   "type": "module",
   "engines": {
     "node": ">=22"

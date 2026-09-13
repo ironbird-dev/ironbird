@@ -2,6 +2,12 @@
   "name": "@ironbird/core",
   "version": "0.0.0",
   "description": "Commands, targets, fakes, clocks, effect tracking, and event recording for ironbird",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ironbird-dev/ironbird.git",
+    "directory": "packages/core"
+  },
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.cjs",
