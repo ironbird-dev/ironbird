@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-09-11 |
+| Last updated | 2026-09-13 |
 | Related | [spec.md](spec.md) (requirement and question IDs) · [testing-strategy.md](testing-strategy.md) |
 
 Estimates assume focused effort and describe a sequence, not calendar dates. Each milestone ends with a short demo and a go/no-go decision against its exit criteria.
@@ -26,11 +26,11 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 - [x] `@ironbird` npm org claimed (Q1)
 - [x] GitHub org `ironbird-dev` created (Q1)
 - [x] Choose a license (Q7) and add `LICENSE` (MIT, 2026-09-12)
-- [ ] Trademark search for "ironbird" in software and developer tools (Q10)
-- [ ] Review ADR-0001 through ADR-0005 and mark each Accepted, amended, or rejected
+- [x] Trademark search for "ironbird" in software and developer tools (Q10; cleared 2026-09-13)
+- [x] Review ADR-0001 through ADR-0005 and mark each Accepted, amended, or rejected (2026-09-13: 0001 and 0004 accepted, 0002 amended, 0003 and 0005 held for the M1 gate)
 - [x] Create `ironbird-dev/ironbird` and push these docs as the first commit
-- [ ] Protect `main` and require 2FA for org members
-- [ ] Enable 2FA on the npm org and plan to publish from GitHub Actions with npm trusted publishing rather than long-lived tokens. Trusted publishing (npmjs.com → package → Settings → Publishing access, pointing at `ironbird-dev/ironbird` and `release.yml`) can only be configured once a package already exists, so the first `0.0.x` publish of `@ironbird/core`, `@ironbird/cli`, and `ironbird` must be done once by hand from the maintainer's machine with npm 2FA (`pnpm -r publish --access public`); the release workflow publishes on its own after that
+- [ ] Protect `main` (2FA has been required for org members since 2026-09-13)
+- [ ] Enable 2FA on the npm org (done 2026-09-13) and plan to publish from GitHub Actions with npm trusted publishing rather than long-lived tokens. Trusted publishing (npmjs.com → package → Settings → Publishing access, pointing at `ironbird-dev/ironbird` and `release.yml`) can only be configured once a package already exists, so the first `0.0.x` publish of `@ironbird/core`, `@ironbird/cli`, and `ironbird` must be done once by hand from the maintainer's machine with npm 2FA (`pnpm -r publish --access public`); the release workflow publishes on its own after that
 
 ## M0: Headless loop
 

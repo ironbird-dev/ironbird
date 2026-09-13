@@ -1,6 +1,6 @@
 # ADR-0001: Commands-only agent surface
 
-**Status:** Proposed
+**Status:** Accepted (2026-09-13)
 **Date:** 2026-09-10
 **Deciders:** Project maintainer
 
@@ -65,8 +65,12 @@ Option A costs integration effort, and in exchange it provides the three propert
 - **Harder:** agents are limited to exposed behavior, so teams must add commands when an agent needs something new.
 - **Revisit:** a read-only inspection operation for debugging, if agent evals show that missing visibility, rather than missing actions, is the bottleneck. Teams that want code evaluation for exploratory debugging can run existing tools alongside ironbird.
 
+## Review (2026-09-13, M0 gate)
+
+M0 implemented the decision as written. No protocol operation accepts code, the registry validates every `dispatch` payload against the declared schema, and the M0 agent evaluation ([docs/evals/m0-headless-loop.md](../evals/m0-headless-loop.md)) had an agent complete checkout headlessly with nothing but the output of `ironbird commands`. The read-only inspection operation listed under "Revisit" was not needed.
+
 ## Action items
 
-1. [ ] Add "no operation accepts executable code" to the protocol review checklist
-2. [ ] Lint rule banning `eval` and `new Function` across the repository
+1. [x] Add "no operation accepts executable code" to the protocol review checklist (AGENTS.md hard rule 2)
+2. [x] Lint rule banning `eval` and `new Function` across the repository (`no-eval`, `no-new-func`, and `no-implied-eval` in `eslint.config.js`)
 3. [ ] Documentation on naming commands by user intent

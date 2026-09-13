@@ -1,6 +1,6 @@
 # ADR-0003: App dials out to the daemon over WebSocket
 
-**Status:** Proposed
+**Status:** Proposed (reviewed 2026-09-13; decided at the M1 gate)
 **Date:** 2026-09-10
 **Deciders:** Project maintainer
 
@@ -75,6 +75,10 @@ Option A is the only option that is pure JavaScript, toolchain-neutral, and cons
 - **Easier:** support for Expo and bare React Native, simulators and devices, with no rebuilds.
 - **Harder:** robust reconnection after reloads; token handling whenever the daemon binds beyond localhost.
 - **Revisit:** an optional Expo DevTools plugin transport as a convenience layer on top of the same protocol.
+
+## Review (2026-09-13, M0 gate)
+
+Unchanged. M0 has no bridge, so nothing has tested this decision. It is confirmed or amended against the M1 exit criteria: reconnection across a Metro reload under the same target id, and Android through `adb reverse`.
 
 ## Action items
 
