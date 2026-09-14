@@ -1,6 +1,6 @@
 # ADR-0002: One daemon, many targets, one protocol
 
-**Status:** Proposed
+**Status:** Accepted with amendment (2026-09-13)
 **Date:** 2026-09-10
 **Deciders:** Project maintainer
 
@@ -67,8 +67,14 @@ Option B fails on fidelity, which is the property that matters most for reproduc
 - **Harder:** daemon lifecycle, including port conflicts, stale daemons, and version skew between the CLI and the daemon; `reset` becomes important because state lives in memory.
 - **Revisit:** auto-starting the daemon from the first CLI call; more than one app per daemon session (P2).
 
+## Review (2026-09-13, M0 gate)
+
+M0 shipped the daemon with the headless target hosted in-process and the CLI as an HTTP client of it; the WebSocket channel for remote targets is M1 scope, so "many targets" is still to be exercised.
+
+**Amendment.** A daemon session serves one app. The session's app id comes from the headless target, or from the first bridge to connect when there is no headless entry, and a later `hello` with a different app id is rejected with `APP_MISMATCH` ([architecture.md §7.3](../architecture.md#73-connection-lifecycle), [protocol.md](../protocol.md)). Config, scenarios, and the headless entry are all per app, so several apps per session stays P2 as the "Revisit" line already anticipated.
+
 ## Action items
 
-1. [ ] The CLI detects version skew with the daemon and reports it clearly
-2. [ ] `ironbird status` shows version, uptime, and targets
-3. [ ] Port-in-use errors name the conflicting process when the platform allows it
+1. [ ] The CLI detects version skew with the daemon and reports it clearly (the daemon reports its protocol version from `status`; the CLI does not compare it yet, and `PROTOCOL_MISMATCH` is first raised by the bridge handshake in M1)
+2. [x] `ironbird status` shows version, uptime, and targets
+3. [ ] Port-in-use errors name the conflicting process when the platform allows it (M0 names the port and suggests `--port`; the process is not identified)

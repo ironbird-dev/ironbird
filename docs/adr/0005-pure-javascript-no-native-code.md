@@ -1,6 +1,6 @@
 # ADR-0005: Pure JavaScript, no native code in v0
 
-**Status:** Proposed
+**Status:** Proposed (reviewed 2026-09-13; decided at the M1 gate)
 **Date:** 2026-09-10
 **Deciders:** Project maintainer
 
@@ -64,6 +64,10 @@ Option A proves the product with the lowest adoption cost. Option C preserves a 
 - **Easier:** installation, OTA-friendly adoption, and bridge testing without devices.
 - **Harder:** settle detection can't see UI-thread animations; mapping a connection to a device is manual (spec Q4); physical iOS screenshots are out of scope for v0.
 - **Revisit:** after M1, using the measured stale-screenshot and settle-timeout rates.
+
+## Review (2026-09-13, M0 gate)
+
+Unchanged. M0 has no `@ironbird/react-native` package, so nothing has tested this decision. It is confirmed or amended after the M1 finding on spec Q5, the stale-screenshot rate with animations enabled versus reduced.
 
 ## Action items
 

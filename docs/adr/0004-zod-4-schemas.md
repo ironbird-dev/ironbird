@@ -1,6 +1,6 @@
 # ADR-0004: Zod 4 for command and control schemas
 
-**Status:** Proposed
+**Status:** Accepted with amendment (2026-09-13)
 **Date:** 2026-09-10
 **Deciders:** Project maintainer
 
@@ -76,8 +76,14 @@ Option A gives the best agent-facing output and the best authoring experience wi
 - **Harder:** apps on Zod 3 must upgrade or wait for a compatibility path (spec Q8); schemas with transforms or refinements produce JSON Schema that under-describes them.
 - **Revisit:** Standard Schema support (P2); future Zod major versions.
 
+## Review (2026-09-13, M0 gate)
+
+M0 built the registry on Zod 4 and the checkout example declares its commands with it.
+
+**Amendment.** `@ironbird/core` imports Zod as a type only. The registry validates through each schema's own parse method and produces JSON Schema through the schema's own `toJSONSchema` method, so core never evaluates the Zod module at load time and CLI client commands start without it. That structural dependency on two methods is the "small internal interface" the decision called for. The peer dependency floor is `zod@^4.2.0`, the first release with `toJSONSchema` on schema instances.
+
 ## Action items
 
-1. [ ] Internal schema interface in the registry that isolates Zod-specific calls
-2. [ ] `describe()` warns for schemas with features JSON Schema can't represent
+1. [x] Internal schema interface in the registry that isolates Zod-specific calls (realized as the type-only import described above)
+2. [x] `describe()` warns for schemas with features JSON Schema can't represent
 3. [ ] Compatibility test of generated schemas as MCP tool input schemas (spec Q3)

@@ -1,6 +1,6 @@
 {
   "name": "ironbird",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Ground-test React Native apps for AI coding agents. Thin wrapper over @ironbird/cli so npx ironbird works.",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/ironbird-dev/ironbird.git", "directory": "packages/ironbird" },

@@ -190,7 +190,7 @@ These targets are hypotheses to revisit after the first pilots.
 | Q7 | ~~License: MIT or Apache-2.0?~~ **Resolved 2026-09-12:** MIT. `LICENSE` sits at the repository root and in each published package, and every `package.json` declares `"license": "MIT"` | Maintainer | Resolved |
 | Q8 | Do we support apps still on Zod 3, and how? | Engineering | Before 0.1 |
 | Q9 | Does the bridge work in Expo Go? Expected yes, since it has no native code | Engineering | Verify in M1 |
-| Q10 | Is "ironbird" clear of trademark conflicts for a developer tool? | Maintainer | Before the first npm publish, at the end of M0 |
+| Q10 | ~~Is "ironbird" clear of trademark conflicts for a developer tool?~~ **Resolved 2026-09-13:** the trademark search found no conflict in software or developer tools; the name is cleared for publishing | Maintainer | Resolved |
 
 ## Timeline and phasing
 
