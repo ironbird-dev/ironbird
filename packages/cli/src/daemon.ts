@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import path from 'node:path';
 import { startBridgeServer, type BridgeServer } from './bridge-server';
 import type { DaemonTarget } from './daemon-target';
-import { resolveDevice as resolveDeviceOnHost } from './devices';
+import { resolveDevice as resolveDeviceOnHost, type DeviceRef } from './devices';
 import { isSameSite } from './same-site';
 import { captureScreenshot as captureOnHost, screenshotPath } from './screenshot';
 import type { RemotePlatform } from './target-registry';
@@ -137,7 +137,17 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const targetListeners = new Set<(event: TargetEvent) => void>();
   const announce = (target: DaemonTarget, status: TargetEvent['status']): void => {
     const info = target.info();
-    for (const listener of targetListeners) listener({ id: info.id, platform: info.platform, appId: info.appId, status });
+    const event: TargetEvent = { id: info.id, platform: info.platform, appId: info.appId, status };
+    for (const listener of targetListeners) {
+      // This runs synchronously inside a `ws` close handler (and inside `register`, on the bridge's
+      // connect path); one stream's listener throwing — e.g. a write racing a dead response — must
+      // not stop delivery to every other open stream, and must not escape as an uncaught exception.
+      try {
+        listener(event);
+      } catch (error) {
+        log(`target listener failed handling ${status} for ${info.id}: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+      }
+    }
   };
   const register = (target: DaemonTarget): void => {
     targets.set(target.id, target);
@@ -177,16 +187,6 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     throw new IronbirdError('AMBIGUOUS_TARGET', 'Several apps are connected; pass --target', { available: remotes.map((target) => target.id) });
   };
 
-  const takeScreenshot = async (target: DaemonTarget, params: Record<string, unknown>): Promise<Screenshot> => {
-    const info = target.info();
-    const platform = info.platform as RemotePlatform;
-    const device = await resolveDevice({ platform, requested: str(params['device']), configured: options.devices?.[platform] });
-    const requestedOut = str(params['out']);
-    const outPath = requestedOut === undefined ? screenshotPath(artifactsPath, info.id) : path.resolve(requestedOut);
-    await capture({ device, outPath });
-    return { path: outPath, device: device.id, capturedAt: Date.now() };
-  };
-
   const authorized = (req: IncomingMessage): boolean => {
     if (!options.token) return true;
     const header = req.headers.authorization;
@@ -216,6 +216,22 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     }
   };
 
+  const resolveDeviceFor = (target: DaemonTarget, requested: unknown): Promise<DeviceRef> => {
+    const platform = target.info().platform as RemotePlatform;
+    return resolveDevice({ platform, requested: str(requested), configured: options.devices?.[platform] });
+  };
+
+  // Takes the picture once a device is already in hand: `screenshot` resolves it from `params`
+  // right before calling this, and `step` resolves it before dispatching (see the `step` handler)
+  // so a device problem fails before anything is applied. The capture itself is bounded like every
+  // other target operation (docs/protocol.md §3.2): a wedged host tool must not hold the HTTP
+  // connection open forever.
+  const takeScreenshot = async (target: DaemonTarget, device: DeviceRef, requestedOut?: string): Promise<Screenshot> => {
+    const outPath = requestedOut === undefined ? screenshotPath(artifactsPath, target.info().id) : path.resolve(requestedOut);
+    await withRequestTimeout(target.id, 'screenshot', requestTimeoutMs, capture({ device, outPath }));
+    return { path: outPath, device: device.id, capturedAt: Date.now() };
+  };
+
   const handleRpc = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     let parsed: unknown;
     try {
@@ -243,16 +259,23 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       }
       if (op === 'screenshot') {
         const target = selectRemoteTarget(requestedTarget, op);
-        sendJson(res, 200, { ok: true, target: target.id, result: await takeScreenshot(target, params) });
+        const device = await resolveDeviceFor(target, params['device']);
+        sendJson(res, 200, { ok: true, target: target.id, result: await takeScreenshot(target, device, str(params['out'])) });
         return;
       }
       if (op === 'step') {
         const target = selectRemoteTarget(requestedTarget, op);
-        const { device, ...dispatchParams } = params;
+        const { device: deviceParam, ...dispatchParams } = params;
+        // Resolved before the dispatch below, not after: `resolveDevice` throws `AMBIGUOUS_DEVICE`
+        // for the routine case of zero or several devices, and a device problem must fail before
+        // the step is applied, not after — otherwise a retry risks dispatching twice.
+        const device = await resolveDeviceFor(target, deviceParam);
         const bound = requestBoundFor(requestTimeoutMs, dispatchParams);
         const stepResult = (await withRequestTimeout(target.id, 'dispatch', bound, target.run('dispatch', dispatchParams))) as StepResult;
-        // Captured after settling ends whether or not it reached idle, so the agent sees the screen either way.
-        const screenshot = await takeScreenshot(target, { device });
+        // Captured after settling ends whether or not it reached idle, so the agent sees the screen
+        // either way. A SCREENSHOT_FAILED from here means the dispatch above already applied
+        // (docs/protocol.md §4.2).
+        const screenshot = await takeScreenshot(target, device);
         sendJson(res, 200, { ok: true, target: target.id, result: { ...stepResult, screenshot, settledBeforeCapture: stepResult.settle?.idle === true } });
         return;
       }
@@ -345,6 +368,24 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       else write('event', event);
     });
 
+    // Every stream hears apps arrive and leave. When it is this stream's own target that left, the
+    // subscriptions above are dead, so the stream ends with the same error a request would get.
+    // Subscribed before the backlog await below, the same as the event subscription just above,
+    // so a disconnect that lands while we're still waiting on the backlog is caught here — ending
+    // the stream with this target frame before the error frame, per docs/protocol.md §2.2 — rather
+    // than only ever reaching the backlog's own `catch` below with nothing subscribed yet.
+    const onTarget = (event: TargetEvent): void => {
+      write('target', event);
+      if (cleaned || event.id !== target.id || event.status !== 'disconnected') return;
+      cleanup();
+      guarded(() => `event: error\ndata: ${JSON.stringify({ code: 'TARGET_DISCONNECTED', message: `Target ${event.id} disconnected`, details: { target: event.id, op: 'stream' } })}\n\n`);
+      endStream();
+    };
+    targetListeners.add(onTarget);
+    handles.offTarget = () => {
+      targetListeners.delete(onTarget);
+    };
+
     let backlog: { events: RecordedEvent[] };
     try {
       backlog = (await target.run('events', { since })) as { events: RecordedEvent[] };
@@ -403,19 +444,6 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       pendingRev = rev;
       if (!throttle) flush();
     });
-    // Every stream hears apps arrive and leave. When it is this stream's own target that left,
-    // the subscriptions above are dead, so the stream ends with the same error a request would get.
-    const onTarget = (event: TargetEvent): void => {
-      write('target', event);
-      if (cleaned || event.id !== target.id || event.status !== 'disconnected') return;
-      cleanup();
-      guarded(() => `event: error\ndata: ${JSON.stringify({ code: 'TARGET_DISCONNECTED', message: `Target ${event.id} disconnected`, details: { target: event.id, op: 'stream' } })}\n\n`);
-      endStream();
-    };
-    targetListeners.add(onTarget);
-    handles.offTarget = () => {
-      targetListeners.delete(onTarget);
-    };
     handles.ping = setInterval(() => writeRaw(': ping\n\n'), options.pingIntervalMs ?? PING_INTERVAL_MS);
   };
 

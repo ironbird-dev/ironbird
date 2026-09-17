@@ -1,9 +1,10 @@
-import { createTarget, defineCommands, defineHeadless } from '@ironbird/core';
+import { IronbirdError, PROTOCOL_VERSION, createTarget, defineCommands, defineHeadless } from '@ironbird/core';
 import { request } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import WebSocket from 'ws';
 import { z } from 'zod';
 import { counterDefinition } from '../test/helpers/counter-app';
 import { isLoopbackHost, startDaemon, type Daemon } from './daemon';
@@ -477,7 +478,9 @@ function fakeRemote(id: string, platform: 'ios' | 'android' = 'ios', run?: (op: 
 }
 
 describe('screenshot and step', () => {
-  let artifacts: string;
+  // Only assigned by the tests that need a scratch directory; the bridge-only test below never
+  // sets it, so teardown must tolerate that instead of handing `rm` an `undefined` path.
+  let artifacts: string | undefined;
   const capture = {
     resolveDevice: async ({ platform, requested }: { platform: 'ios' | 'android'; requested?: string | undefined }) => ({ platform, id: requested ?? 'SIM-1' }),
     capture: async ({ outPath }: { outPath: string }) => {
@@ -487,7 +490,8 @@ describe('screenshot and step', () => {
   };
 
   afterEach(async () => {
-    await rm(artifacts, { recursive: true, force: true });
+    if (artifacts !== undefined) await rm(artifacts, { recursive: true, force: true });
+    artifacts = undefined;
   });
 
   it('step dispatches through the remote target, captures after settle, and reports both', async () => {
@@ -540,5 +544,175 @@ describe('screenshot and step', () => {
       socket.onerror = () => reject(new Error('bridge port refused the connection'));
     });
     socket.close();
+  });
+
+  it('resolves the device before dispatching, so a device problem leaves nothing applied', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const remote = fakeRemote('ios');
+    const ambiguousDevice = {
+      resolveDevice: async (): Promise<never> => {
+        throw new IronbirdError('AMBIGUOUS_DEVICE', 'Several booted iOS simulators; pass --device', { platform: 'ios', devices: [] });
+      },
+      capture: capture.capture,
+    };
+    const d = await boot({ extra: { targets: [remote], artifactsPath: artifacts, capture: ambiguousDevice } });
+    const stepped = await rpc(d, { op: 'step', params: { name: 'cart.addItem', payload: { sku: 'x' } } });
+    expect(stepped.json).toMatchObject({ ok: false, error: { code: 'AMBIGUOUS_DEVICE' } });
+    // Nothing was dispatched: a device problem must fail before the step is applied, not after.
+    expect(remote.calls).toEqual([]);
+  });
+
+  it('bounds the screenshot capture like every other target operation, instead of hanging forever', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const remote = fakeRemote('ios');
+    const hangingCapture = { resolveDevice: capture.resolveDevice, capture: () => new Promise<void>(() => {}) };
+    // requestTimeoutMs is the same bound `dispatch`/`getState`/etc already race against; tiny here
+    // only so the test doesn't wait out the real 30s default.
+    const d = await boot({ extra: { targets: [remote], artifactsPath: artifacts, capture: hangingCapture, requestTimeoutMs: 50 } });
+    const startedAt = Date.now();
+    const shot = await rpc(d, { op: 'screenshot' });
+    expect(shot.json).toMatchObject({ ok: false, error: { code: 'TARGET_DISCONNECTED' } });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+});
+
+/** `PROTOCOL_VERSION` and the bridge marker match `bridge-server.ts`'s own handshake, so a hello
+ * built this way is accepted the same way a real bridge's would be. */
+const bridgeHello = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  type: 'hello',
+  protocol: PROTOCOL_VERSION,
+  marker: 'marker',
+  app: { id: 'com.example.test', platform: 'ios', bridgeVersion: '0.0.0' },
+  capabilities: ['settle', 'events'],
+  ...overrides,
+});
+
+interface BridgeClient {
+  socket: WebSocket;
+  frames: Array<Record<string, unknown>>;
+  send(frame: unknown): void;
+  until(ready: () => boolean): Promise<void>;
+}
+
+/** Drives a real `ws` connection against the daemon's bridge port, mirroring `bridge-server.test.ts`'s own `connect` helper. */
+function connectBridge(url: string): Promise<BridgeClient> {
+  const socket = new WebSocket(url);
+  const frames: Array<Record<string, unknown>> = [];
+  socket.on('message', (data) => frames.push(JSON.parse(String(data)) as Record<string, unknown>));
+  socket.on('error', () => {});
+  const client: BridgeClient = {
+    socket,
+    frames,
+    send: (frame) => socket.send(JSON.stringify(frame)),
+    until: async (ready) => {
+      for (let i = 0; i < 400 && !ready(); i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+      if (!ready()) throw new Error('timed out');
+    },
+  };
+  return new Promise((resolve, reject) => {
+    socket.once('open', () => resolve(client));
+    socket.once('error', reject);
+  });
+}
+
+/** Completes hello → welcome → describe, the way `bridge-server.test.ts` does, so the connection becomes a registered daemon target. */
+async function registerBridge(url: string, overrides: Record<string, unknown> = {}): Promise<{ client: BridgeClient; targetId: string }> {
+  const client = await connectBridge(url);
+  client.send(bridgeHello(overrides));
+  await client.until(() => client.frames.length >= 2);
+  const welcome = client.frames[0] as { targetId: string };
+  const describeReq = client.frames[1] as { id: string };
+  client.send({ type: 'response', id: describeReq.id, ok: true, result: { app: { id: 'com.example.test', platform: 'ios' }, commands: {}, fakes: {}, capabilities: ['settle', 'events'] } });
+  return { client, targetId: welcome.targetId };
+}
+
+/** The next incoming `request` frame of the given op, among frames received after index `from`. */
+function nextRequest(client: BridgeClient, op: string, from: number): { id: string } | undefined {
+  return client.frames.slice(from).find((frame) => frame['type'] === 'request' && frame['op'] === op) as { id: string } | undefined;
+}
+
+describe('SSE target frames', () => {
+  it('announces a bridge target on every open stream and lists it in status while connected', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    const controller = new AbortController();
+    const response = await fetch(`${d.url}/v1/stream?target=headless&since=0`, { signal: controller.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    const readUntil = async (needle: string): Promise<void> => {
+      while (!text.includes(needle)) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        text += decoder.decode(value, { stream: true });
+      }
+    };
+    await readUntil(': connected');
+    expect((await rpc(d, { op: 'status' })).json['result']).toMatchObject({ targets: [{ id: 'headless' }] });
+
+    const { client, targetId } = await registerBridge(d.bridgeUrl as string);
+    expect(targetId).toBe('ios');
+    await readUntil('event: target');
+    expect(text).toContain('event: target\ndata: {"id":"ios","platform":"ios","appId":"com.example.test","status":"connected"}\n\n');
+
+    const status = await rpc(d, { op: 'status' });
+    expect((status.json['result'] as { targets: Array<{ id: string }> }).targets.map((t) => t.id).sort()).toEqual(['headless', 'ios']);
+
+    client.socket.close();
+    controller.abort();
+  });
+
+  it('ends a stream following its own disconnecting target with a target frame then TARGET_DISCONNECTED, and drops it from status', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    // A side channel confirms the bridge is fully registered before opening a stream keyed to its
+    // own id — `handleStream` needs the target already in the map.
+    const side = await fetch(`${d.url}/v1/stream?target=headless&since=0`);
+    const sideReader = side.body!.getReader();
+    const decoder = new TextDecoder();
+    let sideText = '';
+    const sideReadUntil = async (needle: string): Promise<void> => {
+      while (!sideText.includes(needle)) {
+        const { value, done } = await sideReader.read();
+        if (done) return;
+        sideText += decoder.decode(value, { stream: true });
+      }
+    };
+    await sideReadUntil(': connected');
+    const { client, targetId } = await registerBridge(d.bridgeUrl as string);
+    expect(targetId).toBe('ios');
+    await sideReadUntil('"status":"connected"');
+    await sideReader.cancel();
+
+    // Opens a stream on the target itself and leaves its backlog fetch (the daemon's `events`
+    // request to the bridge) unanswered, so the close below lands while `handleStream` is still
+    // awaiting it.
+    const streamPromise = fetch(`${d.url}/v1/stream?target=${targetId}&since=0`);
+    await client.until(() => nextRequest(client, 'events', 2) !== undefined);
+    const response = await streamPromise;
+    const reader = response.body!.getReader();
+    let text = '';
+    const readUntil = async (needle: string): Promise<void> => {
+      while (!text.includes(needle)) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        text += decoder.decode(value, { stream: true });
+      }
+    };
+    await readUntil(': connected');
+
+    client.socket.close();
+
+    let done = false;
+    while (!done) {
+      const chunk = await reader.read();
+      done = chunk.done;
+      if (chunk.value) text += decoder.decode(chunk.value, { stream: true });
+    }
+    expect(done).toBe(true);
+    expect(text).toContain('event: target\ndata: {"id":"ios","platform":"ios","appId":"com.example.test","status":"disconnected"}\n\n');
+    expect(text).toContain('"code":"TARGET_DISCONNECTED"');
+    expect(text.indexOf('event: target')).toBeLessThan(text.indexOf('event: error'));
+
+    const after = await rpc(d, { op: 'status' });
+    expect((after.json['result'] as { targets: Array<{ id: string }> }).targets.map((t) => t.id)).not.toContain('ios');
   });
 });

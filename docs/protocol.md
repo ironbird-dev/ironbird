@@ -163,7 +163,7 @@ The daemon sends `{ "type": "ping", "t": <number> }` every 5 s, and the app repl
 | `step` | `name`, `payload?`, `target?`, `device?`, `path?`, `settle?` | `StepResult` plus `screenshot: Screenshot` and `settledBeforeCapture: boolean` |
 | `scenarioRun` | `file`, `target?`, `bail?` | `ScenarioResult` |
 
-`settle` in `step` has the same shape as in `dispatch`. `step` captures the screenshot after settling ends, whether or not it reached idle, and `settle: false` captures right after the dispatch.
+`settle` in `step` has the same shape as in `dispatch`. `step` captures the screenshot after settling ends, whether or not it reached idle, and `settle: false` captures right after the dispatch. A `SCREENSHOT_FAILED` from `step` means the dispatch itself already applied; only the capture that follows it failed.
 
 Both operations pick the only connected app when `target` is omitted, fail with `NO_TARGET` when none is connected and `AMBIGUOUS_TARGET` when several are, and refuse the headless target with `UNSUPPORTED`. `device` is a simulator udid or adb serial; without it the daemon uses `devices.<platform>` from config, then the single booted simulator or connected device, else `AMBIGUOUS_DEVICE` listing the candidates.
 
