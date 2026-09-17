@@ -231,13 +231,13 @@ ironbird doctor
 
 Checks the Node version, config validity, headless entry load (printing the import chain on failure), daemon port availability, `xcrun simctl` and `adb` availability, booted devices, and whether `.ironbird/` is gitignored.
 
-### verify-bundle (M1)
+### verify-bundle
 
 ```text
 ironbird verify-bundle <path...>
 ```
 
-Scans files, including Hermes bytecode, for the bridge marker. Runs without a daemon. Exits 0 when the marker is absent and 1 when it is found, listing the files.
+Scans files, including Hermes bytecode, for the bridge marker. Runs without a daemon. Prints `{ scanned, found: [{ file, offset }] }` with paths relative to the working directory, and exits 0 when the marker is absent, 1 when it is found, and 2 when a path does not exist. The marker is assembled at runtime inside the CLI so the literal exists only in `@ironbird/react-native`.
 
 ```sh
 # Expo: production export, the same kind of output OTA updates ship

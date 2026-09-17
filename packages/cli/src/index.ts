@@ -14,3 +14,5 @@ export { buildProgram } from './cli/program';
 export type { ProgramIo } from './cli/program';
 export { runServe } from './cli/commands/serve';
 export type { ServeIo, ServeOptions } from './cli/commands/serve';
+export { BRIDGE_MARKER_BYTES, findMarker } from './verify-bundle';
+export type { MarkerHit } from './verify-bundle';

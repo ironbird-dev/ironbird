@@ -47,5 +47,8 @@
     "commander": "^15.0.0",
     "esbuild": "^0.25.0",
     "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@ironbird/react-native": "workspace:*"
   }
 }

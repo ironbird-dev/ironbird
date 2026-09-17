@@ -1,4 +1,7 @@
 import { IronbirdError } from '@ironbird/core';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { DaemonClient } from './client';
 import { buildProgram } from './program';
@@ -203,5 +206,23 @@ describe('buildProgram', () => {
     tty.stdout.length = 0;
     await tty.run(['status', '--json']);
     expect(tty.stdout).toEqual(['{"version":"1"}\n']);
+  });
+});
+
+describe('verify-bundle', () => {
+  it('exits 0 for clean output, 1 listing files that carry the marker, and 2 for a missing path', async () => {
+    const temp = await mkdtemp(path.join(tmpdir(), 'ironbird-verify-cli-'));
+    await writeFile(path.join(temp, 'clean.js'), 'ok');
+    await writeFile(path.join(temp, 'dirty.js'), ['__IRONBIRD', 'BRIDGE', 'v1__'].join('_'));
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const { run } = buildProgram({ cwd: temp, env: {}, isTTY: false, stdout: (t) => stdout.push(t), stderr: (t) => stderr.push(t), version: '0.0.0-test', signal: AbortSignal.abort() });
+    expect(await run(['verify-bundle', 'clean.js'])).toBe(0);
+    expect(JSON.parse(stdout.splice(0).join(''))).toEqual({ scanned: 1, found: [] });
+    expect(await run(['verify-bundle', '.'])).toBe(1);
+    expect(JSON.parse(stdout.splice(0).join(''))).toEqual({ scanned: 2, found: [{ file: 'dirty.js', offset: 0 }] });
+    expect(await run(['verify-bundle', 'nope'])).toBe(2);
+    expect(stderr.join('')).toContain('No such file or directory');
+    await rm(temp, { recursive: true, force: true });
   });
 });

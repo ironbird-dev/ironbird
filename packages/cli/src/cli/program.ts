@@ -6,6 +6,9 @@ import { UsageError, parseDuration } from './durations';
 import { exitCodeForError, exitCodeForStep } from './exit-codes';
 import { createOutput, type Output } from './output';
 import { parseJsonOrString, parsePayload } from './values';
+import { access } from 'node:fs/promises';
+import path from 'node:path';
+import { findMarker } from '../verify-bundle';
 
 export interface ProgramIo {
   cwd: string;
@@ -242,6 +245,35 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
   clock.command('now').action(wrap(async (ctx) => ({ value: withTarget(await ctx.client.call('clockNow', {}, ctx.target)) })));
 
   program.command('reset').description('Recreate the headless app with a fresh clock, recorder, and fakes').action(wrap(async (ctx) => ({ value: withTarget(await ctx.client.call('reset', {}, ctx.target)) })));
+
+  program
+    .command('verify-bundle <path...>')
+    .description('Fail if the bridge marker appears in any file under the given paths; needs no daemon')
+    .action(async (paths: string[], _opts: unknown, command: Command) => {
+      const opts = command.optsWithGlobals<GlobalOptions>();
+      const output = createOutput({ json: Boolean(opts.json) || !io.isTTY, write: io.stdout });
+      try {
+        const resolved = paths.map((entry) => path.resolve(io.cwd, entry));
+        for (const entry of resolved) {
+          const present = await access(entry).then(
+            () => true,
+            () => false,
+          );
+          if (!present) throw new UsageError(`No such file or directory: ${entry}`);
+        }
+        const { scanned, found } = await findMarker(resolved);
+        output.result({ scanned, found: found.map((hit) => ({ file: path.relative(io.cwd, hit.file), offset: hit.offset })) });
+        exitCode = found.length === 0 ? 0 : 1;
+      } catch (error) {
+        if (error instanceof UsageError) {
+          io.stderr(`error: ${error.message}\n`);
+          exitCode = 2;
+          return;
+        }
+        output.error(toErrorShape(error));
+        exitCode = 1;
+      }
+    });
 
   return {
     program,
