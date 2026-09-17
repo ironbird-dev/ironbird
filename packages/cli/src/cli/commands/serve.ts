@@ -55,6 +55,14 @@ export async function runServe(options: ServeOptions, io: ServeIo): Promise<numb
     const host = options.host ?? config.daemon.host;
     port = options.port ?? config.daemon.port;
     bridgePort = options.bridgePort ?? config.bridge.port;
+    // Each is a real fixed port only when non-zero (0 asks the OS for an ephemeral one, so two
+    // zeros never collide). Both servers binding the same fixed port can never work, no matter
+    // which one the OS happens to fail first, so this is caught as a configuration error before
+    // either socket opens rather than surfacing as a confusing EADDRINUSE on just one of them.
+    if (port !== 0 && bridgePort !== 0 && port === bridgePort) {
+      const message = `--port and --bridge-port must differ (both are ${port})`;
+      throw new IronbirdError('INVALID_CONFIG', message, { file: configPath, issues: [{ path: ['bridge', 'port'], message }] });
+    }
     let token = options.token ?? io.env['IRONBIRD_TOKEN'];
     if (!isLoopback(host) && !token) {
       token = randomBytes(16).toString('hex');

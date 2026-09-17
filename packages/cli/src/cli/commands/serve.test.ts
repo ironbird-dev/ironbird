@@ -161,4 +161,13 @@ describe('runServe', () => {
     run1.stop();
     expect(await run1.exit).toBe(0);
   });
+
+  it('rejects equal --port and --bridge-port before binding anything', async () => {
+    const run = start(example, { port: 4599, bridgePort: 4599 });
+    const errorLine = await firstLine(run);
+    expect(await run.exit).toBe(2);
+    expect(errorLine['error']).toMatchObject({ code: 'INVALID_CONFIG', message: expect.stringContaining('--port'), details: { issues: [{ path: ['bridge', 'port'] }] } });
+    expect(String((errorLine['error'] as { message?: string } | undefined)?.message)).toContain('--bridge-port');
+    expect(await readDaemonInfo(path.join(example, '.ironbird'))).toBeUndefined();
+  });
 });
