@@ -1,9 +1,16 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+// The bridge reads Platform.OS from react-native; in Node it gets this stub instead.
+const alias = { 'react-native': path.join(here, 'packages/react-native/test/react-native-stub.ts') };
 
 export default defineConfig({
   test: {
     projects: [
       {
+        resolve: { alias },
         test: {
           name: 'unit',
           include: ['packages/*/src/**/*.test.ts', 'examples/*/src/**/*.test.ts', 'packages/*/test/**/*.test.ts'],
@@ -17,6 +24,7 @@ export default defineConfig({
         },
       },
       {
+        resolve: { alias },
         test: {
           name: 'serial',
           // cli.integration.test.ts and cli/commands/serve.test.ts both drive real daemons

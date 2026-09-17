@@ -62,7 +62,22 @@ export default tseslint.config(
   {
     files: ['packages/react-native/src/**/*.ts'],
     rules: {
-      'no-restricted-imports': ['error', { patterns: [{ group: ['node:*'], message: 'The bridge runs in Hermes.' }] }],
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { group: ['node:*', 'fs', 'path', 'os', 'http', 'https', 'net', 'child_process', 'url', 'util', 'events', 'stream', 'crypto', 'worker_threads'], message: 'The bridge runs in Hermes.' },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ['packages/react-native/src/**/*.ts'],
+    ignores: ['packages/react-native/src/**/*.test.ts'],
+    rules: {
+      'no-restricted-globals': ['error', ...coreForbiddenTimers.filter((entry) => entry.name !== 'setImmediate')],
+      'no-restricted-properties': ['error', { object: 'Date', property: 'now', message: 'Use the Clock passed to startBridge (AGENTS.md hard rule 9).' }],
     },
   },
 );
