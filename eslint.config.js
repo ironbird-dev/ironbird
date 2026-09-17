@@ -26,7 +26,7 @@ const coreForbiddenTimers = [
 ];
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/node_modules/**', '**/.ironbird/**', '**/coverage/**', '**/.superpowers/**', '**/test/fixtures/**'] },
+  { ignores: ['**/dist/**', '**/node_modules/**', '**/.ironbird/**', '**/coverage/**', '**/.superpowers/**', '**/.claude/**', '**/test/fixtures/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { files: ['**/*.{js,mjs,cjs}'], languageOptions: { globals: { ...globals.node } } },
