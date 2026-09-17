@@ -1,5 +1,5 @@
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createManualClock, createRealClock } from './clock';
 import { createTracker, isFakePort, markFakePort } from './tracker';
 
@@ -223,5 +223,24 @@ describe('createTracker', () => {
       }),
       { numRuns: 30 },
     );
+  });
+});
+
+describe('listener isolation', () => {
+  it('a throwing onChange listener does not stop later listeners or the tracked promise', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const tracker = createTracker();
+    let calls = 0;
+    tracker.onChange(() => {
+      throw new Error('listener broke');
+    });
+    tracker.onChange(() => {
+      calls += 1;
+    });
+    await tracker.track(Promise.resolve(1), 'api.load');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toBe(2);
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
   });
 });

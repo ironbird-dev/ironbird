@@ -1,5 +1,5 @@
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createManualClock } from './clock';
 import { createEventRecorder } from './recorder';
 
@@ -92,5 +92,23 @@ describe('createEventRecorder', () => {
         for (const event of recorder.since(n).events) expect(event.seq).toBeGreaterThan(n);
       }),
     );
+  });
+});
+
+describe('listener isolation', () => {
+  it('a throwing subscriber does not stop later subscribers', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const recorder = createEventRecorder();
+    const seen: string[] = [];
+    recorder.subscribe(() => {
+      throw new Error('first listener broke');
+    });
+    recorder.subscribe((event) => {
+      seen.push(event.name);
+    });
+    expect(() => recorder.record('api', 'loaded')).not.toThrow();
+    expect(seen).toEqual(['loaded']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('first listener broke'));
+    warn.mockRestore();
   });
 });

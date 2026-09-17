@@ -1,5 +1,6 @@
 import type { Clock } from './clock';
 import type { PendingItem, SettleResult } from './protocol';
+import { messageOf } from './errors';
 import { scheduler } from './scheduler';
 
 export const FAKE_PORT_MARK: unique symbol = Symbol.for('ironbird.fakePort');
@@ -61,7 +62,13 @@ export function createTracker(options: { clock?: Clock; timerThresholdMs?: numbe
   const effects = new Set<Effect>();
   const listeners = new Set<() => void>();
   const notify = (): void => {
-    for (const listener of listeners) listener();
+    for (const listener of listeners) {
+      try {
+        listener();
+      } catch (error) {
+        console.warn(`ironbird: a tracker listener threw and was skipped: ${messageOf(error)}`);
+      }
+    }
   };
 
   const timerItems = (): InternalItem[] => {

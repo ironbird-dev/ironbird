@@ -1,10 +1,12 @@
 import {
   IronbirdError,
+  conditionHolds,
   createEventRecorder,
   createManualClock,
   createTracker,
   getAtPath,
   messageOf,
+  parseCondition,
   serializeState,
   type Description,
   type EventRecorder,
@@ -17,7 +19,6 @@ import {
   type TargetInfo,
   type Tracker,
 } from '@ironbird/core';
-import { conditionHolds, parseCondition } from './conditions';
 
 export interface HeadlessTargetOptions {
   definition: HeadlessDefinition;

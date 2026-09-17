@@ -108,3 +108,21 @@ describe('createTarget', () => {
     expect(target.revision()).toBe(1);
   });
 });
+
+describe('listener isolation', () => {
+  it('a throwing subscriber does not stop later subscribers or fail the dispatch', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const commands = defineCommands({ 'n.set': z.object({ value: z.number() }) });
+    let state = 0;
+    const target = createTarget({ commands, dispatch: ({ payload }) => void (state = payload.value), getState: () => state });
+    const seen: number[] = [];
+    target.subscribe(() => {
+      throw new Error('subscriber broke');
+    });
+    target.subscribe(() => seen.push(target.revision()));
+    await expect(target.dispatch('n.set', { value: 3 })).resolves.toBeUndefined();
+    expect(seen).toEqual([1]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('subscriber broke'));
+    warn.mockRestore();
+  });
+});

@@ -29,7 +29,13 @@ export function createTarget<R extends CommandRegistry, S>(definition: TargetDef
   let rev = 0;
   const bump = (): void => {
     rev += 1;
-    for (const listener of listeners) listener();
+    for (const listener of listeners) {
+      try {
+        listener();
+      } catch (error) {
+        console.warn(`ironbird: a target subscriber threw and was skipped: ${messageOf(error)}`);
+      }
+    }
   };
   const hasSubscribe = typeof definition.subscribe === 'function';
   if (definition.subscribe) definition.subscribe(bump);
