@@ -1,21 +1,22 @@
 import { createTarget, defineCommands, defineHeadless } from '@ironbird/core';
 import { request } from 'node:http';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { counterDefinition } from '../test/helpers/counter-app';
 import { isLoopbackHost, startDaemon, type Daemon } from './daemon';
+import type { DaemonTarget } from './daemon-target';
 import { readDaemonInfo, removeDaemonInfo, writeDaemonInfo } from './daemon-info';
 import { createHeadlessTarget, type HeadlessTarget } from './headless-target';
 
 let daemon: Daemon | undefined;
 let target: HeadlessTarget | undefined;
 
-async function boot(options: { token?: string; defaultTarget?: string | null } = {}): Promise<Daemon> {
+async function boot(options: { token?: string; defaultTarget?: string | null; extra?: Partial<Parameters<typeof startDaemon>[0]> } = {}): Promise<Daemon> {
   target = await createHeadlessTarget({ definition: counterDefinition, appId: 'com.example.test', clockStart: '2026-01-01T00:00:00.000Z', settleTimeoutMs: 500, env: {}, log: () => {} });
-  daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: options.defaultTarget === null ? undefined : (options.defaultTarget ?? 'headless'), token: options.token, log: () => {} });
+  daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: options.defaultTarget === null ? undefined : (options.defaultTarget ?? 'headless'), token: options.token, log: () => {}, ...options.extra });
   return daemon;
 }
 
@@ -455,5 +456,89 @@ describe('daemon.json', () => {
     expect(await readDaemonInfo(artifacts)).toBeUndefined();
     await writeFile(path.join(artifacts, 'daemon.json'), 'not json');
     expect(await readDaemonInfo(artifacts)).toBeUndefined();
+  });
+});
+
+function fakeRemote(id: string, platform: 'ios' | 'android' = 'ios', run?: (op: string, params: Record<string, unknown>) => unknown): DaemonTarget & { calls: Array<[string, Record<string, unknown>]> } {
+  const calls: Array<[string, Record<string, unknown>]> = [];
+  return {
+    id,
+    calls,
+    info: () => ({ id, platform, appId: 'com.example.test', connectedAt: 1, rev: 0 }),
+    async run(op, params) {
+      calls.push([op, params]);
+      if (run) return run(op, params);
+      return { target: id, rev: 1, path: '', state: {}, events: [], settle: { idle: true, quiescent: false, waitedMs: 2, pending: [] } };
+    },
+    onEvent: () => () => {},
+    onState: () => () => {},
+    dispose: async () => {},
+  };
+}
+
+describe('screenshot and step', () => {
+  let artifacts: string;
+  const capture = {
+    resolveDevice: async ({ platform, requested }: { platform: 'ios' | 'android'; requested?: string | undefined }) => ({ platform, id: requested ?? 'SIM-1' }),
+    capture: async ({ outPath }: { outPath: string }) => {
+      await mkdir(path.dirname(outPath), { recursive: true });
+      await writeFile(outPath, 'png');
+    },
+  };
+
+  afterEach(async () => {
+    await rm(artifacts, { recursive: true, force: true });
+  });
+
+  it('step dispatches through the remote target, captures after settle, and reports both', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const remote = fakeRemote('ios');
+    const d = await boot({ extra: { targets: [remote], artifactsPath: artifacts, capture } });
+    const stepped = await rpc(d, { op: 'step', params: { name: 'cart.addItem', payload: { sku: 'x' }, path: 'cart', settle: { timeoutMs: 100 }, device: 'SIM-9' } });
+    expect(stepped.json).toMatchObject({ ok: true, target: 'ios', result: { target: 'ios', rev: 1, settledBeforeCapture: true, screenshot: { device: 'SIM-9' } } });
+    const shot = (stepped.json['result'] as { screenshot: { path: string } }).screenshot.path;
+    expect(shot).toMatch(/\/screenshots\/\d{8}-\d{6}-\d{3}-ios\.png$/);
+    expect((await readFile(shot)).toString()).toBe('png');
+    expect(remote.calls).toEqual([['dispatch', { name: 'cart.addItem', payload: { sku: 'x' }, path: 'cart', settle: { timeoutMs: 100 } }]]);
+  });
+
+  it('step still captures when the step did not settle, and says so', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const remote = fakeRemote('android', 'android', () => ({ target: 'android', rev: 2, path: '', state: {}, events: [], settle: { idle: false, quiescent: false, waitedMs: 50, pending: [{ kind: 'effect', label: 'api.load', ageMs: 50, fake: false }] } }));
+    const d = await boot({ extra: { targets: [remote], artifactsPath: artifacts, capture } });
+    const stepped = await rpc(d, { op: 'step', params: { name: 'x' } });
+    expect(stepped.json).toMatchObject({ ok: true, result: { settledBeforeCapture: false, screenshot: { device: 'SIM-1' }, settle: { idle: false } } });
+  });
+
+  it('screenshot picks the only connected app, honors out, and refuses the headless target', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const d = await boot({ extra: { targets: [fakeRemote('ios')], artifactsPath: artifacts, capture } });
+    const out = path.join(artifacts, 'custom.png');
+    const shot = await rpc(d, { op: 'screenshot', params: { out } });
+    expect(shot.json).toMatchObject({ ok: true, target: 'ios', result: { path: out, device: 'SIM-1' } });
+    expect((shot.json['result'] as { capturedAt: number }).capturedAt).toBeGreaterThan(0);
+    const headless = await rpc(d, { op: 'screenshot', target: 'headless' });
+    expect(headless.json).toMatchObject({ ok: false, error: { code: 'UNSUPPORTED', details: { op: 'screenshot', target: 'headless' } } });
+  });
+
+  it('screenshot fails with NO_TARGET when no app is connected and AMBIGUOUS_TARGET when several are', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const none = await boot({ extra: { artifactsPath: artifacts, capture } });
+    expect((await rpc(none, { op: 'screenshot' })).json).toMatchObject({ ok: false, error: { code: 'NO_TARGET' } });
+    await none.close();
+    const two = await boot({ extra: { targets: [fakeRemote('ios'), fakeRemote('ios-2')], artifactsPath: artifacts, capture } });
+    expect((await rpc(two, { op: 'screenshot' })).json).toMatchObject({ ok: false, error: { code: 'AMBIGUOUS_TARGET', details: { available: ['ios', 'ios-2'] } } });
+    expect((await rpc(two, { op: 'screenshot', target: 'ios-2' })).json).toMatchObject({ ok: true, target: 'ios-2' });
+  });
+
+  it('starts a bridge server on the same host when asked', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    expect(d.bridgeUrl).toMatch(/^ws:\/\/127\.0\.0\.1:\d+$/);
+    const socket = new WebSocket(d.bridgeUrl as string);
+    await new Promise<void>((resolve, reject) => {
+      socket.onopen = () => resolve();
+      socket.onerror = () => reject(new Error('bridge port refused the connection'));
+    });
+    socket.close();
   });
 });
