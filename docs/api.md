@@ -348,6 +348,7 @@ interface BridgeOptions {
   fakes?: FakeInstance[];
   clock?: Clock;                                                // default createRealClock(); share it with the tracker
   appId?: string;                                               // default 'app'
+  appName?: string;                                             // shown in status; default none
   url?: string;                                                 // default 'ws://localhost:4568'
   token?: string;
   settle?: { frames?: number; timeoutMs?: number };             // defaults 2 and 5000
@@ -365,11 +366,14 @@ interface BridgeHandle {
 
 Behavior:
 
-- When `__DEV__` is false and `allowInNonDevBuilds` isn't set, `startBridge` logs one warning and returns an inert handle.
-- Platform comes from `Platform.OS`.
-- Settle timing uses `clock`, never `Date.now` or global timers, so the bridge can be tested in Node with a manual clock. Animation frames come from `requestAnimationFrame`.
+- When `__DEV__` is false and `allowInNonDevBuilds` isn't set, `startBridge` logs one warning and returns an inert handle whose `connected` is false and `targetId` is null. When `__DEV__` is undefined, as in Node tests, the bridge treats the environment as a dev build.
+- Platform comes from `Platform.OS`: `android` maps to `android`, anything else to `ios`.
+- Settle timing uses `clock`, never `Date.now` or global timers, so the bridge can be tested in Node with a manual clock. Animation frames come from `requestAnimationFrame`, read from the global at call time; the WebSocket comes from the global `WebSocket`.
+- The bridge reconnects with exponential backoff from `reconnect.initialDelayMs` to `reconnect.maxDelayMs` after any close except a `reject`, which is final and logged once, or `stop()`.
+- Every incoming payload is validated against the app's own registry before dispatch; malformed frames are dropped and logged.
+- Recorded events are forwarded as they happen; state revisions are coalesced to one notification per 100 ms window; serialization warnings are sent once per path per connection.
+- `clockAdvance`, `clockNow`, and `reset` answer `UNSUPPORTED`, and the bridge never declares the `clock` or `reset` capability.
 - iOS Simulator reaches the daemon at `localhost`. Android emulators need `adb reverse tcp:4568 tcp:4568`, which `ironbird serve` runs automatically when `adb` is available. Physical devices use the host's LAN address, and the daemon must be started with `--host` and a token.
-- Every incoming payload is validated against the app's own registry before dispatch.
 
 Wiring, using the layout from [architecture.md §5](architecture.md#5-integrating-an-app). The tracker and recorder are created in `instance.ts`, which only the app loads, with `enabled: __DEV__` so release builds carry neither:
 
