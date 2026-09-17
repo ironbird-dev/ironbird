@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { findConfigFile, loadConfig } from './config';
+import { configSchema, findConfigFile, loadConfig } from './config';
 
 let dir: string;
 afterEach(async () => {
@@ -79,5 +79,13 @@ export default defineConfig({ headless: './src/ironbird/headless.ts', appId: 'co
     const error = await loadConfig({ cwd: dir }).catch((caught: unknown) => caught);
     expect(isIronbirdError(error) && error.code).toBe('INVALID_CONFIG');
     expect(isIronbirdError(error) && error.message).toMatch(/default-export/);
+  });
+});
+
+describe('boot timeout', () => {
+  it('defaults to 30 s and accepts an override', () => {
+    expect(configSchema.parse({}).boot).toEqual({ timeoutMs: 30_000 });
+    expect(configSchema.parse({ boot: { timeoutMs: 1_000 } }).boot).toEqual({ timeoutMs: 1_000 });
+    expect(() => configSchema.parse({ boot: { timeoutMs: 0 } })).toThrow();
   });
 });

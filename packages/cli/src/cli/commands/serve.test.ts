@@ -14,11 +14,15 @@ interface Run {
   stop: () => void;
 }
 
+const noAdb = async (): Promise<never> => {
+  throw Object.assign(new Error('adb not installed'), { code: 'ENOENT' });
+};
+
 function start(cwd: string, options: Partial<Parameters<typeof runServe>[0]> = {}, env: Record<string, string> = {}): Run {
   const controller = new AbortController();
   const stdout: string[] = [];
   const stderr: string[] = [];
-  const exit = runServe({ headless: true, json: true, port: 0, ...options }, { cwd, env, stdout: (t) => stdout.push(t), stderr: (t) => stderr.push(t), version: '0.0.0-test', signal: controller.signal });
+  const exit = runServe({ headless: true, json: true, port: 0, bridgePort: 0, ...options }, { cwd, env, stdout: (t) => stdout.push(t), stderr: (t) => stderr.push(t), version: '0.0.0-test', signal: controller.signal, exec: noAdb });
   return { stdout, stderr, exit, stop: () => controller.abort() };
 }
 
@@ -132,5 +136,29 @@ describe('runServe', () => {
     expect(isLoopback('::1')).toBe(true);
     expect(isLoopback('0.0.0.0')).toBe(false);
     expect(isLoopback('192.168.1.5')).toBe(false);
+  });
+
+  it('prints the bridge URL, records it in daemon.json, and notes that adb is absent', async () => {
+    const run = start(example);
+    const line = await firstLine(run);
+    expect(line['bridgeUrl']).toMatch(/^ws:\/\/127\.0\.0\.1:\d+$/);
+    expect(line['bridgePort']).toBe(Number(new URL(line['bridgeUrl'] as string).port));
+    const info = await readDaemonInfo(path.join(example, '.ironbird'));
+    expect(info?.bridgeUrl).toBe(line['bridgeUrl']);
+    expect(run.stderr.join('')).toContain('adb not found; skipping adb reverse');
+    run.stop();
+    expect(await run.exit).toBe(0);
+  });
+
+  it('a bridge port in use exits 2 with INVALID_CONFIG naming bridge.port', async () => {
+    const run1 = start(example);
+    const line1 = await firstLine(run1);
+    const usedPort = Number(new URL(line1['bridgeUrl'] as string).port);
+    const run2 = start(example, { bridgePort: usedPort });
+    const errorLine = await firstLine(run2);
+    expect(await run2.exit).toBe(2);
+    expect(errorLine['error']).toMatchObject({ code: 'INVALID_CONFIG', message: expect.stringContaining(String(usedPort)), details: { issues: [{ path: ['bridge', 'port'] }] } });
+    run1.stop();
+    expect(await run1.exit).toBe(0);
   });
 });

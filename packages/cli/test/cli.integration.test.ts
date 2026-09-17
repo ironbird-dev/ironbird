@@ -31,7 +31,7 @@ let daemon: ChildProcess | undefined;
 let exited: Promise<number | null>;
 
 beforeAll(async () => {
-  daemon = spawn('node', [bin, 'serve', '--port', '0'], { cwd: example, env, stdio: ['ignore', 'pipe', 'inherit'] });
+  daemon = spawn('node', [bin, 'serve', '--port', '0', '--bridge-port', '0'], { cwd: example, env, stdio: ['ignore', 'pipe', 'inherit'] });
   exited = new Promise<number | null>((resolve) => {
     daemon?.once('exit', (code) => resolve(code));
   });

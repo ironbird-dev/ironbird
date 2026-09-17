@@ -7,6 +7,7 @@ export interface DaemonInfo {
   startedAt: number;
   version: string;
   defaultTarget?: string;
+  bridgeUrl?: string;
 }
 
 export const DAEMON_INFO_FILE = 'daemon.json';
@@ -28,6 +29,7 @@ export async function readDaemonInfo(artifactsPath: string): Promise<DaemonInfo 
     if (typeof candidate.startedAt !== 'number') return undefined;
     if (typeof candidate.version !== 'string') return undefined;
     if (candidate.defaultTarget !== undefined && typeof candidate.defaultTarget !== 'string') return undefined;
+    if (candidate.bridgeUrl !== undefined && typeof candidate.bridgeUrl !== 'string') return undefined;
     return candidate as DaemonInfo;
   } catch {
     return undefined;
