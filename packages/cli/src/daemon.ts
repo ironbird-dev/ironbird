@@ -1,14 +1,14 @@
 import { IronbirdError, PROTOCOL_VERSION, isIronbirdError, toErrorShape, type RecordedEvent, type TargetInfo } from '@ironbird/core';
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import type { HeadlessTarget } from './headless-target';
+import type { DaemonTarget } from './daemon-target';
 
 export interface DaemonOptions {
   host: string;
   port: number;
   token?: string;
   version: string;
-  headless?: HeadlessTarget;
+  headless?: DaemonTarget;
   defaultTarget?: string;
   log?: (line: string) => void;
   /** Test hook: overrides the SSE keepalive ping interval (default 15_000ms) so tests can observe
@@ -118,10 +118,10 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   }
 
   const startedAt = Date.now();
-  const targets = new Map<string, HeadlessTarget>();
+  const targets = new Map<string, DaemonTarget>();
   if (options.headless) targets.set(options.headless.id, options.headless);
 
-  const selectTarget = (requested: unknown): HeadlessTarget => {
+  const selectTarget = (requested: unknown): DaemonTarget => {
     const available = [...targets.keys()];
     const id = typeof requested === 'string' && requested !== '' ? requested : options.defaultTarget;
     if (id === undefined) {
@@ -204,7 +204,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   };
 
   const handleStream = async (url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    let target: HeadlessTarget;
+    let target: DaemonTarget;
     try {
       target = selectTarget(url.searchParams.get('target') ?? undefined);
     } catch (error) {
