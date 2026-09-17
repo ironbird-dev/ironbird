@@ -47,16 +47,18 @@ let server: BridgeServer | undefined;
 let sessionAppId: string | undefined;
 const connected: TargetInfo[] = [];
 const disconnected: string[] = [];
+const logs: string[] = [];
 
 async function boot(options: { token?: string; handshakeTimeoutMs?: number } = {}): Promise<BridgeServer> {
   sessionAppId = undefined;
   connected.length = 0;
   disconnected.length = 0;
+  logs.length = 0;
   server = await startBridgeServer({
     host: '127.0.0.1',
     port: 0,
     token: options.token,
-    log: () => {},
+    log: (line) => logs.push(line),
     handshakeTimeoutMs: options.handshakeTimeoutMs,
     session: { appId: () => sessionAppId, adopt: (id) => (sessionAppId = id) },
     onConnect: (target: RemoteTarget) => connected.push(target.info()),
@@ -156,5 +158,18 @@ describe('startBridgeServer', () => {
     local.send(hello());
     await local.until(() => local.frames.length >= 1);
     expect(local.frames[0]).toMatchObject({ type: 'welcome' });
+  });
+
+  it('survives a receiver-level socket error before hello, such as an invalid UTF-8 text frame', async () => {
+    const s = await boot();
+    const bad = await connect(s.url);
+    bad.socket.send(Buffer.from([0xff, 0xfe]), { binary: false });
+    expect(await bad.closed).toMatchObject({ code: 1007 });
+
+    const good = await connect(s.url);
+    good.send(hello());
+    await good.until(() => good.frames.length >= 1);
+    expect(good.frames[0]).toMatchObject({ type: 'welcome' });
+    expect(logs.some((line) => line.includes('bridge socket error before hello'))).toBe(true);
   });
 });

@@ -105,6 +105,7 @@ export async function startBridgeServer(options: BridgeServerOptions): Promise<B
   });
 
   server.on('connection', (socket: WebSocket) => {
+    socket.on('error', (error: Error) => log(`bridge socket error before hello: ${error.message}`));
     const timer = setTimeout(() => {
       log('a bridge connection sent no hello in time; closing it');
       socket.terminate();
