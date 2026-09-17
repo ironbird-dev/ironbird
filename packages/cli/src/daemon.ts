@@ -2,6 +2,7 @@ import { IronbirdError, PROTOCOL_VERSION, isIronbirdError, toErrorShape, type Re
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { DaemonTarget } from './daemon-target';
+import { isSameSite } from './same-site';
 
 export interface DaemonOptions {
   host: string;
@@ -30,28 +31,6 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const STATE_THROTTLE_MS = 100;
 const PING_INTERVAL_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 30_000;
-
-/** Hosts a request may name beyond the daemon's own bind address. */
-const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
-
-/**
- * `0.0.0.0` and `::` mean "every interface", not one address a request's `Host` header could ever
- * literally name, so there is no single string to compare against. A wildcard bind already
- * requires a token (see the loopback check in `startDaemon`), so the `Host` check is skipped
- * rather than compared against the unreachable wildcard address itself.
- */
-function isWildcardBindHost(host: string): boolean {
-  const normalized = host.toLowerCase();
-  return normalized === '0.0.0.0' || normalized === '::';
-}
-
-/** Strips the port from a `Host` header, leaving a bracketed IPv6 literal intact. */
-function hostWithoutPort(header: string): string {
-  const value = header.trim().toLowerCase();
-  if (value.startsWith('[')) return value.slice(0, value.indexOf(']') + 1) || value;
-  const colon = value.lastIndexOf(':');
-  return colon === -1 ? value : value.slice(0, colon);
-}
 
 /**
  * The operation-specific timeout a caller asked for, read straight from the wire `params`:
@@ -341,14 +320,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   // A page in the user's browser can reach a loopback daemon, so a same-origin-style check runs
   // before anything else: a real CLI client never sends `Origin`, and a DNS-rebinding attack
   // arrives with a `Host` the daemon was never bound to.
-  const sameSite = (req: IncomingMessage): boolean => {
-    if (req.headers.origin !== undefined) return false;
-    if (isWildcardBindHost(options.host)) return true;
-    const header = req.headers.host;
-    if (header === undefined) return true;
-    const host = hostWithoutPort(header);
-    return ALLOWED_HOSTS.has(host) || host === options.host.toLowerCase() || host === `[${options.host.toLowerCase()}]`;
-  };
+  const sameSite = (req: IncomingMessage): boolean => isSameSite({ origin: req.headers.origin, host: req.headers.host }, options.host);
 
   const server = createServer((req, res) => {
     void (async () => {
