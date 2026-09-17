@@ -574,6 +574,20 @@ describe('screenshot and step', () => {
     expect(shot.json).toMatchObject({ ok: false, error: { code: 'TARGET_DISCONNECTED' } });
     expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
+
+  it('bounds device resolution like every other target operation, instead of hanging forever', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const remote = fakeRemote('ios');
+    const hangingResolveDevice = { resolveDevice: () => new Promise<never>(() => {}), capture: capture.capture };
+    // Same bound and shape as the capture-bound test above: `resolveDevice` shells out to
+    // `simctl`/`adb` on the default (no `--device`, no config pin) path, so it needs the same
+    // protection as the capture itself.
+    const d = await boot({ extra: { targets: [remote], artifactsPath: artifacts, capture: hangingResolveDevice, requestTimeoutMs: 50 } });
+    const startedAt = Date.now();
+    const shot = await rpc(d, { op: 'screenshot' });
+    expect(shot.json).toMatchObject({ ok: false, error: { code: 'TARGET_DISCONNECTED' } });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
 });
 
 /** `PROTOCOL_VERSION` and the bridge marker match `bridge-server.ts`'s own handshake, so a hello
