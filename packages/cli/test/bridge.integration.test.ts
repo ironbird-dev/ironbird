@@ -1,15 +1,20 @@
 import { PROTOCOL_VERSION, createEventRecorder, createRealClock, createTarget, createTracker, defineCommands } from '@ironbird/core';
 import { startBridge, type BridgeHandle } from '@ironbird/react-native';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { z } from 'zod';
 import { startDaemon, type Daemon } from '../src/daemon';
 
 const globals = globalThis as { requestAnimationFrame?: (callback: (time: number) => void) => number };
+const originalRaf = globals.requestAnimationFrame;
 
 beforeAll(() => {
   // The bridge paints between settle checks with requestAnimationFrame; Node has none.
   globals.requestAnimationFrame = (callback) => setTimeout(() => callback(0), 0) as unknown as number;
+});
+
+afterAll(() => {
+  globals.requestAnimationFrame = originalRaf;
 });
 
 interface App {
@@ -17,6 +22,12 @@ interface App {
   tracker: ReturnType<typeof createTracker>;
   recorder: ReturnType<typeof createEventRecorder>;
   clock: ReturnType<typeof createRealClock>;
+  /** Count of live `target.subscribe()` listeners. The bridge holds one for the life of the
+   * connection (state notifications); `waitFor` (packages/react-native/src/handlers.ts ~105) adds
+   * a second only once its request has crossed both hops (daemon RPC to socket, socket to
+   * handler) and found its condition unmet. Wrapping `subscribe` here - not in package source -
+   * lets a test wait on that real hop instead of a guessed sleep. */
+  subscribers: () => number;
 }
 
 const commandsOf = () => defineCommands({ 'counter.add': z.object({ by: z.number().int() }), 'data.load': z.object({}) });
@@ -60,7 +71,19 @@ function app(): App {
       return () => listeners.delete(listener);
     },
   });
-  return { target, tracker, recorder, clock };
+  // Test-only instrumentation: count active target.subscribe() listeners so a test can wait for
+  // waitFor's subscription (see the App.subscribers doc comment) instead of sleeping.
+  let subscriberCount = 0;
+  const nativeSubscribe = target.subscribe.bind(target);
+  target.subscribe = (listener) => {
+    subscriberCount += 1;
+    const off = nativeSubscribe(listener);
+    return () => {
+      subscriberCount -= 1;
+      off();
+    };
+  };
+  return { target, tracker, recorder, clock, subscribers: () => subscriberCount };
 }
 
 let daemon: Daemon | undefined;
@@ -185,6 +208,9 @@ describe('bridge against daemon', () => {
     expect(await otherApp.closed).toBe(4002);
     expect(otherApp.frames[0]).toMatchObject({ type: 'reject', code: 'APP_MISMATCH', details: { expected: 'com.example.test', received: 'com.other' } });
     expect(first.connected).toBe(true);
+    // Stopped before its daemon closes so it isn't still reconnecting (and possibly hitting the
+    // next daemon below, if the OS reuses the port) once that daemon is gone.
+    first.stop();
     await daemon?.close();
 
     const secured = await boot({ token: 'secret' });
@@ -209,10 +235,15 @@ describe('bridge against daemon', () => {
 
   it('fails an in-flight request on disconnect, and the reconnecting bridge takes the same id', async () => {
     const d = await boot();
-    const first = bridge(d, app());
+    const a = app();
+    const first = bridge(d, a);
     await until(() => d.targets().length === 1, 'the first bridge');
+    const baseline = a.subscribers();
     const pending = rpc(d, { op: 'waitFor', params: { path: 'count', equals: 99, timeoutMs: 5_000 } });
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    // waitFor subscribes to the target only once its request has crossed both hops (the daemon's
+    // RPC over the socket, the socket to the handler) and found count !== 99; waiting on that real
+    // subscription, rather than a fixed sleep, is what makes the request actually in flight below.
+    await until(() => a.subscribers() > baseline, 'the waitFor to subscribe');
     first.stop();
     expect(await pending).toMatchObject({ ok: false, error: { code: 'TARGET_DISCONNECTED', details: { target: 'ios', op: 'waitFor' } } });
     await until(() => d.targets().length === 0, 'the disconnect');
