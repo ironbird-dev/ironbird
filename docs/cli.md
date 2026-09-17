@@ -56,6 +56,8 @@ Commands that change state (`send`, `fake`, `clock advance`, `step`) print a ste
 }
 ```
 
+`step` adds `screenshot` and `settledBeforeCapture` to this shape.
+
 Errors print to stdout as JSON too, so agents parse one stream:
 
 ```json
@@ -184,21 +186,21 @@ ironbird reset
 
 Headless only. Disposes the headless app, recreates it with a fresh context, and prints `{ target, rev, path, value }`. Event sequence numbers restart at 1 after a reset, so call `events` without `--since` once before paging again.
 
-### screenshot (M1)
+### screenshot
 
 ```text
 ironbird screenshot [--device <udid|serial>] [--out <file>]
 ```
 
-Captures the iOS Simulator with `xcrun simctl io <device> screenshot` or an Android device with `adb exec-out screencap -p`. The default output is `.ironbird/screenshots/<timestamp>-<target>.png`. Prints `{ path, device, capturedAt }`.
+Captures the connected app: `xcrun simctl io <device> screenshot` for a simulator, `adb -s <device> exec-out screencap -p` for Android. With no `--target` it picks the only connected app; with several it fails with `AMBIGUOUS_TARGET`, and it refuses the headless target with `UNSUPPORTED`. The device is `--device`, else `devices.<platform>` from config, else the single booted simulator or connected device, else `AMBIGUOUS_DEVICE` listing the candidates. The default output is `.ironbird/screenshots/<yyyymmdd>-<hhmmss>-<ms>-<target>.png`; `--out` is resolved against the working directory. Prints `{ target, path, device, capturedAt }`.
 
-### step (M1)
+### step
 
 ```text
 ironbird step <command> [payload] [--device <udid|serial>] [--path <path>] [--no-settle] [--settle-timeout <duration>]
 ```
 
-Remote targets only. Sends, settles, and captures a screenshot, then prints a step result plus `screenshot` and `settledBeforeCapture`. The screenshot is captured even when settling times out, so the agent can see what went wrong, and the CLI still exits 3. With `--no-settle` the capture happens right after the dispatch.
+Remote targets only. Sends, settles, and captures a screenshot, then prints a step result plus `screenshot` and `settledBeforeCapture`. The screenshot is captured even when settling times out, so the agent can see what went wrong, and the CLI still exits 3. With `--no-settle` the capture happens right after the dispatch. The printed result is the step result with two extra fields: `screenshot: { path, device, capturedAt }` and `settledBeforeCapture`, true only when settling reached idle before the capture.
 
 ### scenario run (M2)
 

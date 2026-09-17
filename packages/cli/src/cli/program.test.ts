@@ -209,6 +209,28 @@ describe('buildProgram', () => {
   });
 });
 
+describe('screenshot and step', () => {
+  it('screenshot passes device and an absolute out path, and adds the target to the result', async () => {
+    const h = harness({ screenshot: { path: '/tmp/nowhere/shot.png', device: 'SIM-1', capturedAt: 5 } });
+    expect(await h.run(['screenshot', '--device', 'SIM-1', '--out', 'shot.png'])).toBe(0);
+    expect(h.calls).toEqual([{ op: 'screenshot', params: { device: 'SIM-1', out: '/tmp/nowhere/shot.png' }, target: undefined }]);
+    expect(h.out()).toEqual({ target: 'headless', path: '/tmp/nowhere/shot.png', device: 'SIM-1', capturedAt: 5 });
+  });
+
+  it('step sends, settles, and exits 3 when the step did not settle', async () => {
+    const shot = { path: '/tmp/x.png', device: 'SIM-1', capturedAt: 5 };
+    const settledStep = harness({ step: { ...step(), screenshot: shot, settledBeforeCapture: true } });
+    expect(await settledStep.run(['step', 'cart.addItem', '{"sku":"cut-45","qty":1}', '--path', 'cart', '--device', 'SIM-1'])).toBe(0);
+    expect(settledStep.calls).toEqual([{ op: 'step', params: { name: 'cart.addItem', payload: { sku: 'cut-45', qty: 1 }, path: 'cart', settle: true, device: 'SIM-1' }, target: undefined }]);
+    expect(settledStep.out()).toMatchObject({ screenshot: shot, settledBeforeCapture: true });
+
+    const unsettled = harness({ step: { ...step({ settle: { idle: false, quiescent: false, waitedMs: 5000, pending: [{ kind: 'effect', label: 'api.load', ageMs: 5000, fake: false }] } }), screenshot: shot, settledBeforeCapture: false } });
+    expect(await unsettled.run(['step', 'data.load', '--settle-timeout', '5s', '--target', 'ios'])).toBe(3);
+    expect(unsettled.calls[0]).toMatchObject({ params: { settle: { timeoutMs: 5000 } }, target: 'ios' });
+    expect(await harness({ step: step() }).run(['step', 'x', '--no-settle'])).toBe(0);
+  });
+});
+
 describe('verify-bundle', () => {
   it('exits 0 for clean output, 1 listing files that carry the marker, and 2 for a missing path', async () => {
     const temp = await mkdtemp(path.join(tmpdir(), 'ironbird-verify-cli-'));
