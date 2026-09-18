@@ -200,10 +200,16 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
 
   // Bounds one target operation so a wedged target can't hold an HTTP connection open forever.
   // The operation itself keeps running: the target's queue owns it, and `reset` is what clears it.
-  const withRequestTimeout = async <T>(targetId: string, op: string, boundMs: number, work: Promise<T>): Promise<T> => {
+  // `onTimeout`, when given, replaces the default TARGET_DISCONNECTED error: `resolveDeviceFor` and
+  // `takeScreenshot` below use it, because a timeout there means a host tool (`simctl`/`adb`, or
+  // device resolution itself) is wedged, not the target — `ironbird reset` can't fix that.
+  const withRequestTimeout = async <T>(targetId: string, op: string, boundMs: number, work: Promise<T>, onTimeout?: (boundMs: number) => IronbirdError): Promise<T> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new IronbirdError('TARGET_DISCONNECTED', `Request timed out after ${boundMs} ms; the target may be wedged, run ironbird reset`, { target: targetId, op })), boundMs);
+      timer = setTimeout(
+        () => reject(onTimeout ? onTimeout(boundMs) : new IronbirdError('TARGET_DISCONNECTED', `Request timed out after ${boundMs} ms; the target may be wedged, run ironbird reset`, { target: targetId, op })),
+        boundMs,
+      );
     });
     timeout.catch(() => undefined);
     // The abandoned `work` may reject later with nothing awaiting it; swallow that so it doesn't
@@ -219,20 +225,37 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   // Bounded the same way as the capture in `takeScreenshot` below: on the default path (no
   // `--device` and no `devices.<platform>` config pin) `resolveDevice` shells out to `xcrun simctl`
   // or `adb devices -l`, and a wedged one of those must not hold the HTTP request open forever any
-  // more than a wedged capture may.
+  // more than a wedged capture may. A timeout here is reported as SCREENSHOT_FAILED with
+  // `tool: 'resolveDevice'`, since resolution itself is what hung, not a specific host tool.
   const resolveDeviceFor = (target: DaemonTarget, requested: unknown): Promise<DeviceRef> => {
     const platform = target.info().platform as RemotePlatform;
-    return withRequestTimeout(target.id, 'resolveDevice', requestTimeoutMs, resolveDevice({ platform, requested: str(requested), configured: options.devices?.[platform] }));
+    return withRequestTimeout(
+      target.id,
+      'resolveDevice',
+      requestTimeoutMs,
+      resolveDevice({ platform, requested: str(requested), configured: options.devices?.[platform] }),
+      (boundMs) => new IronbirdError('SCREENSHOT_FAILED', `resolveDevice timed out after ${boundMs} ms`, { tool: 'resolveDevice', stderr: `timed out after ${boundMs} ms` }),
+    );
   };
 
   // Takes the picture once a device is already in hand: `screenshot` resolves it from `params`
   // right before calling this, and `step` resolves it before dispatching (see the `step` handler)
   // so a device problem fails before anything is applied. Both that device-resolution step and the
   // capture here are bounded like every other target operation (docs/protocol.md §3.2): a wedged
-  // host tool must not hold the HTTP connection open forever.
+  // host tool must not hold the HTTP connection open forever. A timeout here is reported as
+  // SCREENSHOT_FAILED, the same code a failing (rather than hanging) capture already uses (see
+  // screenshot.ts), naming the tool that's wedged rather than TARGET_DISCONNECTED — the target
+  // itself is fine, and `ironbird reset` cannot unwedge a host tool.
   const takeScreenshot = async (target: DaemonTarget, device: DeviceRef, requestedOut?: string): Promise<Screenshot> => {
     const outPath = requestedOut === undefined ? screenshotPath(artifactsPath, target.info().id) : path.resolve(requestedOut);
-    await withRequestTimeout(target.id, 'screenshot', requestTimeoutMs, capture({ device, outPath }));
+    const tool = device.platform === 'ios' ? 'simctl' : 'adb';
+    await withRequestTimeout(
+      target.id,
+      'screenshot',
+      requestTimeoutMs,
+      capture({ device, outPath }),
+      (boundMs) => new IronbirdError('SCREENSHOT_FAILED', `${tool} timed out after ${boundMs} ms`, { tool, stderr: `timed out after ${boundMs} ms` }),
+    );
     return { path: outPath, device: device.id, capturedAt: Date.now() };
   };
 

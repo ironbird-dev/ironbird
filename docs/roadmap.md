@@ -13,7 +13,7 @@ Estimates assume focused effort and describe a sequence, not calendar dates. Eac
 | Milestone | Theme | Estimate | Delivers | Gate |
 |---|---|---|---|---|
 | M0 | Headless loop | 1 week | Core, daemon, core CLI, example app logic | An agent completes checkout headlessly |
-| M1 | Remote mode | 1 week | Bridge, settle, screenshots, `step`, `verify-bundle` | Stale-screenshot rate ≤ 1% on iOS |
+| M1 | Remote mode | 1 week | Bridge, settle, screenshots, `step`, `verify-bundle` | Stale ≤ 1% and p95 < 1.5 s on iOS |
 | M2 | Fakes and scenarios | 1 week | Fake controls, scenario runner | Planted race reproduced on both targets |
 | M3 | Agent interface | 1 week | MCP server, agent skill | Agent fixes the planted race unaided in 4 of 5 sessions |
 | M4 | Testing package | 2 weeks | `@ironbird/testing`, model-based helper | Race rediscovered in 9 of 10 seeds |

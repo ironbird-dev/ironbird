@@ -4,6 +4,8 @@ A cart, a card reader, and a payment API behind ports, with the reader and the A
 
 ## Run
 
+Run `pnpm build` from the repository root once first: this example resolves `@ironbird/react-native` through `packages/react-native/dist`, which only exists after a build.
+
 ```sh
 pnpm example:ios        # Expo Go on the booted iOS Simulator
 pnpm example:android    # Expo Go on the running Android emulator

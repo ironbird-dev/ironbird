@@ -87,7 +87,7 @@ export async function startBridgeServer(options: BridgeServerOptions): Promise<B
   const server = new WebSocketServer({
     host: options.host,
     port: options.port,
-    verifyClient: ({ origin }: { origin: string }) => {
+    verifyClient: ({ origin }: { origin?: string }) => {
       if (origin === undefined || origin === '') return true;
       try {
         return hostAllowed(new URL(origin).hostname, options.host);
@@ -105,11 +105,19 @@ export async function startBridgeServer(options: BridgeServerOptions): Promise<B
   });
 
   server.on('connection', (socket: WebSocket) => {
-    socket.on('error', (error: Error) => log(`bridge socket error before hello: ${error.message}`));
+    // Owns error reporting only until a target takes the socket over below; that hand-off removes
+    // this listener, since `createRemoteTarget` installs its own and this one would otherwise stay
+    // attached for the connection's life and double-log every later socket error.
+    const onSocketError = (error: Error): void => log(`bridge socket error: ${error.message}`);
+    socket.on('error', onSocketError);
     const timer = setTimeout(() => {
       log('a bridge connection sent no hello in time; closing it');
       socket.terminate();
     }, handshakeTimeoutMs);
+    // A socket that closes before sending `hello` — cleanly or otherwise, including when `close()`
+    // below terminates it — must not leave this timer pending: left running, it fires after
+    // `handshakeTimeoutMs` regardless, logging "sent no hello" for a connection that is long gone.
+    socket.on('close', () => clearTimeout(timer));
 
     const reject = (code: keyof typeof CLOSE_CODES, message: string, details?: Record<string, unknown>): void => {
       socket.send(JSON.stringify({ type: 'reject', code, message, ...(details === undefined ? {} : { details }) }));
@@ -128,6 +136,7 @@ export async function startBridgeServer(options: BridgeServerOptions): Promise<B
       }
       options.session.adopt(hello.app.id);
       const id = registry.claim(hello.app.platform);
+      socket.off('error', onSocketError);
       const target: RemoteTarget = createRemoteTarget({
         id,
         platform: hello.app.platform,

@@ -151,6 +151,21 @@ describe('startBridgeServer', () => {
     expect(await silent.closed).toMatchObject({ code: 1006 });
   });
 
+  it('clears the handshake timer when a socket closes before hello, so a later close() does not leave a stray log behind', async () => {
+    const s = await boot({ handshakeTimeoutMs: 200 });
+    const client = await connect(s.url);
+    client.socket.close();
+    await client.closed;
+    await s.close();
+    server = undefined;
+    // Bounded wait slightly past the handshake window: without the fix, the timer set for this
+    // connection is never cleared and fires after handshakeTimeoutMs regardless of the socket (or
+    // even the whole server) already being closed, logging the "sent no hello" line for a
+    // connection that closed cleanly.
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    expect(logs.some((line) => line.includes('sent no hello'))).toBe(false);
+  });
+
   it('refuses an upgrade whose Origin names a foreign host and accepts a loopback one', async () => {
     const s = await boot();
     await expect(connect(s.url, { origin: 'http://evil.example' })).rejects.toThrow();
@@ -170,6 +185,6 @@ describe('startBridgeServer', () => {
     good.send(hello());
     await good.until(() => good.frames.length >= 1);
     expect(good.frames[0]).toMatchObject({ type: 'welcome' });
-    expect(logs.some((line) => line.includes('bridge socket error before hello'))).toBe(true);
+    expect(logs.some((line) => line.includes('bridge socket error:'))).toBe(true);
   });
 });

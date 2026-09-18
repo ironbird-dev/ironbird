@@ -273,7 +273,7 @@ Capabilities say which operations a target supports, and an operation whose capa
 | `AMBIGUOUS_TARGET` | Several targets qualify and none was chosen | `{ available }` |
 | `TARGET_DISCONNECTED` | The connection dropped before a response, the request timeout elapsed, or a reset or dispose abandoned the operation | `{ target, op }` |
 | `AMBIGUOUS_DEVICE` | Several booted devices and none was chosen | `{ devices }` |
-| `SCREENSHOT_FAILED` | The host capture tool failed | `{ tool, stderr }` |
+| `SCREENSHOT_FAILED` | The host capture tool failed, or the capture or device resolution timed out (a wedged `simctl`/`adb`/`resolveDevice`) | `{ tool, stderr }` |
 | `HEADLESS_LOAD_FAILED` | The headless entry failed to load | `{ entry, message, importChain? }` |
 | `INVALID_CONFIG` | `ironbird.config.ts` is missing a default export or fails validation | `{ file, issues }` |
 | `CLOCK_RUNAWAY` | `clockAdvance` exceeded 10,000 timer firings | `{ labels }` |

@@ -9,7 +9,12 @@ export interface OperationQueue {
    * session nor report state read off the dead one.
    */
   readonly epoch: number;
-  /** Runs `action` once every earlier queued action has settled or been abandoned. */
+  /**
+   * Runs `action` once every earlier queued action has settled or been abandoned. `enqueue` does
+   * not itself abandon an action that is already running when a later `abandon` fires; a caller
+   * that needs a running action to stop pairs this with `raceAbandon` and an epoch check around
+   * its own awaits (see headless-target.ts for the pattern).
+   */
   enqueue<T>(op: string, action: () => Promise<T>): Promise<T>;
   /** Wraps an in-flight promise so an `abandon` rejects it at once instead of waiting it out. */
   raceAbandon<T>(op: string, promise: Promise<T>): Promise<T>;
