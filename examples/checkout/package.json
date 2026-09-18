@@ -4,15 +4,28 @@
   "license": "MIT",
   "version": "0.0.0",
   "type": "module",
+  "main": "index.js",
   "scripts": {
+    "start": "expo start",
+    "start:ios": "expo start --ios",
+    "start:android": "expo start --android",
+    "export:release": "expo export --platform all --output-dir dist",
+    "measure": "node scripts/measure.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --project unit"
   },
   "dependencies": {
     "@ironbird/core": "workspace:*",
+    "@ironbird/react-native": "workspace:*",
+    "expo": "~57.0.22",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
     "zod": "^4.2.0"
   },
   "devDependencies": {
-    "@ironbird/cli": "workspace:*"
+    "@ironbird/cli": "workspace:*",
+    "@types/pngjs": "^6.0.5",
+    "@types/react": "~19.2.18",
+    "pngjs": "^7.0.0"
   }
 }

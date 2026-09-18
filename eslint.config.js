@@ -80,4 +80,13 @@ export default tseslint.config(
       'no-restricted-properties': ['error', { object: 'Date', property: 'now', message: 'Use the Clock passed to startBridge (AGENTS.md hard rule 9).' }],
     },
   },
+  {
+    // Metro's own entry point, not a Node script: `__DEV__` is a Metro-injected global, and the
+    // require() call is deliberately synchronous so Metro can statically drop it in production.
+    files: ['examples/checkout/index.js'],
+    languageOptions: { globals: { ...globals['react-native'] } },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
 );
