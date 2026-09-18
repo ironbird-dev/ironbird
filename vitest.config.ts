@@ -31,7 +31,7 @@ export default defineConfig({
           // against the shared examples/checkout/.ironbird/daemon.json; running test files
           // in parallel lets one suite's daemon.json writes/removals race the other's.
           include: ['packages/cli/test/**/*.test.ts', 'packages/cli/src/cli/commands/serve.test.ts'],
-          exclude: ['**/node_modules/**', '**/dist/**'],
+          exclude: ['**/*.device.test.ts', '**/node_modules/**', '**/dist/**'],
           fileParallelism: false,
         },
       },
@@ -40,6 +40,9 @@ export default defineConfig({
           name: 'device',
           include: ['**/*.device.test.ts'],
           exclude: ['**/node_modules/**', '**/dist/**'],
+          testTimeout: 60_000,
+          hookTimeout: 120_000,
+          fileParallelism: false,
         },
       },
     ],
