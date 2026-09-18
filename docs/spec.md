@@ -4,7 +4,7 @@
 |---|---|
 | Status | Draft |
 | Version | 0.1 (pre-implementation) |
-| Last updated | 2026-09-11 |
+| Last updated | 2026-09-18 |
 | Related | [architecture.md](architecture.md) · [roadmap.md](roadmap.md) |
 
 ## Problem statement

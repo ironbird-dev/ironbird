@@ -1,6 +1,6 @@
 # ADR-0003: App dials out to the daemon over WebSocket
 
-**Status:** Proposed (reviewed 2026-09-13; decided at the M1 gate)
+**Status:** Proposed (reviewed 2026-09-18 at the M1 gate; decision deferred, see docs/evals/m1-remote-mode.md)
 **Date:** 2026-09-10
 **Deciders:** Project maintainer
 

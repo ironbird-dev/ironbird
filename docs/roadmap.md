@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-09-13 |
+| Last updated | 2026-09-18 |
 | Related | [spec.md](spec.md) (requirement and question IDs) · [testing-strategy.md](testing-strategy.md) |
 
 Estimates assume focused effort and describe a sequence, not calendar dates. Each milestone ends with a short demo and a go/no-go decision against its exit criteria.
@@ -60,7 +60,7 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 
 **Exit criteria**
 
-- [ ] 300 consecutive `step`s on iOS Simulator: stale-screenshot rate ≤ 1% and p95 latency < 1.5 s (not met — p95 latency; see the Q5 finding and the gate decision in docs/evals/m1-remote-mode.md)
+- [ ] 300 consecutive `step`s on iOS Simulator: stale-screenshot rate ≤ 1% and p95 latency < 1.5 s (not met — p95 latency; see the harness results and the open p95 item in docs/evals/m1-remote-mode.md)
 - [x] The same run on an Android emulator is recorded, and an Android target is set from the result
 - [x] A Metro reload mid-session fails the in-flight request with `TARGET_DISCONNECTED`, and the next request succeeds under the same target id
 - [x] `verify-bundle` passes on a production `expo export` and fails on a deliberately broken build
