@@ -52,10 +52,15 @@ function Reveal({ token, motion, children }: { token: string; motion: boolean; c
     opacity.setValue(0);
     shift.setValue(12);
     // Native driver: the animation runs on the UI thread, exactly the blind spot Q5 asks about.
-    Animated.parallel([
+    const anim = Animated.parallel([
       Animated.timing(opacity, { toValue: 1, duration: 400, useNativeDriver: true }),
       Animated.timing(shift, { toValue: 0, duration: 400, useNativeDriver: true }),
-    ]).start();
+    ]);
+    anim.start();
+    // Stop a still-running reveal when motion toggles to reduced mid-flight (or on unmount), so
+    // the toggle is authoritative instead of letting an animation that already started finish
+    // regardless of the current motion setting.
+    return () => anim.stop();
   }, [token, motion, opacity, shift]);
   return <Animated.View style={{ opacity, transform: [{ translateY: shift }] }}>{children}</Animated.View>;
 }
@@ -76,11 +81,16 @@ export default function App() {
     [],
   );
 
-  // The header image alternates on every cart change, so each harness step decodes a new image.
+  // The image swap is part of motion, not just Animated and LayoutAnimation (spec D2): with
+  // motion full the header alternates between the two bundled images on every cart change, so
+  // each harness step decodes a new image; with motion reduced it stays on one image so the
+  // reduced arm of the Q5 comparison stops decoding a new image per step too.
   const [cartVersion, setCartVersion] = useState(0);
   useEffect(() => {
+    if (!motion) return;
     setCartVersion((version) => version + 1);
-  }, [state.cart]);
+  }, [state.cart, motion]);
+  const hero = motion && cartVersion % 2 !== 0 ? productB : productA;
 
   return (
     <SafeAreaView style={styles.root}>
@@ -89,7 +99,7 @@ export default function App() {
         <Text style={styles.motion}>motion: {state.ui.motion}</Text>
 
         <View style={styles.section}>
-          <Image source={cartVersion % 2 === 0 ? productA : productB} style={styles.hero} resizeMode="cover" />
+          <Image source={hero} style={styles.hero} resizeMode="cover" />
           <Text style={styles.heading}>Cart · {itemCount} item{itemCount === 1 ? '' : 's'}</Text>
           {state.cart.items.map((item) => (
             <View key={item.sku} style={styles.row}>
