@@ -60,11 +60,11 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 
 **Exit criteria**
 
-- [ ] 300 consecutive `step`s on iOS Simulator: stale-screenshot rate ≤ 1% and p95 latency < 1.5 s
-- [ ] The same run on an Android emulator is recorded, and an Android target is set from the result
-- [ ] A Metro reload mid-session fails the in-flight request with `TARGET_DISCONNECTED`, and the next request succeeds under the same target id
-- [ ] `verify-bundle` passes on a production `expo export` and fails on a deliberately broken build
-- [ ] A short written finding on Q5: stale rate with animations enabled versus reduced
+- [ ] 300 consecutive `step`s on iOS Simulator: stale-screenshot rate ≤ 1% and p95 latency < 1.5 s (not met — p95 latency; see the Q5 finding and the gate decision in docs/evals/m1-remote-mode.md)
+- [x] The same run on an Android emulator is recorded, and an Android target is set from the result
+- [x] A Metro reload mid-session fails the in-flight request with `TARGET_DISCONNECTED`, and the next request succeeds under the same target id
+- [x] `verify-bundle` passes on a production `expo export` and fails on a deliberately broken build
+- [x] A short written finding on Q5: stale rate with animations enabled versus reduced
 
 **Narrow if needed:** if the iOS stale rate stays above 5% after a week of iteration, switch remote settling to condition-based `wait` plus a fixed post-render delay, document remote mode as best-effort for 0.1, and open an ADR on an optional native add-on.
 

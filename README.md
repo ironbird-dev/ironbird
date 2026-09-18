@@ -2,7 +2,7 @@
 
 Ground-test React Native apps for AI coding agents.
 
-> **Status: M0 implemented.** This repository holds the spec, architecture, and roadmap. No packages are published yet, and every API shown here is a draft. M0 (headless loop) is implemented; see [docs/roadmap.md](docs/roadmap.md) for what's next.
+> **Status: M1 implemented; the iOS latency criterion is open, see docs/evals/m1-remote-mode.md.** This repository holds the spec, architecture, and roadmap. No packages are published yet, and every API shown here is a draft. M0 (headless loop) and M1 (remote mode) are implemented; see [docs/roadmap.md](docs/roadmap.md) for what's next.
 
 Repository: [github.com/ironbird-dev/ironbird](https://github.com/ironbird-dev/ironbird) · npm: [`@ironbird`](https://www.npmjs.com/org/ironbird) and `ironbird`
 

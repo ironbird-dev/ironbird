@@ -185,11 +185,11 @@ These targets are hypotheses to revisit after the first pilots.
 | Q2 | ~~How should the daemon load TypeScript headless entries?~~ **Resolved 2026-09-11:** esbuild bundles the entry with dependencies external; tsconfig `paths` are honored and the metafile yields the `react-native` import chain | Engineering | Resolved |
 | Q3 | Does Zod 4's JSON Schema output work cleanly as MCP tool input schemas with the MCP TypeScript SDK? | Engineering | M3 |
 | Q4 | How do we map a connected app to a specific simulator when several are booted, without native code? | Engineering | No; config fallback exists |
-| Q5 | Are JS-only signals enough to settle around UI-thread animations (for example Reanimated), layout animations, and image decoding, or is an optional native add-on needed? | Engineering | Investigate in M1 |
+| Q5 | ~~Are JS-only signals enough to settle around UI-thread animations (for example Reanimated), layout animations, and image decoding, or is an optional native add-on needed?~~ **Resolved 2026-09-18:** yes with motion reduced, zero nonzero pixel diffs across all 1200 reduced-arm measurement captures on both platforms; a native add-on is not warranted on this evidence | Engineering | Resolved |
 | Q6 | Should fast-check arbitraries be derived from Zod schemas with an existing library or a minimal in-house generator? | Engineering | M4 |
 | Q7 | ~~License: MIT or Apache-2.0?~~ **Resolved 2026-09-12:** MIT. `LICENSE` sits at the repository root and in each published package, and every `package.json` declares `"license": "MIT"` | Maintainer | Resolved |
 | Q8 | Do we support apps still on Zod 3, and how? | Engineering | Before 0.1 |
-| Q9 | Does the bridge work in Expo Go? Expected yes, since it has no native code | Engineering | Verify in M1 |
+| Q9 | ~~Does the bridge work in Expo Go?~~ **Resolved 2026-09-18:** yes; the example runs in Expo Go with no native code, and every M1 measurement was taken there | Engineering | Resolved |
 | Q10 | ~~Is "ironbird" clear of trademark conflicts for a developer tool?~~ **Resolved 2026-09-13:** the trademark search found no conflict in software or developer tools; the name is cleared for publishing | Maintainer | Resolved |
 
 ## Timeline and phasing

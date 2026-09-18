@@ -76,9 +76,9 @@ Option A is the only option that is pure JavaScript, toolchain-neutral, and cons
 - **Harder:** robust reconnection after reloads; token handling whenever the daemon binds beyond localhost.
 - **Revisit:** an optional Expo DevTools plugin transport as a convenience layer on top of the same protocol.
 
-## Review (2026-09-13, M0 gate)
+## Review (2026-09-18, M1 gate)
 
-Unchanged. M0 has no bridge, so nothing has tested this decision. It is confirmed or amended against the M1 exit criteria: reconnection across a Metro reload under the same target id, and Android through `adb reverse`.
+Confirmed for reconnection: the Metro-reload device test (`examples/checkout/test/remote.device.test.ts`, "a reload fails the in-flight request with TARGET_DISCONNECTED and the next request runs under the same id") shows the in-flight request failing with `TARGET_DISCONNECTED` and the next request succeeding under the same target id, and the Android measurement run connected through `adb reverse` with no bridge changes needed. The measured M1 numbers are in [docs/evals/m1-remote-mode.md](../evals/m1-remote-mode.md): the iOS stale-screenshot rate passes in both motion arms, but p95 step latency misses the < 1.5 s bar in both arms, a structural cost of the fixed measurement cycle and `simctl` capture time rather than a defect in this transport decision. This ADR stays Proposed: whether to accept the WebSocket transport as-is, invoke the roadmap's narrow-if-needed clause, or hold M1 open pending further work is the maintainer's gate decision, not made here.
 
 ## Action items
 

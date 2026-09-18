@@ -35,14 +35,16 @@ These are the workspace scripts.
 | Device tests (macOS with a booted simulator) | `pnpm test:device` |
 | Lint, including import boundaries | `pnpm lint` |
 | Type check | `pnpm typecheck` |
-| Run the example on iOS (M1) | `pnpm example:ios` |
+| Run the example on iOS | `pnpm example:ios` |
+| Run the example on Android | `pnpm example:android` |
+| Measure the M1 stale-screenshot and latency indicators | `pnpm measure -- --target ios` |
 | Measure the M0 performance budgets | `pnpm bench`; `--check` fails on a miss |
 | Add a release note | `pnpm changeset` |
 | Publish the packages | `pnpm release` |
 
 Run `pnpm build` before `pnpm typecheck` on a fresh checkout: packages that import another workspace package resolve its types from that package's `dist`.
 
-Tooling: pnpm workspaces, TypeScript in strict mode, Vitest for packages and for the example app's logic, ESLint for import boundaries, and Changesets for releases. React Native Testing Library arrives with the example's UI in M1. Vitest runs with `test.projects`: `unit` is the default, `serial` holds the two files that drive a real daemon against the example app and runs them one at a time, and `device` holds `*.device.test.ts`.
+Tooling: pnpm workspaces, TypeScript in strict mode, Vitest for packages and for the example app's logic, ESLint for import boundaries, and Changesets for releases. The example's screen is exercised by the device tests and the measurement harness rather than by component tests. Vitest runs with `test.projects`: `unit` is the default, `serial` holds the two files that drive a real daemon against the example app and runs them one at a time, and `device` holds `*.device.test.ts`.
 
 ## Hard rules
 

@@ -65,9 +65,9 @@ Option A proves the product with the lowest adoption cost. Option C preserves a 
 - **Harder:** settle detection can't see UI-thread animations; mapping a connection to a device is manual (spec Q4); physical iOS screenshots are out of scope for v0.
 - **Revisit:** after M1, using the measured stale-screenshot and settle-timeout rates.
 
-## Review (2026-09-13, M0 gate)
+## Review (2026-09-18, M1 gate)
 
-Unchanged. M0 has no `@ironbird/react-native` package, so nothing has tested this decision. It is confirmed or amended after the M1 finding on spec Q5, the stale-screenshot rate with animations enabled versus reduced.
+The Q5 finding in [docs/evals/m1-remote-mode.md](../evals/m1-remote-mode.md): with motion reduced, JS-only settle detection reaches zero nonzero pixel diffs across all 1200 reduced-arm captures on both platforms; with motion full, iOS shows no app-level staleness (its one flagged step is a `simctl` capture artifact, not an animation) while Android's 18% full-motion stale rate is a measurement floor suppressed by an Expo Go dev-menu overlay left on screen for the session, not evidence against JS-only detection. On this evidence a native add-on is not warranted. This ADR stays Proposed because the M1 gate as a whole is not closed: the iOS p95 latency criterion misses in both motion arms for reasons unrelated to native-versus-JS settle detection, and that gate decision belongs to the maintainer.
 
 ## Action items
 
