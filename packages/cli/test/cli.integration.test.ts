@@ -51,7 +51,7 @@ afterAll(async () => {
 
 describe('ironbird CLI against the example app', () => {
   it('drives cart → payment → receipt headlessly using only the CLI', async () => {
-    expect(Object.keys((await ironbird('commands')).json)).toEqual(['cart.addItem', 'cart.clear', 'payment.start']);
+    expect(Object.keys((await ironbird('commands')).json)).toEqual(['cart.addItem', 'cart.clear', 'payment.start', 'ui.setMotion']);
     expect((await ironbird('status')).json).toMatchObject({ protocol: 1, targets: [{ id: 'headless', appId: 'com.example.checkout' }] });
 
     await ironbird('reset');

@@ -49,7 +49,7 @@ describe('runServe', () => {
     expect(info?.url).toBe(line['url']);
     const response = await fetch(`${line['url'] as string}/v1/rpc`, { method: 'POST', body: JSON.stringify({ op: 'describe' }) });
     const described = (await response.json()) as { result: { commands: Record<string, unknown> } };
-    expect(Object.keys(described.result.commands)).toEqual(['cart.addItem', 'cart.clear', 'payment.start']);
+    expect(Object.keys(described.result.commands)).toEqual(['cart.addItem', 'cart.clear', 'payment.start', 'ui.setMotion']);
     run.stop();
     expect(await run.exit).toBe(0);
     expect(await readDaemonInfo(path.join(example, '.ironbird'))).toBeUndefined();

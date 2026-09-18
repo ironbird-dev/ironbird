@@ -9,4 +9,7 @@ export const commands = defineCommands({
   'payment.start': z
     .object({ method: z.enum(['card', 'saved']).describe('card uses the reader; saved charges the stored card') })
     .describe('Start payment for the current cart'),
+  'ui.setMotion': z
+    .object({ motion: z.enum(['full', 'reduced']).describe('full animates status changes, list edits, and image swaps; reduced renders them instantly') })
+    .describe('Switch the screen between full and reduced motion'),
 });
