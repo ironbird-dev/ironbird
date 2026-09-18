@@ -42,13 +42,17 @@ function Reveal({ token, motion, children }: { token: string; motion: boolean; c
   const shift = useRef(new Animated.Value(0)).current;
   const previous = useRef(token);
   useEffect(() => {
-    if (previous.current === token) return;
-    previous.current = token;
+    // Hoisted above the token guard: a motion-only re-run (full -> reduced mid-animation) must
+    // still snap to rest even though `previous.current === token` already, or `anim.stop()` below
+    // would leave opacity/shift parked at whatever partial values the native timing had reached.
     if (!motion) {
       opacity.setValue(1);
       shift.setValue(0);
+      previous.current = token;
       return;
     }
+    if (previous.current === token) return;
+    previous.current = token;
     opacity.setValue(0);
     shift.setValue(12);
     // Native driver: the animation runs on the UI thread, exactly the blind spot Q5 asks about.
