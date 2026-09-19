@@ -79,7 +79,7 @@ interface Target<S = unknown> {
 
 `TargetDefinition` is exported alongside `createTarget`. `persist` and `restore` ship today: a definition that provides either gets the matching method and capability on the `Target`. What is P1 is the pair of protocol operations that use them, `snapshotSave` and `snapshotLoad`; see [protocol.md §4.1](protocol.md#41-target-operations).
 
-`capabilities` lists only what the `Target` itself provides. The daemon and bridge add `settle`, `events`, `fakes`, `clock`, and `reset` as appropriate when they describe the target; see [protocol.md §5](protocol.md#5-types).
+`capabilities` lists only what the `Target` itself provides. The daemon and bridge add `settle`, `events`, `fakes`, `clock`, and `reset` as appropriate when they describe the target; see [protocol.md §5](protocol.md#5-types). A subscriber that throws is skipped with a `console.warn`; it never prevents later subscribers from running or the dispatch from completing.
 
 Example with an XState actor, adapted by hand (the `@ironbird/xstate` adapter does this for you):
 
@@ -154,7 +154,7 @@ function createTracker(options?: { clock?: Clock; timerThresholdMs?: number; ena
 function markFakePort<P extends object>(port: P): P;
 ```
 
-With a real clock, timers due within `timerThresholdMs` (default 1,000) count as pending. Manual-clock timers never count. Wrapping is always explicit, so the app chooses the label; a port tagged as fake has its calls marked `fake: true`, which is what allows `mode: 'quiescent'` to finish without advancing time. `markFakePort` tags a port with the global-registry symbol `FAKE_PORT_MARK`; `defineFake` (M2) will do this for every fake port. Hand-written fakes, such as the M0 example's, call `markFakePort` on the port or pass `{ fake: true }` to `wrap`. With `enabled: false` (app code passes `enabled: __DEV__`), `wrap` returns the port untouched, `track` returns the promise untouched, `pending()` is empty, and `whenIdle` resolves idle at once, so release builds carry no tracking. `PendingItem` and `SettleResult` are defined in [protocol.md](protocol.md#5-types). `whenIdle`'s `timeoutMs` and every `ageMs` are wall-clock milliseconds, because a manual clock never advances on its own; only the settle result's `nextTimerInMs` is manual-clock time.
+With a real clock, timers due within `timerThresholdMs` (default 1,000) count as pending. Manual-clock timers never count. Wrapping is always explicit, so the app chooses the label; a port tagged as fake has its calls marked `fake: true`, which is what allows `mode: 'quiescent'` to finish without advancing time. `markFakePort` tags a port with the global-registry symbol `FAKE_PORT_MARK`; `defineFake` (M2) will do this for every fake port. Hand-written fakes, such as the M0 example's, call `markFakePort` on the port or pass `{ fake: true }` to `wrap`. With `enabled: false` (app code passes `enabled: __DEV__`), `wrap` returns the port untouched, `track` returns the promise untouched, `pending()` is empty, and `whenIdle` resolves idle at once, so release builds carry no tracking. `PendingItem` and `SettleResult` are defined in [protocol.md](protocol.md#5-types). `whenIdle`'s `timeoutMs` and every `ageMs` are wall-clock milliseconds, because a manual clock never advances on its own; only the settle result's `nextTimerInMs` is manual-clock time. A listener that throws is skipped with a `console.warn`; it never prevents later listeners from running or the tracked promise from settling.
 
 ### defineFake (P0, M2)
 
@@ -266,7 +266,7 @@ interface EventRecorder {
 function createEventRecorder(options?: { clock?: Clock; limit?: number; enabled?: boolean }): EventRecorder;
 ```
 
-`limit` defaults to 10,000; `since` defaults to `seq` `0` and an unlimited page. With `enabled: false`, `record` stores nothing and returns an event with `seq: 0`, `since` returns nothing, and `lastSeq()` stays `0`, so release builds carry no event log. To capture analytics, wrap your analytics adapter so each call also records: `recorder.record('analytics', name, properties)`.
+`limit` defaults to 10,000; `since` defaults to `seq` `0` and an unlimited page. With `enabled: false`, `record` stores nothing and returns an event with `seq: 0`, `since` returns nothing, and `lastSeq()` stays `0`, so release builds carry no event log. To capture analytics, wrap your analytics adapter so each call also records: `recorder.record('analytics', name, properties)`. A subscriber that throws is skipped with a `console.warn`; it never prevents later subscribers from running or the event from being recorded.
 
 ### defineHeadless (P0)
 
@@ -321,6 +321,9 @@ const PROTOCOL_VERSION: 1;
 | `getAtPath` | Reads a dot path out of a state value, `undefined` when it doesn't resolve |
 | `parsePath` | Splits a dot path into segments; the empty path is no segments |
 | `serializeState` | JSON-safe copy plus the `SerializationWarning[]` for what it replaced |
+| `parseCondition` | Reads exactly one of `equals`, `notEquals`, `exists`, `matches` from a `waitFor` params object; throws `INVALID_PAYLOAD` otherwise (M1: moved here from `@ironbird/cli`, which re-exports it) |
+| `conditionHolds` | Whether a value satisfies a parsed `Condition` |
+| `deepEqual` | Structural equality used by `equals` and `notEquals` |
 | `suggestNames` | Near-miss names for `UNKNOWN_COMMAND` and `UNKNOWN_CONTROL` details |
 | `MAX_FIRINGS_PER_ADVANCE` | `10_000`, the `CLOCK_RUNAWAY` threshold for one `advance` |
 | `FAKE_PORT_MARK` | The `Symbol.for('ironbird.fakePort')` tag `markFakePort` writes |
@@ -345,6 +348,7 @@ interface BridgeOptions {
   fakes?: FakeInstance[];
   clock?: Clock;                                                // default createRealClock(); share it with the tracker
   appId?: string;                                               // default 'app'
+  appName?: string;                                             // shown in status; default none
   url?: string;                                                 // default 'ws://localhost:4568'
   token?: string;
   settle?: { frames?: number; timeoutMs?: number };             // defaults 2 and 5000
@@ -362,11 +366,14 @@ interface BridgeHandle {
 
 Behavior:
 
-- When `__DEV__` is false and `allowInNonDevBuilds` isn't set, `startBridge` logs one warning and returns an inert handle.
-- Platform comes from `Platform.OS`.
-- Settle timing uses `clock`, never `Date.now` or global timers, so the bridge can be tested in Node with a manual clock. Animation frames come from `requestAnimationFrame`.
+- When `__DEV__` is false and `allowInNonDevBuilds` isn't set, `startBridge` logs one warning and returns an inert handle whose `connected` is false and `targetId` is null. When `__DEV__` is undefined, as in Node tests, the bridge treats the environment as a dev build.
+- Platform comes from `Platform.OS`: `android` maps to `android`, anything else to `ios`.
+- Settle timing uses `clock`, never `Date.now` or global timers, so the bridge can be tested in Node with a manual clock. Animation frames come from `requestAnimationFrame`, read from the global at call time; the WebSocket comes from the global `WebSocket`.
+- The bridge reconnects with exponential backoff from `reconnect.initialDelayMs` to `reconnect.maxDelayMs` after any close except a `reject`, which is final and logged once, or `stop()`.
+- Every incoming payload is validated against the app's own registry before dispatch; malformed frames are dropped and logged.
+- Recorded events are forwarded as they happen; state revisions are coalesced to one notification per 100 ms window; serialization warnings are sent once per path per connection.
+- `clockAdvance`, `clockNow`, and `reset` answer `UNSUPPORTED`, and the bridge never declares the `clock` or `reset` capability.
 - iOS Simulator reaches the daemon at `localhost`. Android emulators need `adb reverse tcp:4568 tcp:4568`, which `ironbird serve` runs automatically when `adb` is available. Physical devices use the host's LAN address, and the daemon must be started with `--host` and a token.
-- Every incoming payload is validated against the app's own registry before dispatch.
 
 Wiring, using the layout from [architecture.md §5](architecture.md#5-integrating-an-app). The tracker and recorder are created in `instance.ts`, which only the app loads, with `enabled: __DEV__` so release builds carry neither:
 
@@ -432,6 +439,7 @@ export default defineConfig({
   bridge: { port: 4568 },
   clock: { start: '2026-01-01T00:00:00.000Z' },
   settle: { timeoutMs: 5000 },                // headless settle; remote settle is set in startBridge
+  boot: { timeoutMs: 30000 },                 // how long the headless factory may take before HEADLESS_LOAD_FAILED
   scenarios: 'ironbird/scenarios',
   artifactsDir: '.ironbird',
   devices: { ios: 'booted' },                 // simctl device, or adb serial under `android`

@@ -1,5 +1,6 @@
 import type { Clock } from './clock';
 import type { RecordedEvent } from './protocol';
+import { messageOf } from './errors';
 import { scheduler } from './scheduler';
 
 export interface EventRecorder {
@@ -31,7 +32,13 @@ export function createEventRecorder(options: { clock?: Clock; limit?: number; en
         const dropped = buffer.shift();
         if (dropped) evictedThrough = dropped.seq;
       }
-      for (const listener of listeners) listener(event);
+      for (const listener of listeners) {
+        try {
+          listener(event);
+        } catch (error) {
+          console.warn(`ironbird: an event subscriber threw and was skipped: ${messageOf(error)}`);
+        }
+      }
       return event;
     },
     since(seq = 0, limit = Number.POSITIVE_INFINITY) {

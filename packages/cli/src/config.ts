@@ -12,6 +12,7 @@ export const configSchema = z.object({
   bridge: z.object({ port: z.number().int().min(0).max(65_535).default(4568) }).prefault({}),
   clock: z.object({ start: z.iso.datetime().optional() }).prefault({}),
   settle: z.object({ timeoutMs: z.number().int().positive().default(5_000) }).prefault({}),
+  boot: z.object({ timeoutMs: z.number().int().positive().default(30_000) }).prefault({}),
   scenarios: z.string().default('ironbird/scenarios'),
   artifactsDir: z.string().default('.ironbird'),
   devices: z.object({ ios: z.string().optional(), android: z.string().optional() }).prefault({}),

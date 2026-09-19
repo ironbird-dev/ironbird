@@ -13,6 +13,9 @@
     "bench": "pnpm build && node packages/cli/scripts/bench.mjs",
     "lint": "eslint .",
     "typecheck": "pnpm -r run typecheck",
+    "example:ios": "pnpm --filter @ironbird-examples/checkout start:ios",
+    "example:android": "pnpm --filter @ironbird-examples/checkout start:android",
+    "measure": "pnpm --filter @ironbird-examples/checkout measure",
     "changeset": "changeset",
     "release": "pnpm -r publish --access public --no-git-checks && pnpm changeset tag"
   },

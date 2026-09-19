@@ -1,15 +1,31 @@
-import { IronbirdError, PROTOCOL_VERSION, isIronbirdError, toErrorShape, type RecordedEvent, type TargetInfo } from '@ironbird/core';
+import { IronbirdError, PROTOCOL_VERSION, isIronbirdError, toErrorShape, type Platform, type RecordedEvent, type Screenshot, type StepResult, type TargetInfo } from '@ironbird/core';
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import type { HeadlessTarget } from './headless-target';
+import path from 'node:path';
+import { startBridgeServer, type BridgeServer } from './bridge-server';
+import type { DaemonTarget } from './daemon-target';
+import { resolveDevice as resolveDeviceOnHost, type DeviceRef } from './devices';
+import { isSameSite } from './same-site';
+import { captureScreenshot as captureOnHost, screenshotPath } from './screenshot';
+import type { RemotePlatform } from './target-registry';
 
 export interface DaemonOptions {
   host: string;
   port: number;
   token?: string;
   version: string;
-  headless?: HeadlessTarget;
+  headless?: DaemonTarget;
+  /** Targets registered at start besides the headless one; tests use it to stand in for connected apps. */
+  targets?: DaemonTarget[];
   defaultTarget?: string;
+  /** When set, a bridge server listens on this port on the same host, and connected apps become targets. */
+  bridge?: { port: number; pingIntervalMs?: number; handshakeTimeoutMs?: number };
+  /** Where screenshots are written; default `.ironbird` under the working directory. */
+  artifactsPath?: string;
+  /** Config `devices`: the simctl udid or adb serial to capture for each platform. */
+  devices?: { ios?: string | undefined; android?: string | undefined };
+  /** Test hooks replacing the host tools. */
+  capture?: { resolveDevice?: typeof resolveDeviceOnHost; capture?: typeof captureOnHost };
   log?: (line: string) => void;
   /** Test hook: overrides the SSE keepalive ping interval (default 15_000ms) so tests can observe
    * ping behavior without waiting out the real interval. */
@@ -22,36 +38,23 @@ export interface Daemon {
   readonly url: string;
   readonly host: string;
   readonly port: number;
+  readonly bridgeUrl: string | undefined;
   targets(): TargetInfo[];
   close(): Promise<void>;
+}
+
+/** One SSE `target` frame: a connected app arriving or leaving (docs/protocol.md §2.2). */
+export interface TargetEvent {
+  id: string;
+  platform: Platform;
+  appId: string;
+  status: 'connected' | 'disconnected';
 }
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const STATE_THROTTLE_MS = 100;
 const PING_INTERVAL_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 30_000;
-
-/** Hosts a request may name beyond the daemon's own bind address. */
-const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
-
-/**
- * `0.0.0.0` and `::` mean "every interface", not one address a request's `Host` header could ever
- * literally name, so there is no single string to compare against. A wildcard bind already
- * requires a token (see the loopback check in `startDaemon`), so the `Host` check is skipped
- * rather than compared against the unreachable wildcard address itself.
- */
-function isWildcardBindHost(host: string): boolean {
-  const normalized = host.toLowerCase();
-  return normalized === '0.0.0.0' || normalized === '::';
-}
-
-/** Strips the port from a `Host` header, leaving a bracketed IPv6 literal intact. */
-function hostWithoutPort(header: string): string {
-  const value = header.trim().toLowerCase();
-  if (value.startsWith('[')) return value.slice(0, value.indexOf(']') + 1) || value;
-  const colon = value.lastIndexOf(':');
-  return colon === -1 ? value : value.slice(0, colon);
-}
 
 /**
  * The operation-specific timeout a caller asked for, read straight from the wire `params`:
@@ -110,6 +113,8 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+const str = (value: unknown): string | undefined => (typeof value === 'string' && value !== '' ? value : undefined);
+
 export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const log = options.log ?? ((line: string) => console.error(line));
 
@@ -118,10 +123,43 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   }
 
   const startedAt = Date.now();
-  const targets = new Map<string, HeadlessTarget>();
+  const artifactsPath = options.artifactsPath ?? path.resolve('.ironbird');
+  const resolveDevice = options.capture?.resolveDevice ?? resolveDeviceOnHost;
+  const capture = options.capture?.capture ?? captureOnHost;
+  const targets = new Map<string, DaemonTarget>();
   if (options.headless) targets.set(options.headless.id, options.headless);
+  for (const target of options.targets ?? []) targets.set(target.id, target);
 
-  const selectTarget = (requested: unknown): HeadlessTarget => {
+  // One app per session (architecture.md §7.3): the headless target names it, else the first
+  // bridge to connect does, and it stays for the daemon's life.
+  let sessionAppId: string | undefined = options.headless?.info().appId ?? options.targets?.[0]?.info().appId;
+
+  const targetListeners = new Set<(event: TargetEvent) => void>();
+  const announce = (target: DaemonTarget, status: TargetEvent['status']): void => {
+    const info = target.info();
+    const event: TargetEvent = { id: info.id, platform: info.platform, appId: info.appId, status };
+    for (const listener of targetListeners) {
+      // This runs synchronously inside a `ws` close handler (and inside `register`, on the bridge's
+      // connect path); one stream's listener throwing — e.g. a write racing a dead response — must
+      // not stop delivery to every other open stream, and must not escape as an uncaught exception.
+      try {
+        listener(event);
+      } catch (error) {
+        log(`target listener failed handling ${status} for ${info.id}: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+      }
+    }
+  };
+  const register = (target: DaemonTarget): void => {
+    targets.set(target.id, target);
+    announce(target, 'connected');
+  };
+  const unregister = (target: DaemonTarget): void => {
+    if (targets.get(target.id) !== target) return;
+    targets.delete(target.id);
+    announce(target, 'disconnected');
+  };
+
+  const selectTarget = (requested: unknown): DaemonTarget => {
     const available = [...targets.keys()];
     const id = typeof requested === 'string' && requested !== '' ? requested : options.defaultTarget;
     if (id === undefined) {
@@ -133,6 +171,20 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     const target = targets.get(id);
     if (!target) throw new IronbirdError('NO_TARGET', `No target ${id}`, { available });
     return target;
+  };
+
+  // `screenshot` and `step` need a screen: the only connected app by default, never headless.
+  const selectRemoteTarget = (requested: unknown, op: string): DaemonTarget => {
+    const remotes = [...targets.values()].filter((target) => target.info().platform !== 'headless');
+    if (typeof requested === 'string' && requested !== '') {
+      const target = targets.get(requested);
+      if (!target) throw new IronbirdError('NO_TARGET', `No target ${requested}`, { available: [...targets.keys()] });
+      if (target.info().platform === 'headless') throw new IronbirdError('UNSUPPORTED', `${op} needs a connected app; the headless target has no screen`, { op, target: requested });
+      return target;
+    }
+    if (remotes.length === 1) return remotes[0] as DaemonTarget;
+    if (remotes.length === 0) throw new IronbirdError('NO_TARGET', 'No app is connected', { available: [...targets.keys()] });
+    throw new IronbirdError('AMBIGUOUS_TARGET', 'Several apps are connected; pass --target', { available: remotes.map((target) => target.id) });
   };
 
   const authorized = (req: IncomingMessage): boolean => {
@@ -148,10 +200,16 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
 
   // Bounds one target operation so a wedged target can't hold an HTTP connection open forever.
   // The operation itself keeps running: the target's queue owns it, and `reset` is what clears it.
-  const withRequestTimeout = async <T>(targetId: string, op: string, boundMs: number, work: Promise<T>): Promise<T> => {
+  // `onTimeout`, when given, replaces the default TARGET_DISCONNECTED error: `resolveDeviceFor` and
+  // `takeScreenshot` below use it, because a timeout there means a host tool (`simctl`/`adb`, or
+  // device resolution itself) is wedged, not the target — `ironbird reset` can't fix that.
+  const withRequestTimeout = async <T>(targetId: string, op: string, boundMs: number, work: Promise<T>, onTimeout?: (boundMs: number) => IronbirdError): Promise<T> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new IronbirdError('TARGET_DISCONNECTED', `Request timed out after ${boundMs} ms; the target may be wedged, run ironbird reset`, { target: targetId, op })), boundMs);
+      timer = setTimeout(
+        () => reject(onTimeout ? onTimeout(boundMs) : new IronbirdError('TARGET_DISCONNECTED', `Request timed out after ${boundMs} ms; the target may be wedged, run ironbird reset`, { target: targetId, op })),
+        boundMs,
+      );
     });
     timeout.catch(() => undefined);
     // The abandoned `work` may reject later with nothing awaiting it; swallow that so it doesn't
@@ -162,6 +220,43 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
+  };
+
+  // Bounded the same way as the capture in `takeScreenshot` below: on the default path (no
+  // `--device` and no `devices.<platform>` config pin) `resolveDevice` shells out to `xcrun simctl`
+  // or `adb devices -l`, and a wedged one of those must not hold the HTTP request open forever any
+  // more than a wedged capture may. A timeout here is reported as SCREENSHOT_FAILED with
+  // `tool: 'resolveDevice'`, since resolution itself is what hung, not a specific host tool.
+  const resolveDeviceFor = (target: DaemonTarget, requested: unknown): Promise<DeviceRef> => {
+    const platform = target.info().platform as RemotePlatform;
+    return withRequestTimeout(
+      target.id,
+      'resolveDevice',
+      requestTimeoutMs,
+      resolveDevice({ platform, requested: str(requested), configured: options.devices?.[platform] }),
+      (boundMs) => new IronbirdError('SCREENSHOT_FAILED', `resolveDevice timed out after ${boundMs} ms`, { tool: 'resolveDevice', stderr: `timed out after ${boundMs} ms` }),
+    );
+  };
+
+  // Takes the picture once a device is already in hand: `screenshot` resolves it from `params`
+  // right before calling this, and `step` resolves it before dispatching (see the `step` handler)
+  // so a device problem fails before anything is applied. Both that device-resolution step and the
+  // capture here are bounded like every other target operation (docs/protocol.md §3.2): a wedged
+  // host tool must not hold the HTTP connection open forever. A timeout here is reported as
+  // SCREENSHOT_FAILED, the same code a failing (rather than hanging) capture already uses (see
+  // screenshot.ts), naming the tool that's wedged rather than TARGET_DISCONNECTED — the target
+  // itself is fine, and `ironbird reset` cannot unwedge a host tool.
+  const takeScreenshot = async (target: DaemonTarget, device: DeviceRef, requestedOut?: string): Promise<Screenshot> => {
+    const outPath = requestedOut === undefined ? screenshotPath(artifactsPath, target.info().id) : path.resolve(requestedOut);
+    const tool = device.platform === 'ios' ? 'simctl' : 'adb';
+    await withRequestTimeout(
+      target.id,
+      'screenshot',
+      requestTimeoutMs,
+      capture({ device, outPath }),
+      (boundMs) => new IronbirdError('SCREENSHOT_FAILED', `${tool} timed out after ${boundMs} ms`, { tool, stderr: `timed out after ${boundMs} ms` }),
+    );
+    return { path: outPath, device: device.id, capturedAt: Date.now() };
   };
 
   const handleRpc = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -189,6 +284,28 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         sendJson(res, 200, { ok: true, result: { version: options.version, protocol: PROTOCOL_VERSION, uptimeMs: Date.now() - startedAt, targets: [...targets.values()].map((t) => t.info()) } });
         return;
       }
+      if (op === 'screenshot') {
+        const target = selectRemoteTarget(requestedTarget, op);
+        const device = await resolveDeviceFor(target, params['device']);
+        sendJson(res, 200, { ok: true, target: target.id, result: await takeScreenshot(target, device, str(params['out'])) });
+        return;
+      }
+      if (op === 'step') {
+        const target = selectRemoteTarget(requestedTarget, op);
+        const { device: deviceParam, ...dispatchParams } = params;
+        // Resolved before the dispatch below, not after: `resolveDevice` throws `AMBIGUOUS_DEVICE`
+        // for the routine case of zero or several devices, and a device problem must fail before
+        // the step is applied, not after — otherwise a retry risks dispatching twice.
+        const device = await resolveDeviceFor(target, deviceParam);
+        const bound = requestBoundFor(requestTimeoutMs, dispatchParams);
+        const stepResult = (await withRequestTimeout(target.id, 'dispatch', bound, target.run('dispatch', dispatchParams))) as StepResult;
+        // Captured after settling ends whether or not it reached idle, so the agent sees the screen
+        // either way. A SCREENSHOT_FAILED from here means the dispatch above already applied
+        // (docs/protocol.md §4.2).
+        const screenshot = await takeScreenshot(target, device);
+        sendJson(res, 200, { ok: true, target: target.id, result: { ...stepResult, screenshot, settledBeforeCapture: stepResult.settle?.idle === true } });
+        return;
+      }
       const target = selectTarget(requestedTarget);
       const bound = requestBoundFor(requestTimeoutMs, params);
       const result = await withRequestTimeout(target.id, op, bound, target.run(op, params));
@@ -204,7 +321,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   };
 
   const handleStream = async (url: URL, req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    let target: HeadlessTarget;
+    let target: DaemonTarget;
     try {
       target = selectTarget(url.searchParams.get('target') ?? undefined);
     } catch (error) {
@@ -220,7 +337,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     let aborted = false;
     // A holder object rather than separate `let`s: each of these is assigned exactly once, once
     // its value becomes available, but `cleanup` (below) must be able to reference it beforehand.
-    const handles: { offEvent?: () => void; offState?: () => void; ping?: NodeJS.Timeout } = {};
+    const handles: { offEvent?: () => void; offState?: () => void; offTarget?: () => void; ping?: NodeJS.Timeout } = {};
     let throttle: NodeJS.Timeout | undefined;
     let cleaned = false;
     const cleanup = (): void => {
@@ -228,6 +345,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       cleaned = true;
       handles.offEvent?.();
       handles.offState?.();
+      handles.offTarget?.();
       if (handles.ping) clearInterval(handles.ping);
       if (throttle) clearTimeout(throttle);
     };
@@ -276,6 +394,24 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       if (buffering) liveBuffer.push(event);
       else write('event', event);
     });
+
+    // Every stream hears apps arrive and leave. When it is this stream's own target that left, the
+    // subscriptions above are dead, so the stream ends with the same error a request would get.
+    // Subscribed before the backlog await below, the same as the event subscription just above,
+    // so a disconnect that lands while we're still waiting on the backlog is caught here — ending
+    // the stream with this target frame before the error frame, per docs/protocol.md §2.2 — rather
+    // than only ever reaching the backlog's own `catch` below with nothing subscribed yet.
+    const onTarget = (event: TargetEvent): void => {
+      write('target', event);
+      if (cleaned || event.id !== target.id || event.status !== 'disconnected') return;
+      cleanup();
+      guarded(() => `event: error\ndata: ${JSON.stringify({ code: 'TARGET_DISCONNECTED', message: `Target ${event.id} disconnected`, details: { target: event.id, op: 'stream' } })}\n\n`);
+      endStream();
+    };
+    targetListeners.add(onTarget);
+    handles.offTarget = () => {
+      targetListeners.delete(onTarget);
+    };
 
     let backlog: { events: RecordedEvent[] };
     try {
@@ -341,14 +477,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   // A page in the user's browser can reach a loopback daemon, so a same-origin-style check runs
   // before anything else: a real CLI client never sends `Origin`, and a DNS-rebinding attack
   // arrives with a `Host` the daemon was never bound to.
-  const sameSite = (req: IncomingMessage): boolean => {
-    if (req.headers.origin !== undefined) return false;
-    if (isWildcardBindHost(options.host)) return true;
-    const header = req.headers.host;
-    if (header === undefined) return true;
-    const host = hostWithoutPort(header);
-    return ALLOWED_HOSTS.has(host) || host === options.host.toLowerCase() || host === `[${options.host.toLowerCase()}]`;
-  };
+  const sameSite = (req: IncomingMessage): boolean => isSameSite({ origin: req.headers.origin, host: req.headers.host }, options.host);
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -383,15 +512,49 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : options.port;
   const url = `http://${options.host}:${port}`;
-  log(`ironbird daemon listening at ${url}`);
+
+  let bridge: BridgeServer | undefined;
+  if (options.bridge) {
+    try {
+      bridge = await startBridgeServer({
+        host: options.host,
+        port: options.bridge.port,
+        token: options.token,
+        log,
+        pingIntervalMs: options.bridge.pingIntervalMs,
+        handshakeTimeoutMs: options.bridge.handshakeTimeoutMs,
+        session: {
+          appId: () => sessionAppId,
+          adopt: (appId) => {
+            sessionAppId = appId;
+          },
+        },
+        onConnect: (target) => {
+          register(target);
+          log(`target ${target.id} connected (${target.info().appId})`);
+        },
+        onDisconnect: (target) => {
+          unregister(target);
+          log(`target ${target.id} disconnected`);
+        },
+      });
+    } catch (error) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      throw error;
+    }
+  }
+  log(`ironbird daemon listening at ${url}${bridge ? `; bridges connect to ${bridge.url}` : ''}`);
 
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> => {
     if (!closing) {
-      closing = new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-        server.closeAllConnections();
-      });
+      closing = (async () => {
+        await bridge?.close();
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+          server.closeAllConnections();
+        });
+      })();
     }
     return closing;
   };
@@ -400,6 +563,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     url,
     host: options.host,
     port,
+    bridgeUrl: bridge?.url,
     targets: () => [...targets.values()].map((t) => t.info()),
     close,
   };

@@ -31,7 +31,7 @@ let daemon: ChildProcess | undefined;
 let exited: Promise<number | null>;
 
 beforeAll(async () => {
-  daemon = spawn('node', [bin, 'serve', '--port', '0'], { cwd: example, env, stdio: ['ignore', 'pipe', 'inherit'] });
+  daemon = spawn('node', [bin, 'serve', '--port', '0', '--bridge-port', '0'], { cwd: example, env, stdio: ['ignore', 'pipe', 'inherit'] });
   exited = new Promise<number | null>((resolve) => {
     daemon?.once('exit', (code) => resolve(code));
   });
@@ -51,7 +51,7 @@ afterAll(async () => {
 
 describe('ironbird CLI against the example app', () => {
   it('drives cart → payment → receipt headlessly using only the CLI', async () => {
-    expect(Object.keys((await ironbird('commands')).json)).toEqual(['cart.addItem', 'cart.clear', 'payment.start']);
+    expect(Object.keys((await ironbird('commands')).json)).toEqual(['cart.addItem', 'cart.clear', 'payment.start', 'ui.setMotion']);
     expect((await ironbird('status')).json).toMatchObject({ protocol: 1, targets: [{ id: 'headless', appId: 'com.example.checkout' }] });
 
     await ironbird('reset');

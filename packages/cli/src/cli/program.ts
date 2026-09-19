@@ -6,6 +6,9 @@ import { UsageError, parseDuration } from './durations';
 import { exitCodeForError, exitCodeForStep } from './exit-codes';
 import { createOutput, type Output } from './output';
 import { parseJsonOrString, parsePayload } from './values';
+import { access } from 'node:fs/promises';
+import path from 'node:path';
+import { findMarker } from '../verify-bundle';
 
 export interface ProgramIo {
   cwd: string;
@@ -242,6 +245,59 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
   clock.command('now').action(wrap(async (ctx) => ({ value: withTarget(await ctx.client.call('clockNow', {}, ctx.target)) })));
 
   program.command('reset').description('Recreate the headless app with a fresh clock, recorder, and fakes').action(wrap(async (ctx) => ({ value: withTarget(await ctx.client.call('reset', {}, ctx.target)) })));
+
+  program
+    .command('screenshot')
+    .description('Capture the connected app through simctl or adb')
+    .option('--device <id>', 'simulator udid or adb serial; default from config devices, else the only booted one')
+    .option('--out <file>', 'write the PNG here instead of .ironbird/screenshots/')
+    .action(
+      wrap(async (ctx, opts: { device?: string; out?: string }) => ({
+        value: withTarget(await ctx.client.call('screenshot', { ...(opts.device ? { device: opts.device } : {}), ...(opts.out ? { out: path.resolve(io.cwd, opts.out) } : {}) }, ctx.target)),
+      })),
+    );
+
+  program
+    .command('step <command> [payload]')
+    .description('Send a command to the connected app, settle, and capture a screenshot')
+    .option('--device <id>', 'simulator udid or adb serial')
+    .option('--path <path>', 'return only this subtree of state', '')
+    .option('--no-settle', 'capture right after dispatch')
+    .option('--settle-timeout <duration>', 'how long to wait for effects and frames')
+    .action(
+      wrap(async (ctx, name: string, payload: string | undefined, opts: { device?: string; path: string; settle: boolean; settleTimeout?: string }) =>
+        stepOutcome(await ctx.client.rpc<StepResult>('step', { name, payload: parsePayload(payload), path: opts.path, settle: settleParam(opts), ...(opts.device ? { device: opts.device } : {}) }, ctx.target)),
+      ),
+    );
+
+  program
+    .command('verify-bundle <path...>')
+    .description('Fail if the bridge marker appears in any file under the given paths; needs no daemon')
+    .action(async (paths: string[], _opts: unknown, command: Command) => {
+      const opts = command.optsWithGlobals<GlobalOptions>();
+      const output = createOutput({ json: Boolean(opts.json) || !io.isTTY, write: io.stdout });
+      try {
+        const resolved = paths.map((entry) => path.resolve(io.cwd, entry));
+        for (const entry of resolved) {
+          const present = await access(entry).then(
+            () => true,
+            () => false,
+          );
+          if (!present) throw new UsageError(`No such file or directory: ${entry}`);
+        }
+        const { scanned, found } = await findMarker(resolved);
+        output.result({ scanned, found: found.map((hit) => ({ file: path.relative(io.cwd, hit.file), offset: hit.offset })) });
+        exitCode = found.length === 0 ? 0 : 1;
+      } catch (error) {
+        if (error instanceof UsageError) {
+          io.stderr(`error: ${error.message}\n`);
+          exitCode = 2;
+          return;
+        }
+        output.error(toErrorShape(error));
+        exitCode = 1;
+      }
+    });
 
   return {
     program,

@@ -46,6 +46,11 @@
     "@ironbird/core": "workspace:*",
     "commander": "^15.0.0",
     "esbuild": "^0.25.0",
+    "ws": "^8.21.3",
     "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@ironbird/react-native": "workspace:*",
+    "@types/ws": "^8.18.1"
   }
 }

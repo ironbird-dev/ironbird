@@ -5,4 +5,5 @@ coverage/
 *.tsbuildinfo
 .DS_Store
 .claude
+.expo/
 

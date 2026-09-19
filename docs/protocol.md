@@ -46,7 +46,7 @@ When the daemon was started with a token, requests must include `Authorization: 
 
 ### 2.2 Streams
 
-`GET /v1/stream?target=<id>&since=<seq>` returns Server-Sent Events. Event types are `event` for recorded events, `state` for revision changes, `target` (M1) for connects and disconnects, and a terminal `error` carrying an `ErrorShape` when the backlog read fails. The CLI uses this for `events --follow` and `watch`. Sequence numbers restart at 1 after `reset`; a stream that spans a reset sees them go backwards.
+`GET /v1/stream?target=<id>&since=<seq>` returns Server-Sent Events. Event types are `event` for recorded events, `state` for revision changes, `target` for apps connecting and disconnecting, and a terminal `error` carrying an `ErrorShape`. A `target` frame is `{ "id": "ios", "platform": "ios", "appId": "com.example.checkout", "status": "connected" | "disconnected" }` and reaches every open stream, whatever target it follows. When the stream's own target disconnects, the stream ends with a `target` frame followed by an `error` frame carrying `TARGET_DISCONNECTED`, because its subscriptions died with the connection; the client reconnects to the new connection's stream when the app comes back. The `error` frame is also how a backlog read that fails ends the stream. The CLI uses this for `events --follow` and `watch`. Sequence numbers restart at 1 after `reset`; a stream that spans a reset sees them go backwards.
 
 ## 3. Target channel
 
@@ -78,6 +78,8 @@ The daemon answers with `welcome` or `reject`:
 ```
 
 A daemon session serves one app: the app id of the headless target, or of the first bridge to connect when there is no headless entry. A `hello` with a different app id is rejected with `APP_MISMATCH`. After `reject`, the daemon closes the socket with close code 4001 for `PROTOCOL_MISMATCH`, 4002 for `APP_MISMATCH`, or 4003 for `UNAUTHORIZED`. After `welcome`, the daemon sends a `describe` request and caches the result for the life of the connection. Target ids are assigned per platform in connection order and reserved across disconnects; the rule is in [architecture.md §7.3](architecture.md#73-connection-lifecycle).
+
+Upgrade requests whose `Origin` header names a host other than loopback or the daemon's bind address are refused before the socket opens, which keeps a page in a local browser from posing as a bridge; React Native's own `WebSocket` sends the daemon's loopback address as its `Origin`, so real bridges are unaffected. A connection that sends nothing within five seconds is closed.
 
 ### 3.2 Requests and responses
 
@@ -161,7 +163,9 @@ The daemon sends `{ "type": "ping", "t": <number> }` every 5 s, and the app repl
 | `step` | `name`, `payload?`, `target?`, `device?`, `path?`, `settle?` | `StepResult` plus `screenshot: Screenshot` and `settledBeforeCapture: boolean` |
 | `scenarioRun` | `file`, `target?`, `bail?` | `ScenarioResult` |
 
-`settle` in `step` has the same shape as in `dispatch`. `step` captures the screenshot after settling ends, whether or not it reached idle, and `settle: false` captures right after the dispatch.
+`settle` in `step` has the same shape as in `dispatch`. `step` captures the screenshot after settling ends, whether or not it reached idle, and `settle: false` captures right after the dispatch. A `SCREENSHOT_FAILED` from `step` means the dispatch itself already applied; only the capture that follows it failed.
+
+Both operations pick the only connected app when `target` is omitted, fail with `NO_TARGET` when none is connected and `AMBIGUOUS_TARGET` when several are, and refuse the headless target with `UNSUPPORTED`. `device` is a simulator udid or adb serial; without it the daemon uses `devices.<platform>` from config, then the single booted simulator or connected device, else `AMBIGUOUS_DEVICE` listing the candidates.
 
 ## 5. Types
 
@@ -269,7 +273,7 @@ Capabilities say which operations a target supports, and an operation whose capa
 | `AMBIGUOUS_TARGET` | Several targets qualify and none was chosen | `{ available }` |
 | `TARGET_DISCONNECTED` | The connection dropped before a response, the request timeout elapsed, or a reset or dispose abandoned the operation | `{ target, op }` |
 | `AMBIGUOUS_DEVICE` | Several booted devices and none was chosen | `{ devices }` |
-| `SCREENSHOT_FAILED` | The host capture tool failed | `{ tool, stderr }` |
+| `SCREENSHOT_FAILED` | The host capture tool failed, or the capture or device resolution timed out (a wedged `simctl`/`adb`/`resolveDevice`) | `{ tool, stderr }` |
 | `HEADLESS_LOAD_FAILED` | The headless entry failed to load | `{ entry, message, importChain? }` |
 | `INVALID_CONFIG` | `ironbird.config.ts` is missing a default export or fails validation | `{ file, issues }` |
 | `CLOCK_RUNAWAY` | `clockAdvance` exceeded 10,000 timer firings | `{ labels }` |

@@ -1,4 +1,4 @@
-import { isIronbirdError } from '@ironbird/core';
+import { isIronbirdError } from './errors';
 import { describe, expect, it } from 'vitest';
 import { conditionHolds, deepEqual, parseCondition } from './conditions';
 

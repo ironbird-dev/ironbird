@@ -21,6 +21,7 @@ export interface CheckoutState {
   };
   order: { status: 'none' | 'confirmed' | 'completed'; orderId?: string; totalCents: number; paymentSucceeded: boolean };
   reader: { connected: boolean };
+  ui: { motion: 'full' | 'reduced' };
 }
 
 export type CheckoutEvent =
@@ -33,7 +34,8 @@ export type CheckoutEvent =
   | { type: 'api.submitted'; paymentId: string }
   | { type: 'api.failed'; reason: string }
   | { type: 'server.event'; event: ServerEvent }
-  | { type: 'server.timeout' };
+  | { type: 'server.timeout' }
+  | { type: 'ui.setMotion'; motion: 'full' | 'reduced' };
 
 export const SERVER_TIMEOUT_MS = 30_000;
 
@@ -42,6 +44,7 @@ export const initialState: CheckoutState = {
   payment: { status: 'idle' },
   order: { status: 'none', totalCents: 0, paymentSucceeded: false },
   reader: { connected: true },
+  ui: { motion: 'full' },
 };
 
 const IN_PROGRESS = new Set<CheckoutState['payment']['status']>(['collecting', 'submitting', 'awaitingServerEcho']);
@@ -136,5 +139,7 @@ export function reduce(state: CheckoutState, event: CheckoutEvent, options: { pl
       }
       return state;
     }
+    case 'ui.setMotion':
+      return state.ui.motion === event.motion ? state : { ...state, ui: { motion: event.motion } };
   }
 }

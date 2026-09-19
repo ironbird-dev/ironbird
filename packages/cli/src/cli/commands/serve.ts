@@ -5,6 +5,7 @@ import { loadTypeScriptModule } from '../../bundle';
 import { loadConfig } from '../../config';
 import { isLoopbackHost, startDaemon, type Daemon } from '../../daemon';
 import { removeDaemonInfo, writeDaemonInfo } from '../../daemon-info';
+import { adbReverse, type Exec } from '../../devices';
 import { createHeadlessTarget, type HeadlessTarget } from '../../headless-target';
 import { exitCodeForError } from '../exit-codes';
 import { createOutput } from '../output';
@@ -26,6 +27,8 @@ export interface ServeIo {
   stderr(text: string): void;
   version: string;
   signal: AbortSignal;
+  /** Test hook: replaces the host tool runner used for `adb reverse`. */
+  exec?: Exec;
 }
 
 export function isLoopback(host: string): boolean {
@@ -39,6 +42,7 @@ export async function runServe(options: ServeOptions, io: ServeIo): Promise<numb
   let daemon: Daemon | undefined;
   let artifactsPath: string | undefined;
   let port: number | undefined;
+  let bridgePort: number | undefined;
   let configPath: string | undefined;
   // Only this invocation's own discovery file may be removed on the way out. A second `serve`
   // that fails to bind must leave the running daemon's `daemon.json` alone.
@@ -50,6 +54,15 @@ export async function runServe(options: ServeOptions, io: ServeIo): Promise<numb
     configPath = config.configPath;
     const host = options.host ?? config.daemon.host;
     port = options.port ?? config.daemon.port;
+    bridgePort = options.bridgePort ?? config.bridge.port;
+    // Each is a real fixed port only when non-zero (0 asks the OS for an ephemeral one, so two
+    // zeros never collide). Both servers binding the same fixed port can never work, no matter
+    // which one the OS happens to fail first, so this is caught as a configuration error before
+    // either socket opens rather than surfacing as a confusing EADDRINUSE on just one of them.
+    if (port !== 0 && bridgePort !== 0 && port === bridgePort) {
+      const message = `--port and --bridge-port must differ (both are ${port})`;
+      throw new IronbirdError('INVALID_CONFIG', message, { file: configPath, issues: [{ path: ['bridge', 'port'], message }] });
+    }
     let token = options.token ?? io.env['IRONBIRD_TOKEN'];
     if (!isLoopback(host) && !token) {
       token = randomBytes(16).toString('hex');
@@ -62,24 +75,31 @@ export async function runServe(options: ServeOptions, io: ServeIo): Promise<numb
       if (!isHeadlessDefinition(definition)) {
         throw new IronbirdError('HEADLESS_LOAD_FAILED', `${path.relative(io.cwd, config.headlessPath)} must default-export defineHeadless(...)`, { entry: config.headlessPath, message: 'default export is not a headless definition' });
       }
-      target = await createHeadlessTarget({ definition, appId: config.appId, clockStart: config.clock.start, settleTimeoutMs: config.settle.timeoutMs, env: io.env, log, entryPath: config.headlessPath });
+      target = await createHeadlessTarget({ definition, appId: config.appId, clockStart: config.clock.start, settleTimeoutMs: config.settle.timeoutMs, env: io.env, log, entryPath: config.headlessPath, bootTimeoutMs: config.boot.timeoutMs });
     } else if (options.headless && !config.headlessPath) {
       log('No headless entry in config; running remote-only');
     }
 
-    daemon = await startDaemon({ host, port, token, version: io.version, headless: target, defaultTarget: target ? config.defaultTarget : undefined, log });
-    await writeDaemonInfo(config.artifactsPath, { url: daemon.url, pid: process.pid, startedAt: Date.now(), version: io.version, defaultTarget: target ? config.defaultTarget : undefined });
+    const defaultTarget = target ? config.defaultTarget : undefined;
+    daemon = await startDaemon({ host, port, token, version: io.version, headless: target, defaultTarget, log, bridge: { port: bridgePort }, artifactsPath: config.artifactsPath, devices: config.devices });
+    const boundBridgePort = daemon.bridgeUrl === undefined ? bridgePort : Number(new URL(daemon.bridgeUrl).port);
+    // Emulators reach the host's bridge port at their own localhost only after adb reverse; a
+    // machine without adb, or without a device, just logs and moves on.
+    await adbReverse(boundBridgePort, { exec: io.exec, log });
+    await writeDaemonInfo(config.artifactsPath, { url: daemon.url, pid: process.pid, startedAt: Date.now(), version: io.version, defaultTarget, ...(daemon.bridgeUrl === undefined ? {} : { bridgeUrl: daemon.bridgeUrl }) });
     wroteInfo = true;
-    output.result({ url: daemon.url, targets: daemon.targets(), defaultTarget: target ? config.defaultTarget : undefined, bridgePort: options.bridgePort ?? config.bridge.port });
+    output.result({ url: daemon.url, bridgeUrl: daemon.bridgeUrl, targets: daemon.targets(), defaultTarget, bridgePort: boundBridgePort });
   } catch (error) {
     const shape = toErrorShape(error);
-    const code = (error as { code?: string }).code;
-    if (code === 'EADDRINUSE') {
-      const message = `Port ${port ?? 'unknown'} is already in use; stop the other daemon or pass --port`;
+    const failed = error as { code?: string; port?: number };
+    if (failed.code === 'EADDRINUSE') {
+      const which = failed.port !== undefined && failed.port === bridgePort ? 'bridge' : 'daemon';
+      const usedPort = failed.port ?? (which === 'bridge' ? bridgePort : port) ?? 'unknown';
+      const message = `Port ${usedPort} is already in use; stop the other daemon or pass ${which === 'bridge' ? '--bridge-port' : '--port'}`;
       output.error({
         code: 'INVALID_CONFIG',
         message,
-        details: { file: configPath, issues: [{ path: ['daemon', 'port'], message }] },
+        details: { file: configPath, issues: [{ path: [which, 'port'], message }] },
       });
       await cleanup();
       return exitCodeForError('INVALID_CONFIG');

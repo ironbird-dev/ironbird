@@ -1,0 +1,38 @@
+{
+  "name": "@ironbird/react-native",
+  "version": "0.0.0",
+  "description": "In-app bridge that lets the ironbird daemon drive a React Native dev build",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ironbird-dev/ironbird.git",
+    "directory": "packages/react-native"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup && node scripts/verify-build.mjs",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+    "test": "vitest run --project unit"
+  },
+  "peerDependencies": {
+    "@ironbird/core": ">=0.0.1",
+    "react-native": ">=0.76"
+  },
+  "devDependencies": {
+    "@ironbird/core": "workspace:*",
+    "@types/ws": "^8.18.1",
+    "ws": "^8.21.3",
+    "zod": "^4.2.0"
+  }
+}

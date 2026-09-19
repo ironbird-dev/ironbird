@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-09-13 |
+| Last updated | 2026-09-18 |
 | Related | [spec.md](spec.md) (requirement and question IDs) · [testing-strategy.md](testing-strategy.md) |
 
 Estimates assume focused effort and describe a sequence, not calendar dates. Each milestone ends with a short demo and a go/no-go decision against its exit criteria.
@@ -13,7 +13,7 @@ Estimates assume focused effort and describe a sequence, not calendar dates. Eac
 | Milestone | Theme | Estimate | Delivers | Gate |
 |---|---|---|---|---|
 | M0 | Headless loop | 1 week | Core, daemon, core CLI, example app logic | An agent completes checkout headlessly |
-| M1 | Remote mode | 1 week | Bridge, settle, screenshots, `step`, `verify-bundle` | Stale-screenshot rate ≤ 1% on iOS |
+| M1 | Remote mode | 1 week | Bridge, settle, screenshots, `step`, `verify-bundle` | Stale ≤ 1% and p95 < 1.5 s on iOS |
 | M2 | Fakes and scenarios | 1 week | Fake controls, scenario runner | Planted race reproduced on both targets |
 | M3 | Agent interface | 1 week | MCP server, agent skill | Agent fixes the planted race unaided in 4 of 5 sessions |
 | M4 | Testing package | 2 weeks | `@ironbird/testing`, model-based helper | Race rediscovered in 9 of 10 seeds |
@@ -60,11 +60,11 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 
 **Exit criteria**
 
-- [ ] 300 consecutive `step`s on iOS Simulator: stale-screenshot rate ≤ 1% and p95 latency < 1.5 s
-- [ ] The same run on an Android emulator is recorded, and an Android target is set from the result
-- [ ] A Metro reload mid-session fails the in-flight request with `TARGET_DISCONNECTED`, and the next request succeeds under the same target id
-- [ ] `verify-bundle` passes on a production `expo export` and fails on a deliberately broken build
-- [ ] A short written finding on Q5: stale rate with animations enabled versus reduced
+- [ ] 300 consecutive `step`s on iOS Simulator: stale-screenshot rate ≤ 1% and p95 latency < 1.5 s (not met — p95 latency; see the harness results and the open p95 item in docs/evals/m1-remote-mode.md)
+- [x] The same run on an Android emulator is recorded, and an Android target is set from the result
+- [x] A Metro reload mid-session fails the in-flight request with `TARGET_DISCONNECTED`, and the next request succeeds under the same target id
+- [x] `verify-bundle` passes on a production `expo export` and fails on a deliberately broken build
+- [x] A short written finding on Q5: stale rate with animations enabled versus reduced
 
 **Narrow if needed:** if the iOS stale rate stays above 5% after a week of iteration, switch remote settling to condition-based `wait` plus a fixed post-render delay, document remote mode as best-effort for 0.1, and open an ADR on an optional native add-on.
 

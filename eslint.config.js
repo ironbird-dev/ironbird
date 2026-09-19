@@ -26,7 +26,7 @@ const coreForbiddenTimers = [
 ];
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/node_modules/**', '**/.ironbird/**', '**/coverage/**', '**/.superpowers/**', '**/test/fixtures/**'] },
+  { ignores: ['**/dist/**', '**/node_modules/**', '**/.ironbird/**', '**/coverage/**', '**/.superpowers/**', '**/.claude/**', '**/test/fixtures/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { files: ['**/*.{js,mjs,cjs}'], languageOptions: { globals: { ...globals.node } } },
@@ -62,7 +62,31 @@ export default tseslint.config(
   {
     files: ['packages/react-native/src/**/*.ts'],
     rules: {
-      'no-restricted-imports': ['error', { patterns: [{ group: ['node:*'], message: 'The bridge runs in Hermes.' }] }],
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            { group: ['node:*', 'fs', 'path', 'os', 'http', 'https', 'net', 'child_process', 'url', 'util', 'events', 'stream', 'crypto', 'worker_threads'], message: 'The bridge runs in Hermes.' },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ['packages/react-native/src/**/*.ts'],
+    ignores: ['packages/react-native/src/**/*.test.ts'],
+    rules: {
+      'no-restricted-globals': ['error', ...coreForbiddenTimers.filter((entry) => entry.name !== 'setImmediate')],
+      'no-restricted-properties': ['error', { object: 'Date', property: 'now', message: 'Use the Clock passed to startBridge (AGENTS.md hard rule 9).' }],
+    },
+  },
+  {
+    // Metro's own entry point, not a Node script: `__DEV__` is a Metro-injected global, and the
+    // require() call is deliberately synchronous so Metro can statically drop it in production.
+    files: ['examples/checkout/index.js'],
+    languageOptions: { globals: { ...globals['react-native'] } },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
     },
   },
 );

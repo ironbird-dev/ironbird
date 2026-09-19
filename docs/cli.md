@@ -56,6 +56,8 @@ Commands that change state (`send`, `fake`, `clock advance`, `step`) print a ste
 }
 ```
 
+`step` adds `screenshot` and `settledBeforeCapture` to this shape.
+
 Errors print to stdout as JSON too, so agents parse one stream:
 
 ```json
@@ -80,7 +82,7 @@ The CLI prints the daemon's `result` object, adding `target` to results that don
 ironbird serve [--port 4567] [--bridge-port 4568] [--host 127.0.0.1] [--no-headless] [--token <token>]
 ```
 
-Runs the daemon in the foreground. Loads the headless entry unless `--no-headless` is passed, accepts bridge connections, and runs `adb reverse` for connected Android devices when `adb` is available (M1). Binding a non-loopback `--host` requires a token; if none is given, one is generated and printed. On start it prints one line, `{ url, targets, defaultTarget, bridgePort }`, and writes `.ironbird/daemon.json` so later invocations find the daemon without loading the config; the file is removed on shutdown (only by the invocation that wrote it, so a `serve` that fails to bind leaves a running daemon's file alone). Requests that carry an `Origin` header, or a `Host` that is neither loopback nor the daemon's bind address, are refused with 403, so a page in a local browser can't drive the daemon. `--bridge-port` is accepted now and used from M1.
+Runs the daemon in the foreground. Loads the headless entry unless `--no-headless` is passed, accepts bridge connections, and runs `adb reverse tcp:<bridgePort> tcp:<bridgePort>` for each connected Android device when `adb` is on the path, logging and continuing when it is not. Binding a non-loopback `--host` requires a token; if none is given, one is generated and printed. On start it prints one line, `{ url, bridgeUrl, targets, defaultTarget, bridgePort }`, and writes `.ironbird/daemon.json` so later invocations find the daemon without loading the config; the file is removed on shutdown (only by the invocation that wrote it, so a `serve` that fails to bind leaves a running daemon's file alone). `daemon.json` records `bridgeUrl` alongside `url`. `--port` and `--bridge-port` must differ (a fixed value for both is rejected as `INVALID_CONFIG` before either socket binds); pass `0` for either to let the OS pick, since two zeros never collide. Requests that carry an `Origin` header, or a `Host` that is neither loopback nor the daemon's bind address, are refused with 403, so a page in a local browser can't drive the daemon.
 
 ### status
 
@@ -184,21 +186,21 @@ ironbird reset
 
 Headless only. Disposes the headless app, recreates it with a fresh context, and prints `{ target, rev, path, value }`. Event sequence numbers restart at 1 after a reset, so call `events` without `--since` once before paging again.
 
-### screenshot (M1)
+### screenshot
 
 ```text
 ironbird screenshot [--device <udid|serial>] [--out <file>]
 ```
 
-Captures the iOS Simulator with `xcrun simctl io <device> screenshot` or an Android device with `adb exec-out screencap -p`. The default output is `.ironbird/screenshots/<timestamp>-<target>.png`. Prints `{ path, device, capturedAt }`.
+Captures the connected app: `xcrun simctl io <device> screenshot` for a simulator, `adb -s <device> exec-out screencap -p` for Android. With no `--target` it picks the only connected app; with several it fails with `AMBIGUOUS_TARGET`, and it refuses the headless target with `UNSUPPORTED`. The device is `--device`, else `devices.<platform>` from config, else the single booted simulator or connected device, else `AMBIGUOUS_DEVICE` listing the candidates. The default output is `.ironbird/screenshots/<yyyymmdd>-<hhmmss>-<ms>-<target>.png`; `--out` is resolved against the working directory. Prints `{ target, path, device, capturedAt }`.
 
-### step (M1)
+### step
 
 ```text
 ironbird step <command> [payload] [--device <udid|serial>] [--path <path>] [--no-settle] [--settle-timeout <duration>]
 ```
 
-Remote targets only. Sends, settles, and captures a screenshot, then prints a step result plus `screenshot` and `settledBeforeCapture`. The screenshot is captured even when settling times out, so the agent can see what went wrong, and the CLI still exits 3. With `--no-settle` the capture happens right after the dispatch.
+Remote targets only. Sends, settles, and captures a screenshot, then prints a step result plus `screenshot` and `settledBeforeCapture`. The screenshot is captured even when settling times out, so the agent can see what went wrong, and the CLI still exits 3. With `--no-settle` the capture happens right after the dispatch. The printed result is the step result with two extra fields: `screenshot: { path, device, capturedAt }` and `settledBeforeCapture`, true only when settling reached idle before the capture.
 
 ### scenario run (M2)
 
@@ -231,13 +233,13 @@ ironbird doctor
 
 Checks the Node version, config validity, headless entry load (printing the import chain on failure), daemon port availability, `xcrun simctl` and `adb` availability, booted devices, and whether `.ironbird/` is gitignored.
 
-### verify-bundle (M1)
+### verify-bundle
 
 ```text
 ironbird verify-bundle <path...>
 ```
 
-Scans files, including Hermes bytecode, for the bridge marker. Runs without a daemon. Exits 0 when the marker is absent and 1 when it is found, listing the files.
+Scans files, including Hermes bytecode, for the bridge marker. Runs without a daemon. Prints `{ scanned, found: [{ file, offset }] }` with paths relative to the working directory, and exits 0 when the marker is absent, 1 when it is found, and 2 when a path does not exist. The marker is assembled at runtime inside the CLI so the literal exists only in `@ironbird/react-native`.
 
 ```sh
 # Expo: production export, the same kind of output OTA updates ship

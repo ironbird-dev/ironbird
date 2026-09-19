@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "Checkout",
+    "slug": "ironbird-checkout",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "platforms": ["ios", "android"],
+    "newArchEnabled": true,
+    "backgroundColor": "#ffffff",
+    "ios": { "bundleIdentifier": "com.example.checkout", "supportsTablet": false },
+    "android": { "package": "com.example.checkout" }
+  }
+}

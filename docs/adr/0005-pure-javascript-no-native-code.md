@@ -1,6 +1,6 @@
 # ADR-0005: Pure JavaScript, no native code in v0
 
-**Status:** Proposed (reviewed 2026-09-13; decided at the M1 gate)
+**Status:** Proposed (reviewed 2026-09-18 at the M1 gate; decision deferred, see docs/evals/m1-remote-mode.md)
 **Date:** 2026-09-10
 **Deciders:** Project maintainer
 
@@ -65,9 +65,9 @@ Option A proves the product with the lowest adoption cost. Option C preserves a 
 - **Harder:** settle detection can't see UI-thread animations; mapping a connection to a device is manual (spec Q4); physical iOS screenshots are out of scope for v0.
 - **Revisit:** after M1, using the measured stale-screenshot and settle-timeout rates.
 
-## Review (2026-09-13, M0 gate)
+## Review (2026-09-18, M1 gate)
 
-Unchanged. M0 has no `@ironbird/react-native` package, so nothing has tested this decision. It is confirmed or amended after the M1 finding on spec Q5, the stale-screenshot rate with animations enabled versus reduced.
+The Q5 finding in [docs/evals/m1-remote-mode.md](../evals/m1-remote-mode.md): JS-only signals cannot see native-driver animations. With motion full, Android's capture (~190 ms) lands inside the payment Reveal's 400 ms native-driver fade, so 60 of 60 full-motion `payment.start` steps registered a nonzero diff there; iOS showed no app-level staleness in the same full-motion arm (its one flagged step is a `simctl` capture artifact, not an animation), not because JS-only detection caught the fade but because iOS's slower ~545 ms capture happens to land after it finishes. The mitigation — testing with motion reduced — is fully effective: zero nonzero pixel diffs across all 1200 reduced-arm captures on both platforms. On this evidence, no native add-on is warranted for now: the blind spot is real, but the documented mitigation closes it completely. This ADR stays Proposed because the M1 gate as a whole is not closed: the iOS p95 latency criterion misses in both motion arms for reasons unrelated to native-versus-JS settle detection, and that gate decision belongs to the maintainer.
 
 ## Action items
 

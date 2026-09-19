@@ -17,6 +17,8 @@ export type {
   TargetInfo,
 } from './protocol';
 export { getAtPath, parsePath } from './paths';
+export { conditionHolds, deepEqual, parseCondition } from './conditions';
+export type { Condition } from './conditions';
 export { serializeState } from './serialize';
 export type { SerializationWarning } from './serialize';
 export { defineCommands, suggestNames } from './registry';

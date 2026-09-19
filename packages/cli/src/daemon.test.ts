@@ -1,21 +1,23 @@
-import { createTarget, defineCommands, defineHeadless } from '@ironbird/core';
+import { IronbirdError, PROTOCOL_VERSION, createTarget, defineCommands, defineHeadless } from '@ironbird/core';
 import { request } from 'node:http';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import WebSocket from 'ws';
 import { z } from 'zod';
 import { counterDefinition } from '../test/helpers/counter-app';
 import { isLoopbackHost, startDaemon, type Daemon } from './daemon';
+import type { DaemonTarget } from './daemon-target';
 import { readDaemonInfo, removeDaemonInfo, writeDaemonInfo } from './daemon-info';
 import { createHeadlessTarget, type HeadlessTarget } from './headless-target';
 
 let daemon: Daemon | undefined;
 let target: HeadlessTarget | undefined;
 
-async function boot(options: { token?: string; defaultTarget?: string | null } = {}): Promise<Daemon> {
+async function boot(options: { token?: string; defaultTarget?: string | null; extra?: Partial<Parameters<typeof startDaemon>[0]> } = {}): Promise<Daemon> {
   target = await createHeadlessTarget({ definition: counterDefinition, appId: 'com.example.test', clockStart: '2026-01-01T00:00:00.000Z', settleTimeoutMs: 500, env: {}, log: () => {} });
-  daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: options.defaultTarget === null ? undefined : (options.defaultTarget ?? 'headless'), token: options.token, log: () => {} });
+  daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: options.defaultTarget === null ? undefined : (options.defaultTarget ?? 'headless'), token: options.token, log: () => {}, ...options.extra });
   return daemon;
 }
 
@@ -455,5 +457,280 @@ describe('daemon.json', () => {
     expect(await readDaemonInfo(artifacts)).toBeUndefined();
     await writeFile(path.join(artifacts, 'daemon.json'), 'not json');
     expect(await readDaemonInfo(artifacts)).toBeUndefined();
+  });
+});
+
+function fakeRemote(id: string, platform: 'ios' | 'android' = 'ios', run?: (op: string, params: Record<string, unknown>) => unknown): DaemonTarget & { calls: Array<[string, Record<string, unknown>]> } {
+  const calls: Array<[string, Record<string, unknown>]> = [];
+  return {
+    id,
+    calls,
+    info: () => ({ id, platform, appId: 'com.example.test', connectedAt: 1, rev: 0 }),
+    async run(op, params) {
+      calls.push([op, params]);
+      if (run) return run(op, params);
+      return { target: id, rev: 1, path: '', state: {}, events: [], settle: { idle: true, quiescent: false, waitedMs: 2, pending: [] } };
+    },
+    onEvent: () => () => {},
+    onState: () => () => {},
+    dispose: async () => {},
+  };
+}
+
+describe('screenshot and step', () => {
+  // Only assigned by the tests that need a scratch directory; the bridge-only test below never
+  // sets it, so teardown must tolerate that instead of handing `rm` an `undefined` path.
+  let artifacts: string | undefined;
+  const capture = {
+    resolveDevice: async ({ platform, requested }: { platform: 'ios' | 'android'; requested?: string | undefined }) => ({ platform, id: requested ?? 'SIM-1' }),
+    capture: async ({ outPath }: { outPath: string }) => {
+      await mkdir(path.dirname(outPath), { recursive: true });
+      await writeFile(outPath, 'png');
+    },
+  };
+
+  afterEach(async () => {
+    if (artifacts !== undefined) await rm(artifacts, { recursive: true, force: true });
+    artifacts = undefined;
+  });
+
+  it('step dispatches through the remote target, captures after settle, and reports both', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const remote = fakeRemote('ios');
+    const d = await boot({ extra: { targets: [remote], artifactsPath: artifacts, capture } });
+    const stepped = await rpc(d, { op: 'step', params: { name: 'cart.addItem', payload: { sku: 'x' }, path: 'cart', settle: { timeoutMs: 100 }, device: 'SIM-9' } });
+    expect(stepped.json).toMatchObject({ ok: true, target: 'ios', result: { target: 'ios', rev: 1, settledBeforeCapture: true, screenshot: { device: 'SIM-9' } } });
+    const shot = (stepped.json['result'] as { screenshot: { path: string } }).screenshot.path;
+    expect(shot).toMatch(/\/screenshots\/\d{8}-\d{6}-\d{3}-ios\.png$/);
+    expect((await readFile(shot)).toString()).toBe('png');
+    expect(remote.calls).toEqual([['dispatch', { name: 'cart.addItem', payload: { sku: 'x' }, path: 'cart', settle: { timeoutMs: 100 } }]]);
+  });
+
+  it('step still captures when the step did not settle, and says so', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const remote = fakeRemote('android', 'android', () => ({ target: 'android', rev: 2, path: '', state: {}, events: [], settle: { idle: false, quiescent: false, waitedMs: 50, pending: [{ kind: 'effect', label: 'api.load', ageMs: 50, fake: false }] } }));
+    const d = await boot({ extra: { targets: [remote], artifactsPath: artifacts, capture } });
+    const stepped = await rpc(d, { op: 'step', params: { name: 'x' } });
+    expect(stepped.json).toMatchObject({ ok: true, result: { settledBeforeCapture: false, screenshot: { device: 'SIM-1' }, settle: { idle: false } } });
+  });
+
+  it('screenshot picks the only connected app, honors out, and refuses the headless target', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const d = await boot({ extra: { targets: [fakeRemote('ios')], artifactsPath: artifacts, capture } });
+    const out = path.join(artifacts, 'custom.png');
+    const shot = await rpc(d, { op: 'screenshot', params: { out } });
+    expect(shot.json).toMatchObject({ ok: true, target: 'ios', result: { path: out, device: 'SIM-1' } });
+    expect((shot.json['result'] as { capturedAt: number }).capturedAt).toBeGreaterThan(0);
+    const headless = await rpc(d, { op: 'screenshot', target: 'headless' });
+    expect(headless.json).toMatchObject({ ok: false, error: { code: 'UNSUPPORTED', details: { op: 'screenshot', target: 'headless' } } });
+  });
+
+  it('screenshot fails with NO_TARGET when no app is connected and AMBIGUOUS_TARGET when several are', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const none = await boot({ extra: { artifactsPath: artifacts, capture } });
+    expect((await rpc(none, { op: 'screenshot' })).json).toMatchObject({ ok: false, error: { code: 'NO_TARGET' } });
+    await none.close();
+    const two = await boot({ extra: { targets: [fakeRemote('ios'), fakeRemote('ios-2')], artifactsPath: artifacts, capture } });
+    expect((await rpc(two, { op: 'screenshot' })).json).toMatchObject({ ok: false, error: { code: 'AMBIGUOUS_TARGET', details: { available: ['ios', 'ios-2'] } } });
+    expect((await rpc(two, { op: 'screenshot', target: 'ios-2' })).json).toMatchObject({ ok: true, target: 'ios-2' });
+  });
+
+  it('starts a bridge server on the same host when asked', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    expect(d.bridgeUrl).toMatch(/^ws:\/\/127\.0\.0\.1:\d+$/);
+    const socket = new WebSocket(d.bridgeUrl as string);
+    await new Promise<void>((resolve, reject) => {
+      socket.onopen = () => resolve();
+      socket.onerror = () => reject(new Error('bridge port refused the connection'));
+    });
+    socket.close();
+  });
+
+  it('resolves the device before dispatching, so a device problem leaves nothing applied', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const remote = fakeRemote('ios');
+    const ambiguousDevice = {
+      resolveDevice: async (): Promise<never> => {
+        throw new IronbirdError('AMBIGUOUS_DEVICE', 'Several booted iOS simulators; pass --device', { platform: 'ios', devices: [] });
+      },
+      capture: capture.capture,
+    };
+    const d = await boot({ extra: { targets: [remote], artifactsPath: artifacts, capture: ambiguousDevice } });
+    const stepped = await rpc(d, { op: 'step', params: { name: 'cart.addItem', payload: { sku: 'x' } } });
+    expect(stepped.json).toMatchObject({ ok: false, error: { code: 'AMBIGUOUS_DEVICE' } });
+    // Nothing was dispatched: a device problem must fail before the step is applied, not after.
+    expect(remote.calls).toEqual([]);
+  });
+
+  it('bounds the screenshot capture like every other target operation, instead of hanging forever', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const remote = fakeRemote('ios');
+    const hangingCapture = { resolveDevice: capture.resolveDevice, capture: () => new Promise<void>(() => {}) };
+    // requestTimeoutMs is the same bound `dispatch`/`getState`/etc already race against; tiny here
+    // only so the test doesn't wait out the real 30s default.
+    const d = await boot({ extra: { targets: [remote], artifactsPath: artifacts, capture: hangingCapture, requestTimeoutMs: 50 } });
+    const startedAt = Date.now();
+    const shot = await rpc(d, { op: 'screenshot' });
+    // The target itself is fine here; it's the host `simctl`/`adb` capture that's wedged, so this
+    // is SCREENSHOT_FAILED (not TARGET_DISCONNECTED) — `ironbird reset` couldn't fix a wedged host
+    // tool.
+    expect(shot.json).toMatchObject({ ok: false, error: { code: 'SCREENSHOT_FAILED', details: { tool: 'simctl', stderr: 'timed out after 50 ms' } } });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
+  it('bounds device resolution like every other target operation, instead of hanging forever', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const remote = fakeRemote('ios');
+    const hangingResolveDevice = { resolveDevice: () => new Promise<never>(() => {}), capture: capture.capture };
+    // Same bound and shape as the capture-bound test above: `resolveDevice` shells out to
+    // `simctl`/`adb` on the default (no `--device`, no config pin) path, so it needs the same
+    // protection as the capture itself.
+    const d = await boot({ extra: { targets: [remote], artifactsPath: artifacts, capture: hangingResolveDevice, requestTimeoutMs: 50 } });
+    const startedAt = Date.now();
+    const shot = await rpc(d, { op: 'screenshot' });
+    // Resolution itself is what hung here, not a specific host tool, so `tool` names the step.
+    expect(shot.json).toMatchObject({ ok: false, error: { code: 'SCREENSHOT_FAILED', details: { tool: 'resolveDevice', stderr: 'timed out after 50 ms' } } });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+});
+
+/** `PROTOCOL_VERSION` and the bridge marker match `bridge-server.ts`'s own handshake, so a hello
+ * built this way is accepted the same way a real bridge's would be. */
+const bridgeHello = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  type: 'hello',
+  protocol: PROTOCOL_VERSION,
+  marker: 'marker',
+  app: { id: 'com.example.test', platform: 'ios', bridgeVersion: '0.0.0' },
+  capabilities: ['settle', 'events'],
+  ...overrides,
+});
+
+interface BridgeClient {
+  socket: WebSocket;
+  frames: Array<Record<string, unknown>>;
+  send(frame: unknown): void;
+  until(ready: () => boolean): Promise<void>;
+}
+
+/** Drives a real `ws` connection against the daemon's bridge port, mirroring `bridge-server.test.ts`'s own `connect` helper. */
+function connectBridge(url: string): Promise<BridgeClient> {
+  const socket = new WebSocket(url);
+  const frames: Array<Record<string, unknown>> = [];
+  socket.on('message', (data) => frames.push(JSON.parse(String(data)) as Record<string, unknown>));
+  socket.on('error', () => {});
+  const client: BridgeClient = {
+    socket,
+    frames,
+    send: (frame) => socket.send(JSON.stringify(frame)),
+    until: async (ready) => {
+      for (let i = 0; i < 400 && !ready(); i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+      if (!ready()) throw new Error('timed out');
+    },
+  };
+  return new Promise((resolve, reject) => {
+    socket.once('open', () => resolve(client));
+    socket.once('error', reject);
+  });
+}
+
+/** Completes hello → welcome → describe, the way `bridge-server.test.ts` does, so the connection becomes a registered daemon target. */
+async function registerBridge(url: string, overrides: Record<string, unknown> = {}): Promise<{ client: BridgeClient; targetId: string }> {
+  const client = await connectBridge(url);
+  client.send(bridgeHello(overrides));
+  await client.until(() => client.frames.length >= 2);
+  const welcome = client.frames[0] as { targetId: string };
+  const describeReq = client.frames[1] as { id: string };
+  client.send({ type: 'response', id: describeReq.id, ok: true, result: { app: { id: 'com.example.test', platform: 'ios' }, commands: {}, fakes: {}, capabilities: ['settle', 'events'] } });
+  return { client, targetId: welcome.targetId };
+}
+
+/** The next incoming `request` frame of the given op, among frames received after index `from`. */
+function nextRequest(client: BridgeClient, op: string, from: number): { id: string } | undefined {
+  return client.frames.slice(from).find((frame) => frame['type'] === 'request' && frame['op'] === op) as { id: string } | undefined;
+}
+
+describe('SSE target frames', () => {
+  it('announces a bridge target on every open stream and lists it in status while connected', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    const controller = new AbortController();
+    const response = await fetch(`${d.url}/v1/stream?target=headless&since=0`, { signal: controller.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    const readUntil = async (needle: string): Promise<void> => {
+      while (!text.includes(needle)) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        text += decoder.decode(value, { stream: true });
+      }
+    };
+    await readUntil(': connected');
+    expect((await rpc(d, { op: 'status' })).json['result']).toMatchObject({ targets: [{ id: 'headless' }] });
+
+    const { client, targetId } = await registerBridge(d.bridgeUrl as string);
+    expect(targetId).toBe('ios');
+    await readUntil('event: target');
+    expect(text).toContain('event: target\ndata: {"id":"ios","platform":"ios","appId":"com.example.test","status":"connected"}\n\n');
+
+    const status = await rpc(d, { op: 'status' });
+    expect((status.json['result'] as { targets: Array<{ id: string }> }).targets.map((t) => t.id).sort()).toEqual(['headless', 'ios']);
+
+    client.socket.close();
+    controller.abort();
+  });
+
+  it('ends a stream following its own disconnecting target with a target frame then TARGET_DISCONNECTED, and drops it from status', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    // A side channel confirms the bridge is fully registered before opening a stream keyed to its
+    // own id — `handleStream` needs the target already in the map.
+    const side = await fetch(`${d.url}/v1/stream?target=headless&since=0`);
+    const sideReader = side.body!.getReader();
+    const decoder = new TextDecoder();
+    let sideText = '';
+    const sideReadUntil = async (needle: string): Promise<void> => {
+      while (!sideText.includes(needle)) {
+        const { value, done } = await sideReader.read();
+        if (done) return;
+        sideText += decoder.decode(value, { stream: true });
+      }
+    };
+    await sideReadUntil(': connected');
+    const { client, targetId } = await registerBridge(d.bridgeUrl as string);
+    expect(targetId).toBe('ios');
+    await sideReadUntil('"status":"connected"');
+    await sideReader.cancel();
+
+    // Opens a stream on the target itself and leaves its backlog fetch (the daemon's `events`
+    // request to the bridge) unanswered, so the close below lands while `handleStream` is still
+    // awaiting it.
+    const streamPromise = fetch(`${d.url}/v1/stream?target=${targetId}&since=0`);
+    await client.until(() => nextRequest(client, 'events', 2) !== undefined);
+    const response = await streamPromise;
+    const reader = response.body!.getReader();
+    let text = '';
+    const readUntil = async (needle: string): Promise<void> => {
+      while (!text.includes(needle)) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        text += decoder.decode(value, { stream: true });
+      }
+    };
+    await readUntil(': connected');
+
+    client.socket.close();
+
+    let done = false;
+    while (!done) {
+      const chunk = await reader.read();
+      done = chunk.done;
+      if (chunk.value) text += decoder.decode(chunk.value, { stream: true });
+    }
+    expect(done).toBe(true);
+    expect(text).toContain('event: target\ndata: {"id":"ios","platform":"ios","appId":"com.example.test","status":"disconnected"}\n\n');
+    expect(text).toContain('"code":"TARGET_DISCONNECTED"');
+    expect(text.indexOf('event: target')).toBeLessThan(text.indexOf('event: error'));
+
+    const after = await rpc(d, { op: 'status' });
+    expect((after.json['result'] as { targets: Array<{ id: string }> }).targets.map((t) => t.id)).not.toContain('ios');
   });
 });

@@ -14,9 +14,9 @@ async function boot(env: Record<string, string> = {}): Promise<{ app: HeadlessAp
 const state = (app: HeadlessApp): CheckoutState => app.target.getState() as CheckoutState;
 
 describe('checkout headless entry', () => {
-  it('describes the three commands', async () => {
+  it('describes the four commands', async () => {
     const { app } = await boot();
-    expect(app.target.commands.names()).toEqual(['cart.addItem', 'cart.clear', 'payment.start']);
+    expect(app.target.commands.names()).toEqual(['cart.addItem', 'cart.clear', 'payment.start', 'ui.setMotion']);
   });
 
   it('completes cart → payment → receipt by advancing the manual clock through quiescence', async () => {

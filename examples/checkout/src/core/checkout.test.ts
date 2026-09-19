@@ -108,3 +108,13 @@ describe('order completion', () => {
     expect(healthy.order.totalCents).toBe(4_500);
   });
 });
+
+describe('ui', () => {
+  it('starts with full motion and switches on ui.setMotion, even during a payment', () => {
+    expect(initialState.ui).toEqual({ motion: 'full' });
+    expect(run([{ type: 'ui.setMotion', motion: 'reduced' }]).ui).toEqual({ motion: 'reduced' });
+    const during = run([...toAwaitingEcho, { type: 'ui.setMotion', motion: 'reduced' }]);
+    expect(during.ui.motion).toBe('reduced');
+    expect(during.payment.status).toBe('awaitingServerEcho');
+  });
+});
