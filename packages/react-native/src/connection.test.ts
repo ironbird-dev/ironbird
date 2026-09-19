@@ -13,6 +13,13 @@ interface Fixture {
   waitForSockets(count: number): Promise<void>;
 }
 
+// Waits on an observable condition instead of a fixed sleep: socket events arrive asynchronously and a
+// loaded CI runner can take longer than any constant, so every wait in this file names the state it needs.
+const until = async (ready: () => boolean, what: string): Promise<void> => {
+  for (let i = 0; i < 400 && !ready(); i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  if (!ready()) throw new Error(`timed out waiting for ${what}`);
+};
+
 async function daemon(): Promise<Fixture> {
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -23,10 +30,6 @@ async function daemon(): Promise<Fixture> {
     socket.on('message', (data) => frames.push(JSON.parse(String(data)) as Record<string, unknown>));
   });
   const port = (server.address() as { port: number }).port;
-  const until = async (ready: () => boolean): Promise<void> => {
-    for (let i = 0; i < 400 && !ready(); i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
-    if (!ready()) throw new Error('timed out waiting for the bridge');
-  };
   return {
     url: `ws://127.0.0.1:${port}`,
     sockets,
@@ -36,8 +39,8 @@ async function daemon(): Promise<Fixture> {
         for (const socket of sockets) socket.terminate();
         server.close(() => resolve());
       }),
-    waitForFrames: (count) => until(() => frames.length >= count),
-    waitForSockets: (count) => until(() => sockets.length >= count),
+    waitForFrames: (count) => until(() => frames.length >= count, `${count} frame(s) from the bridge`),
+    waitForSockets: (count) => until(() => sockets.length >= count, `${count} bridge socket(s)`),
   };
 }
 
@@ -76,7 +79,7 @@ describe('openConnection', () => {
     expect(connection.connected).toBe(false);
     const socket = fixture.sockets[0]!;
     socket.send(JSON.stringify({ type: 'welcome', protocol: 1, targetId: 'ios' }));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await until(() => connection!.connected, 'the welcome to be processed');
     expect(connection.connected).toBe(true);
     expect(connection.targetId).toBe('ios');
     expect(seen).toEqual(['welcome:ios']);
@@ -103,11 +106,11 @@ describe('openConnection', () => {
     connection = openConnection({ url: fixture.url, clock, hello, logger: () => {}, reconnect: { initialDelayMs: 500, maxDelayMs: 1_500 }, onRequest: async () => undefined, onWelcome: () => seen.push('welcome'), onClose: () => seen.push('close') });
     await fixture.waitForSockets(1);
     fixture.sockets[0]!.send(JSON.stringify({ type: 'welcome', protocol: 1, targetId: 'ios' }));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await until(() => connection!.connected, 'the welcome to be processed');
     expect(connection.connected).toBe(true);
 
     fixture.sockets[0]!.close(1012, 'restart');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await until(() => clock.timers().length === 1, 'the close to schedule a reconnect');
     expect(connection.connected).toBe(false);
     expect(connection.targetId).toBeNull();
     expect(seen).toEqual(['welcome', 'close']);
@@ -116,20 +119,20 @@ describe('openConnection', () => {
     await clock.advance(500);
     await fixture.waitForSockets(2);
     fixture.sockets[1]!.close(1012, 'again');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await until(() => clock.timers().length === 1, 'the close to schedule a reconnect');
     expect(clock.timers().map((timer) => timer.dueAt - clock.now())).toEqual([1_000]);
     await clock.advance(1_000);
     await fixture.waitForSockets(3);
     fixture.sockets[2]!.close(1012, 'and again');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await until(() => clock.timers().length === 1, 'the close to schedule a reconnect');
     // Capped at maxDelayMs.
     expect(clock.timers().map((timer) => timer.dueAt - clock.now())).toEqual([1_500]);
     await clock.advance(1_500);
     await fixture.waitForSockets(4);
     fixture.sockets[3]!.send(JSON.stringify({ type: 'welcome', protocol: 1, targetId: 'ios' }));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await until(() => connection!.connected, 'the welcome to be processed');
     fixture.sockets[3]!.close(1012, 'after welcome');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await until(() => clock.timers().length === 1, 'the close to schedule a reconnect');
     // A welcome resets the attempt counter.
     expect(clock.timers().map((timer) => timer.dueAt - clock.now())).toEqual([500]);
   });
@@ -141,9 +144,9 @@ describe('openConnection', () => {
     connection = openConnection({ url: fixture.url, clock, hello, logger: (level, message) => logs.push(`${level}:${message}`), reconnect: { initialDelayMs: 500, maxDelayMs: 5_000 }, onRequest: async () => undefined });
     await fixture.waitForSockets(1);
     fixture.sockets[0]!.send(JSON.stringify({ type: 'reject', code: 'APP_MISMATCH', message: 'Daemon serves com.other' }));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await until(() => logs.some((line) => line.startsWith('error:')), 'the reject to be processed');
     fixture.sockets[0]!.close(4002, 'APP_MISMATCH');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await until(() => fixture!.sockets[0]!.readyState === fixture!.sockets[0]!.CLOSED, 'the close handshake to finish');
     expect(connection.connected).toBe(false);
     expect(clock.timers()).toEqual([]);
     expect(logs).toContainEqual('error:ironbird daemon rejected this bridge (APP_MISMATCH): Daemon serves com.other');
@@ -153,7 +156,8 @@ describe('openConnection', () => {
     fixture = await daemon();
     const clock = createManualClock();
     connection = openConnection({ url: 'ws://127.0.0.1:1', clock, hello, logger: () => {}, reconnect: { initialDelayMs: 500, maxDelayMs: 5_000 }, onRequest: async () => undefined });
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // The refused connect surfaces through onclose asynchronously; a loaded CI runner can take longer than any fixed sleep.
+    await until(() => clock.timers().length === 1, 'the refused connect to schedule a reconnect');
     expect(clock.timers()).toHaveLength(1);
     connection.stop();
     expect(clock.timers()).toEqual([]);
