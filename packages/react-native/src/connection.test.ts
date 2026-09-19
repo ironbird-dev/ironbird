@@ -163,4 +163,50 @@ describe('openConnection', () => {
     expect(clock.timers()).toEqual([]);
     expect(connection.send({ type: 'pong', t: 1 })).toBe(false);
   });
+
+  it('reconnects when the runtime reports a failed connect with an error and no close', async () => {
+    // Node 22's WebSocket (undici 6) fires only `error` for a refused connect and stays CONNECTING forever;
+    // React Native and newer Node follow the error with `close`. Both shapes must schedule exactly one reconnect.
+    class FakeSocket {
+      readyState = 0;
+      onopen: ((event: unknown) => void) | null = null;
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      onclose: ((event: { code: number; reason: string }) => void) | null = null;
+      onerror: ((event: unknown) => void) | null = null;
+      constructor() {
+        created.push(this);
+      }
+      send(): void {}
+      close(): void {}
+    }
+    const created: FakeSocket[] = [];
+    const globals = globalThis as { WebSocket?: unknown };
+    const original = globals.WebSocket;
+    globals.WebSocket = FakeSocket;
+    try {
+      const clock = createManualClock();
+      const seen: string[] = [];
+      connection = openConnection({ url: 'ws://fake', clock, hello, logger: () => {}, reconnect: { initialDelayMs: 500, maxDelayMs: 5_000 }, onRequest: async () => undefined, onClose: () => seen.push('close') });
+
+      // Never opened, error only: treated as closed.
+      created[0]!.onerror?.({});
+      expect(clock.timers().map((timer) => timer.dueAt - clock.now())).toEqual([500]);
+      // A runtime that does follow up with close must not schedule a second reconnect.
+      created[0]!.onclose?.({ code: 1006, reason: '' });
+      expect(clock.timers()).toHaveLength(1);
+
+      // An error on a socket that did open waits for its close event, which every runtime sends.
+      await clock.advance(500);
+      expect(created).toHaveLength(2);
+      created[1]!.onopen?.({});
+      created[1]!.onerror?.({});
+      expect(clock.timers()).toEqual([]);
+      created[1]!.onclose?.({ code: 1006, reason: '' });
+      expect(clock.timers().map((timer) => timer.dueAt - clock.now())).toEqual([1_000]);
+      // Neither socket was ever welcomed, so the host never hears a close.
+      expect(seen).toEqual([]);
+    } finally {
+      globals.WebSocket = original;
+    }
+  });
 });

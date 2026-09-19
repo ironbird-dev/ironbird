@@ -116,7 +116,21 @@ export function openConnection(options: ConnectionOptions): Connection {
       return;
     }
     socket = next;
+    let opened = false;
+    // The one close path. It runs at most once per socket: the identity check makes a later event a no-op.
+    const closed = (code: number): void => {
+      if (socket !== next) return;
+      socket = undefined;
+      const wasConnected = connected;
+      connected = false;
+      targetId = null;
+      if (wasConnected) options.onClose?.();
+      if (stopped) return;
+      options.logger('info', `disconnected from ironbird (${code})`);
+      scheduleReconnect();
+    };
     next.onopen = () => {
+      opened = true;
       send(options.hello());
     };
     next.onmessage = (event) => {
@@ -128,20 +142,14 @@ export function openConnection(options: ConnectionOptions): Connection {
       void handle(frame);
     };
     next.onerror = () => {
-      // A close event always follows; nothing to do here beyond noting it.
       options.logger('debug', `socket error on ${options.url}`);
+      // React Native and current Node follow a failed connect with a close event, but Node 22's WebSocket
+      // (undici 6) fires only `error` and leaves the socket CONNECTING forever, which would strand the
+      // bridge without a reconnect. A socket that never opened is therefore treated as closed here (1006,
+      // the code the conforming runtimes report). An error on an opened socket waits for its close event.
+      if (!opened) closed(1006);
     };
-    next.onclose = (event) => {
-      if (socket !== next) return;
-      socket = undefined;
-      const wasConnected = connected;
-      connected = false;
-      targetId = null;
-      if (wasConnected) options.onClose?.();
-      if (stopped) return;
-      options.logger('info', `disconnected from ironbird (${event.code})`);
-      scheduleReconnect();
-    };
+    next.onclose = (event) => closed(event.code);
   };
 
   connect();
