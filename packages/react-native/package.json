@@ -1,6 +1,6 @@
 {
   "name": "@ironbird/react-native",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "In-app bridge that lets the ironbird daemon drive a React Native dev build",
   "license": "MIT",
   "repository": {
@@ -26,7 +26,7 @@
     "test": "vitest run --project unit"
   },
   "peerDependencies": {
-    "@ironbird/core": ">=0.0.1",
+    "@ironbird/core": ">=0.0.2",
     "react-native": ">=0.76"
   },
   "devDependencies": {
