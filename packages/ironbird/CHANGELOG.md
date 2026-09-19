@@ -1,5 +1,13 @@
 # ironbird
 
+## 0.0.2
+
+### Patch Changes
+
+- Updated dependencies [d26e6b1]
+- Updated dependencies [d26e6b1]
+  - @ironbird/cli@0.0.2
+
 ## 0.0.1
 
 ### Patch Changes
