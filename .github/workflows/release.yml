@@ -1,6 +1,17 @@
-# The first run of this workflow must be verified by hand: npm trusted publishing (OIDC) has
-# only been exercised through `npm publish`, not through `pnpm -r publish`, and changeset tag
-# detection depends on the tags the publish step creates. Watch the first release end to end.
+# Releases run through Changesets. While changesets sit on main, this opens or updates the "Version packages"
+# pull request. Once that merges, it publishes over npm trusted publishing (OIDC, no npm token) and pushes the
+# release tags. The 0.0.2 release on 2026-09-19 exercised it end to end.
+#
+# Two things the workflow cannot do by itself:
+# - A package that has never been published cannot publish over OIDC, because a trusted publisher attaches to an
+#   existing package, and one failed package aborts `pnpm -r publish` for the packages after it. Before merging
+#   the Version packages pull request that introduces a new package, publish its first version by hand from that
+#   pull request's branch and run
+#   `npm trust github <pkg> --file release.yml --repo ironbird-dev/ironbird --allow-publish`.
+# - A pull request opened with the default token does not start CI until a maintainer clicks "Approve and run",
+#   so the required `check` never reports. Set the RELEASE_PR_TOKEN secret to a fine-grained personal access
+#   token (this repository only; Contents and Pull requests: read and write) and the pull request is opened as
+#   that user, so CI starts without approval. Without the secret the workflow falls back to the default token.
 name: Release
 on:
   push:
@@ -28,13 +39,17 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+      # v2 of the action is the one built for Changesets v3, which this repository uses. It hands the publish
+      # script a CHANGESETS_OUTPUT file, `changeset git-tag` records each tag it creates there, and the action
+      # pushes those tags and creates the GitHub releases through the API. The v1 action parsed the CLI's old
+      # text output, found nothing, and pushed no tags. There is no moving `v2` tag, hence the exact pin.
       - name: Version or publish
-        uses: changesets/action@v1
+        uses: changesets/action@v2.1.2
         with:
-          version: pnpm changeset version
-          publish: pnpm release
-          commit: 'Version packages'
-          title: 'Version packages'
+          github-token: ${{ secrets.RELEASE_PR_TOKEN || github.token }}
+          version-script: pnpm changeset version
+          publish-script: pnpm release
+          commit-message: 'Version packages'
+          pr-title: 'Version packages'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: 'true'
