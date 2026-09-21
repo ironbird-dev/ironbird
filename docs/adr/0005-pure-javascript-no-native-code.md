@@ -1,6 +1,6 @@
 # ADR-0005: Pure JavaScript, no native code in v0
 
-**Status:** Proposed (reviewed 2026-09-18 at the M1 gate; decision deferred, see docs/evals/m1-remote-mode.md)
+**Status:** Accepted (2026-09-20, M1 gate)
 **Date:** 2026-09-10
 **Deciders:** Project maintainer
 
@@ -67,10 +67,14 @@ Option A proves the product with the lowest adoption cost. Option C preserves a 
 
 ## Review (2026-09-18, M1 gate)
 
-The Q5 finding in [docs/evals/m1-remote-mode.md](../evals/m1-remote-mode.md): JS-only signals cannot see native-driver animations. With motion full, Android's capture (~190 ms) lands inside the payment Reveal's 400 ms native-driver fade, so 60 of 60 full-motion `payment.start` steps registered a nonzero diff there; iOS showed no app-level staleness in the same full-motion arm (its one flagged step is a `simctl` capture artifact, not an animation), not because JS-only detection caught the fade but because iOS's slower ~545 ms capture happens to land after it finishes. The mitigation — testing with motion reduced — is fully effective: zero nonzero pixel diffs across all 1200 reduced-arm captures on both platforms. On this evidence, no native add-on is warranted for now: the blind spot is real, but the documented mitigation closes it completely. This ADR stays Proposed because the M1 gate as a whole is not closed: the iOS p95 latency criterion misses in both motion arms for reasons unrelated to native-versus-JS settle detection, and that gate decision belongs to the maintainer.
+The Q5 finding in [docs/evals/m1-remote-mode.md](../evals/m1-remote-mode.md): JS-only signals cannot see native-driver animations. With motion full, Android's capture (~190 ms) lands inside the payment Reveal's 400 ms native-driver fade, so 60 of 60 full-motion `payment.start` steps registered a nonzero diff there; iOS showed no app-level staleness in the same full-motion arm (its one flagged step is a `simctl` capture artifact, not an animation), not because JS-only detection caught the fade but because iOS's slower ~545 ms capture happens to land after it finishes. The mitigation — testing with motion reduced — is fully effective: zero nonzero pixel diffs across all 1200 reduced-arm captures on both platforms. On this evidence, no native add-on is warranted for now: the blind spot is real, but the documented mitigation closes it completely. The decision was deferred at this review and made on 2026-09-20; see below.
+
+## Decision (2026-09-20, M1 gate)
+
+Accepted: ironbird stays pure JavaScript, with no native add-on. The blind spot is real and measured. In the clean gate run, 50 of 60 full-motion Android payment steps were captured while a native-driver fade was still running, and JS-only settle saw none of it. The mitigation is a rule rather than code: agent-driven development builds run with motion reduced, which left zero differing app pixels on both platforms in both runs. The rule is documented in [docs/api.md](../api.md) under "Reduce motion in agent-driven builds", and the record is in [docs/evals/m1-remote-mode.md](../evals/m1-remote-mode.md). Revisit if adopters cannot reduce motion in their development builds, or if staleness appears with motion reduced.
 
 ## Action items
 
-1. [ ] M1 experiment comparing stale-screenshot rates with animations enabled and reduced
-2. [ ] Documentation on reducing motion in agent-driven dev builds
-3. [ ] Lint rule keeping native-module imports out of `@ironbird/react-native`
+1. [x] M1 experiment comparing stale-screenshot rates with animations enabled and reduced
+2. [x] Documentation on reducing motion in agent-driven dev builds
+3. [x] Keep native-module imports out of `@ironbird/react-native` (enforced at build time by the import allowlist in `packages/react-native/scripts/verify-build.mjs`, which admits only `react-native` and `@ironbird/core`, rather than by a lint rule)

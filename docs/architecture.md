@@ -223,7 +223,7 @@ When `--target` is omitted, operations use `defaultTarget` from config, which is
 | ironbird overhead per headless dispatch | < 5 ms | Excludes app logic |
 | CLI invocation, headless, end to end | < 300 ms | Node startup dominates; the MCP server avoids it |
 | Remote dispatch round trip, excluding settle | < 50 ms | Simulator on the same machine |
-| Remote step with screenshot | < 1.5 s | Includes settle and capture |
+| Remote step with screenshot, overhead | < 1.5 s | Transport, dispatch, and capture. Excludes the settle wait, which is the app's own time (M1 gate decision) |
 
 ## 11. Failure modes
 

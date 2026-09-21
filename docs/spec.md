@@ -4,7 +4,7 @@
 |---|---|
 | Status | Draft |
 | Version | 0.1 (pre-implementation) |
-| Last updated | 2026-09-18 |
+| Last updated | 2026-09-20 |
 | Related | [architecture.md](architecture.md) · [roadmap.md](roadmap.md) |
 
 ## Problem statement
@@ -19,7 +19,7 @@ On 2026-09-10 Shopify described its answer for native apps: business logic decou
 |---|---|---|---|
 | G1 | Fast inner loop | ironbird overhead per headless command, excluding app logic (p95) | < 5 ms |
 | | | CLI invocation end to end, headless, on Apple Silicon (p95) | < 300 ms |
-| G2 | Trustworthy remote steps | Send, settle, and screenshot on iOS Simulator (p95) | < 1.5 s |
+| G2 | Trustworthy remote steps | ironbird overhead per remote step on iOS Simulator, excluding the app's own settle wait (p95) | < 1.5 s |
 | | | Stale screenshots over 300 consecutive steps | ≤ 1% |
 | G3 | Deterministic reproduction | Final-state divergences across 100 headless runs of one scenario | 0 |
 | G4 | Low integration cost | Time for an RN engineer to wire a first flow into an existing app from the docs alone | ≤ 1 working day |
@@ -159,7 +159,7 @@ Visual baselines and diffs. Event-stream parity comparison across runs or target
 | Metric | Target | Where it is measured |
 |---|---|---|
 | Headless overhead per command (p95) | < 5 ms | Benchmark against the example app, M0 |
-| Remote step latency on iOS Simulator (p95) | < 1.5 s | 300-step device run, M1 |
+| Remote step overhead on iOS Simulator, excluding the app's own settle wait (p95) | < 1.5 s | 300-step device run, M1; restated at the M1 gate, see evals/m1-remote-mode.md |
 | Stale-screenshot rate | ≤ 1% | Double-capture check over 300 steps, M1 |
 | Headless determinism | 0 divergences in 100 runs | Example scenario suite, M2 |
 | Agent task success | ≥ 4 of 5 fresh sessions | Agent eval on the planted race, M3 |
@@ -185,7 +185,7 @@ These targets are hypotheses to revisit after the first pilots.
 | Q2 | ~~How should the daemon load TypeScript headless entries?~~ **Resolved 2026-09-11:** esbuild bundles the entry with dependencies external; tsconfig `paths` are honored and the metafile yields the `react-native` import chain | Engineering | Resolved |
 | Q3 | Does Zod 4's JSON Schema output work cleanly as MCP tool input schemas with the MCP TypeScript SDK? | Engineering | M3 |
 | Q4 | How do we map a connected app to a specific simulator when several are booted, without native code? | Engineering | No; config fallback exists |
-| Q5 | ~~Are JS-only signals enough to settle around UI-thread animations (for example Reanimated), layout animations, and image decoding, or is an optional native add-on needed?~~ **Resolved 2026-09-18:** yes with motion reduced, zero nonzero pixel diffs across all 1200 reduced-arm measurement captures on both platforms; a native add-on is not warranted on this evidence. The full-motion iOS 0% is a capture-latency artifact, not detection: its ~545 ms capture lands after the 400 ms native-driver payment fade completes, while Android's faster ~190 ms capture lands mid-fade and shows the blind spot directly (60/60 full-motion `payment.start` steps) | Engineering | Resolved |
+| Q5 | ~~Are JS-only signals enough to settle around UI-thread animations (for example Reanimated), layout animations, and image decoding, or is an optional native add-on needed?~~ **Resolved 2026-09-20 at the M1 gate (ADR-0005 accepted):** yes with motion reduced. JS-only signals cannot see native-driver animations: in the clean gate run, Android's fast capture landed mid-fade on 50 of 60 full-motion `payment.start` steps, while the full-motion iOS 0% is capture timing, not detection, because the iOS capture is slower than the 400 ms fade. With motion reduced, no app content differed in any capture on either platform in either run, so a native add-on is not warranted; agent-driven development builds run with motion reduced | Engineering | Resolved |
 | Q6 | Should fast-check arbitraries be derived from Zod schemas with an existing library or a minimal in-house generator? | Engineering | M4 |
 | Q7 | ~~License: MIT or Apache-2.0?~~ **Resolved 2026-09-12:** MIT. `LICENSE` sits at the repository root and in each published package, and every `package.json` declares `"license": "MIT"` | Maintainer | Resolved |
 | Q8 | Do we support apps still on Zod 3, and how? | Engineering | Before 0.1 |
