@@ -419,6 +419,34 @@ if (__DEV__) {
 
 Keep the `require` inside the `__DEV__` branch so production bundles drop the bridge, then prove it with `ironbird verify-bundle` in CI. Dev builds that should exercise fakes on a simulator, for example to test reader failures without hardware, wire fakes in `instance.ts` and pass them as `fakes`.
 
+### Reduce motion in agent-driven builds (P0)
+
+Settle sees work that runs through JavaScript: tracked promises and timers, and rendered frames. It cannot see an animation that runs on the UI thread (`Animated` with the native driver, Reanimated), a `LayoutAnimation`, or an image decode, so a screenshot taken right after settle can catch that motion mid-flight. In the M1 measurement a 400 ms native-driver fade was still running in 50 of 60 Android captures, and with motion reduced no app content differed in any capture on either platform ([evals/m1-remote-mode.md](evals/m1-remote-mode.md), [ADR-0005](adr/0005-pure-javascript-no-native-code.md)).
+
+The rule: development builds that an agent drives run with motion reduced. Put the switch in app state behind a command, so an agent or a scenario sets it first and the choice shows up in `state` and in the event log.
+
+```ts
+// src/ironbird/commands.ts
+'ui.setMotion': z
+  .object({ motion: z.enum(['full', 'reduced']) })
+  .describe('Switch the screen between full and reduced motion'),
+```
+
+```tsx
+// In a component: with motion reduced, land on the final values instead of animating.
+useEffect(() => {
+  if (motion === 'reduced') {
+    opacity.setValue(1);
+    return;
+  }
+  const animation = Animated.timing(opacity, { toValue: 1, duration: 400, useNativeDriver: true });
+  animation.start();
+  return () => animation.stop();
+}, [motion, opacity, token]);
+```
+
+`examples/checkout` does this for its native-driver fades, its `LayoutAnimation`, and its header image swap. For a change that arrives from outside the app, such as a server push, use `wait` on a state condition instead of relying on settle.
+
 ## @ironbird/cli
 
 The binary is documented in [cli.md](cli.md). The package also exports the pieces the binary is built from, for embedding a daemon in another process: `loadConfig`, `loadTypeScriptModule`, `createHeadlessTarget`, `startDaemon`, `readDaemonInfo` / `writeDaemonInfo` / `removeDaemonInfo`, `buildProgram`, `runServe`, `isLoopbackHost`, and `parseCondition` / `conditionHolds`.

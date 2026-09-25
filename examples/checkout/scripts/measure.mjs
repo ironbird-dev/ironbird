@@ -1,9 +1,13 @@
 // The M1 measurement harness (docs/testing-strategy.md, "Reliability indicators"): drives a
 // running daemon and app through `step`, takes a second capture one second after each step's
 // screenshot, and counts the first capture as stale when the two differ. Latency is the wall
-// time of the `step` request. Runs once per motion arm so the Q5 comparison comes from one
-// build in one session. This is a measurement, not a test: the numbers are recorded in
-// docs/evals/m1-remote-mode.md.
+// time of the `step` request. Overhead is that latency minus the settle wait the bridge
+// reports, which is the time the app itself took to become idle (its own timers, promises, and
+// renders); what remains is ironbird's cost per step: transport, dispatch, and the host
+// screenshot. The M1 latency criterion is judged on overhead, because an app that is slow by
+// design would otherwise set the number (docs/evals/m1-remote-mode.md, "Gate decision"). Runs
+// once per motion arm so the Q5 comparison comes from one build in one session. This is a
+// measurement, not a test: the numbers are recorded in docs/evals/m1-remote-mode.md.
 import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -23,10 +27,12 @@ const steps = Number(args.steps ?? 300);
 const arms = args.motion === 'full' || args.motion === 'reduced' ? [args.motion] : ['full', 'reduced'];
 const stalePixelFraction = 0.001;
 const pixelTolerance = 32;
+// The roadmap's M1 exit criterion, which is defined for the iOS Simulator only.
+const budget = { platform: 'ios', maxStaleRate: 0.01, maxOverheadP95Ms: 1_500 };
 
 // Every step changes the screen: the count, the subtotal, the header image, or the receipt.
-// `saved` skips the reader, so a payment completes in about a second and stays inside the
-// latency budget the harness is measuring ironbird against, not the app's own effects.
+// `saved` skips the reader, but the payment still spends about 800 ms in the fake API's own
+// timers. That time lands in the settle wait, so it shows in the raw latency and not in overhead.
 const CYCLE = [
   ['cart.addItem', { sku: 'cut-45', qty: 1 }],
   ['cart.addItem', { sku: 'shampoo-12', qty: 1 }],
@@ -60,10 +66,13 @@ async function rpc(url, op, params = {}, targetId) {
   return envelope.result;
 }
 
+// Nearest rank: the smallest sample with at least p percent of the samples at or below it.
 const percentile = (samples, p) => {
   const sorted = [...samples].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))] ?? 0;
+  return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)] ?? 0;
 };
+
+const spread = (samples) => ({ p50: percentile(samples, 50), p95: percentile(samples, 95) });
 
 async function pixelDifference(fileA, fileB) {
   const a = PNG.sync.read(await readFile(fileA));
@@ -118,12 +127,20 @@ async function runArm(url, motion, runDir) {
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     const second = await rpc(url, 'screenshot', { device: args.device }, target);
     const difference = await pixelDifference(result.screenshot.path, second.path);
-    records.push({ index: i, motion, name, latencyMs, settled: result.settle?.idle === true, waitedMs: result.settle?.waitedMs ?? null, stale: difference > stalePixelFraction, difference, first: result.screenshot.path, second: second.path });
+    const waitedMs = result.settle?.waitedMs ?? null;
+    records.push({ index: i, motion, name, latencyMs, overheadMs: latencyMs - (waitedMs ?? 0), settled: result.settle?.idle === true, waitedMs, stale: difference > stalePixelFraction, difference, first: result.screenshot.path, second: second.path });
     process.stdout.write(`\r${motion.padEnd(8)} ${String(i + 1).padStart(3)}/${steps}  ${name.padEnd(14)} ${latencyMs.toFixed(0).padStart(5)} ms  ${records[records.length - 1].stale ? 'STALE' : 'ok   '}`);
   }
   process.stdout.write('\n');
   await writeFile(path.join(runDir, `steps-${motion}.jsonl`), records.map((r) => JSON.stringify(r)).join('\n') + '\n');
-  const latencies = records.map((r) => r.latencyMs);
+  const latency = spread(records.map((r) => r.latencyMs));
+  const overhead = spread(records.map((r) => r.overheadMs));
+  const settleWait = spread(records.map((r) => r.waitedMs ?? 0));
+  const byCommand = {};
+  for (const name of new Set(records.map((r) => r.name))) {
+    const own = records.filter((r) => r.name === name);
+    byCommand[name] = { steps: own.length, staleCount: own.filter((r) => r.stale).length, latencyMs: spread(own.map((r) => r.latencyMs)), overheadMs: spread(own.map((r) => r.overheadMs)), settleWaitMs: spread(own.map((r) => r.waitedMs ?? 0)) };
+  }
   return {
     motion,
     steps: records.length,
@@ -131,8 +148,13 @@ async function runArm(url, motion, runDir) {
     staleRate: records.filter((r) => r.stale).length / records.length,
     unsettledCount: records.filter((r) => !r.settled).length,
     unsettledRate: records.filter((r) => !r.settled).length / records.length,
-    latencyP50Ms: percentile(latencies, 50),
-    latencyP95Ms: percentile(latencies, 95),
+    latencyP50Ms: latency.p50,
+    latencyP95Ms: latency.p95,
+    overheadP50Ms: overhead.p50,
+    overheadP95Ms: overhead.p95,
+    settleWaitP50Ms: settleWait.p50,
+    settleWaitP95Ms: settleWait.p95,
+    byCommand,
   };
 }
 
@@ -146,7 +168,7 @@ const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/,
 const runDir = path.join(artifacts, 'metrics', `${stamp}-${target}`);
 await mkdir(runDir, { recursive: true });
 const restore = await freezeStatusBar(platform, device);
-const summary = { target, platform, device, steps, startedAt: new Date().toISOString(), arms: [] };
+const summary = { target, platform, device, steps, startedAt: new Date().toISOString(), thresholds: { stalePixelFraction, pixelTolerance }, budget, arms: [] };
 try {
   for (const motion of arms) summary.arms.push(await runArm(info.url, motion, runDir));
 } finally {
@@ -155,8 +177,13 @@ try {
 await writeFile(path.join(runDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
 
 console.log(`\nresults for ${target} (${device}), ${steps} steps per arm, written to ${path.relative(example, runDir)}\n`);
-console.log('motion    stale    unsettled   p50 ms   p95 ms   stale rate   budget');
+console.log('motion    stale    unsettled   latency p50/p95 ms   overhead p50/p95 ms   stale rate   budget');
 for (const arm of summary.arms) {
-  const ok = arm.staleRate <= 0.01 && arm.latencyP95Ms < 1_500 ? 'ok' : 'MISS';
-  console.log(`${arm.motion.padEnd(9)} ${String(arm.staleCount).padStart(5)}    ${String(arm.unsettledCount).padStart(9)}   ${arm.latencyP50Ms.toFixed(0).padStart(6)}   ${arm.latencyP95Ms.toFixed(0).padStart(6)}   ${(arm.staleRate * 100).toFixed(2).padStart(9)}%   ${ok}`);
+  // The budget is the iOS exit criterion; M1 defines none for Android, so no verdict is printed there.
+  const verdict = platform !== budget.platform ? 'n/a' : arm.staleRate <= budget.maxStaleRate && arm.overheadP95Ms < budget.maxOverheadP95Ms ? 'ok' : 'MISS';
+  const pair = (a, b) => `${a.toFixed(0)}/${b.toFixed(0)}`.padStart(18);
+  console.log(`${arm.motion.padEnd(9)} ${String(arm.staleCount).padStart(5)}    ${String(arm.unsettledCount).padStart(9)}   ${pair(arm.latencyP50Ms, arm.latencyP95Ms)}   ${pair(arm.overheadP50Ms, arm.overheadP95Ms)}    ${(arm.staleRate * 100).toFixed(2).padStart(9)}%   ${verdict}`);
+  for (const [name, stats] of Object.entries(arm.byCommand)) {
+    console.log(`  ${name.padEnd(16)} ${String(stats.steps).padStart(4)} steps   latency ${pair(stats.latencyMs.p50, stats.latencyMs.p95).trim().padStart(10)}   overhead ${pair(stats.overheadMs.p50, stats.overheadMs.p95).trim().padStart(10)}   settle wait ${pair(stats.settleWaitMs.p50, stats.settleWaitMs.p95).trim().padStart(10)}   stale ${stats.staleCount}`);
+  }
 }

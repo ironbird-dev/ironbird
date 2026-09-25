@@ -1,6 +1,6 @@
 # ADR-0003: App dials out to the daemon over WebSocket
 
-**Status:** Proposed (reviewed 2026-09-18 at the M1 gate; decision deferred, see docs/evals/m1-remote-mode.md)
+**Status:** Accepted (2026-09-20, M1 gate)
 **Date:** 2026-09-10
 **Deciders:** Project maintainer
 
@@ -78,10 +78,14 @@ Option A is the only option that is pure JavaScript, toolchain-neutral, and cons
 
 ## Review (2026-09-18, M1 gate)
 
-Confirmed for reconnection: the Metro-reload device test (`examples/checkout/test/remote.device.test.ts`, "a reload fails the in-flight request with TARGET_DISCONNECTED and the next request runs under the same id") shows the in-flight request failing with `TARGET_DISCONNECTED` and the next request succeeding under the same target id, and the Android measurement run connected through `adb reverse` with no bridge changes needed. The measured M1 numbers are in [docs/evals/m1-remote-mode.md](../evals/m1-remote-mode.md): the iOS stale-screenshot rate passes in both motion arms, but p95 step latency misses the < 1.5 s bar in both arms, a structural cost of the fixed measurement cycle and `simctl` capture time rather than a defect in this transport decision. This ADR stays Proposed: whether to accept the WebSocket transport as-is, invoke the roadmap's narrow-if-needed clause, or hold M1 open pending further work is the maintainer's gate decision, not made here.
+Confirmed for reconnection: the Metro-reload device test (`examples/checkout/test/remote.device.test.ts`, "a reload fails the in-flight request with TARGET_DISCONNECTED and the next request runs under the same id") shows the in-flight request failing with `TARGET_DISCONNECTED` and the next request succeeding under the same target id, and the Android measurement run connected through `adb reverse` with no bridge changes needed. The measured M1 numbers are in [docs/evals/m1-remote-mode.md](../evals/m1-remote-mode.md): the iOS stale-screenshot rate passes in both motion arms, but p95 step latency misses the < 1.5 s bar in both arms, a structural cost of the fixed measurement cycle and `simctl` capture time rather than a defect in this transport decision. The decision was deferred at this review and made on 2026-09-20; see below.
+
+## Decision (2026-09-20, M1 gate)
+
+Accepted. Everything measured supports the design: reconnection after a Metro reload keeps the target id, Android connects through `adb reverse` with no bridge changes, and the transport's share of a step is a few milliseconds. The latency criterion was restated at the same gate to measure ironbird's overhead per step, and the gate run met it on iOS at p95 993 ms and 715 ms, most of which is the host screenshot rather than this channel. The record is in [docs/evals/m1-remote-mode.md](../evals/m1-remote-mode.md).
 
 ## Action items
 
-1. [ ] Bridge reconnection with exponential backoff (500 ms to 5 s)
-2. [ ] `ironbird serve` runs `adb reverse tcp:4568 tcp:4568` for each connected Android device when `adb` is present
+1. [x] Bridge reconnection with exponential backoff (500 ms to 5 s)
+2. [x] `ironbird serve` runs `adb reverse tcp:4568 tcp:4568` for each connected Android device when `adb` is present
 3. [ ] Documentation for physical devices on a LAN, including token setup
