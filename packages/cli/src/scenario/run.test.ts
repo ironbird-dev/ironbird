@@ -1,8 +1,8 @@
 import { IronbirdError, type Description } from '@ironbird/core';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DaemonClient } from '../cli/client';
 import { parseScenario, type Scenario } from './parse';
 import { runScenario } from './run';
@@ -247,5 +247,111 @@ describe('runScenario', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('runScenario artifacts', () => {
+  let root: string;
+  let file: string;
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'ironbird-artifacts-'));
+    file = path.join(root, 'happy.yaml');
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('writes the result, a copy of the scenario, and the events, state, and calls recorded after the run started', async () => {
+    await writeFile(file, 'name: Happy path\nsteps:\n  - send: cart.clear\n');
+    const { client, calls } = scripted({
+      describe: description(),
+      dispatch: stepResult(),
+      events: (params: Record<string, unknown>) => (params['limit'] === 0 ? { events: [], nextSeq: 7, truncated: false } : { events: [{ seq: 8, t: 1, source: 'cart', name: 'cleared' }], nextSeq: 8, truncated: false }),
+      fakeCalls: (params: Record<string, unknown>) =>
+        params['limit'] === 0
+          ? { calls: [], nextSeq: params['fake'] === 'api' ? 3 : 0, truncated: false }
+          : { calls: [{ seq: 4, t: 1, fake: params['fake'], method: 'submit', args: [], outcome: 'returned' }], nextSeq: 4, truncated: false },
+      getState: { rev: 1, path: '', value: { cart: { items: [] } } },
+    });
+    const result = await runScenario(client, parseScenario(await readFile(file, 'utf8'), file), { file, artifacts: root });
+    const dir = result.artifacts as string;
+    expect(result.passed).toBe(true);
+    expect(result.artifactErrors).toBeUndefined();
+    expect((await readdir(dir)).sort()).toEqual(['calls', 'events.jsonl', 'happy.yaml', 'result.json', 'state.json']);
+    expect(JSON.parse(await readFile(path.join(dir, 'result.json'), 'utf8'))).toEqual(result);
+    expect(await readFile(path.join(dir, 'happy.yaml'), 'utf8')).toBe('name: Happy path\nsteps:\n  - send: cart.clear\n');
+    expect(await readFile(path.join(dir, 'events.jsonl'), 'utf8')).toBe('{"seq":8,"t":1,"source":"cart","name":"cleared"}\n');
+    expect(JSON.parse(await readFile(path.join(dir, 'state.json'), 'utf8'))).toEqual({ cart: { items: [] } });
+    expect(JSON.parse(await readFile(path.join(dir, 'calls/api.json'), 'utf8'))).toEqual([{ seq: 4, t: 1, fake: 'api', method: 'submit', args: [], outcome: 'returned' }]);
+    expect(JSON.parse(await readFile(path.join(dir, 'calls/reader.json'), 'utf8'))).toEqual([{ seq: 4, t: 1, fake: 'reader', method: 'submit', args: [], outcome: 'returned' }]);
+    expect(calls.map((call) => [call.op, call.params])).toEqual([
+      ['describe', {}],
+      ['events', { limit: 0 }],
+      ['fakeCalls', { fake: 'api', limit: 0 }],
+      ['fakeCalls', { fake: 'reader', limit: 0 }],
+      ['dispatch', { name: 'cart.clear', payload: {}, settle: true }],
+      ['events', { since: 7 }],
+      ['getState', { path: '' }],
+      ['fakeCalls', { fake: 'api', since: 3 }],
+      ['fakeCalls', { fake: 'reader', since: 0 }],
+    ]);
+    expect(calls.every((call) => call.target === 'headless' || call.op === 'describe')).toBe(true);
+  });
+
+  it('captures the cursors again after a reset step, so the logs cover only what came after it', async () => {
+    await writeFile(file, 'name: Reset\nsteps:\n  - send: cart.clear\n  - reset: true\n  - send: cart.clear\n');
+    let resets = 0;
+    const { client, calls } = scripted({
+      describe: description(),
+      dispatch: stepResult(),
+      reset: () => {
+        resets += 1;
+        return { rev: 0, path: '', value: {} };
+      },
+      events: (params: Record<string, unknown>) => (params['limit'] === 0 ? { events: [], nextSeq: resets === 0 ? 7 : 0, truncated: false } : { events: [], nextSeq: 0, truncated: false }),
+      fakeCalls: (params: Record<string, unknown>) => (params['limit'] === 0 ? { calls: [], nextSeq: resets === 0 ? 5 : 0, truncated: false } : { calls: [], nextSeq: 0, truncated: false }),
+      getState: { rev: 0, path: '', value: {} },
+    });
+    const result = await runScenario(client, parseScenario(await readFile(file, 'utf8'), file), { file, artifacts: root });
+    expect(result).toMatchObject({ passed: true, stepsRun: 3 });
+    expect(calls.filter((call) => call.op === 'events').map((call) => call.params)).toEqual([{ limit: 0 }, { limit: 0 }, { since: 0 }]);
+    expect(calls.filter((call) => call.op === 'fakeCalls').map((call) => call.params)).toEqual([
+      { fake: 'api', limit: 0 },
+      { fake: 'reader', limit: 0 },
+      { fake: 'api', limit: 0 },
+      { fake: 'reader', limit: 0 },
+      { fake: 'api', since: 0 },
+      { fake: 'reader', since: 0 },
+    ]);
+    expect(calls.map((call) => call.op).slice(0, 8)).toEqual(['describe', 'events', 'fakeCalls', 'fakeCalls', 'dispatch', 'reset', 'events', 'fakeCalls']);
+  });
+
+  it('collects best effort: a file that cannot be gathered or written is named in artifactErrors and the rest is still written', async () => {
+    const missing = path.join(root, 'missing.yaml');
+    const { client } = scripted({
+      describe: description({ fakes: {}, capabilities: ['settle', 'events', 'clock', 'reset'] }),
+      dispatch: stepResult(),
+      events: (params: Record<string, unknown>) => (params['limit'] === 0 ? { events: [], nextSeq: 7, truncated: false } : { events: [{ seq: 9, t: 2, source: 'cart', name: 'cleared' }], nextSeq: 9, truncated: true }),
+      getState: new IronbirdError('TARGET_DISCONNECTED', 'Target headless disconnected', { target: 'headless', op: 'getState' }),
+    });
+    const result = await runScenario(client, load('name: Best effort\nsteps:\n  - send: cart.clear\n'), { file: missing, artifacts: root });
+    const dir = result.artifacts as string;
+    expect(result.passed).toBe(true);
+    expect(result.artifactErrors).toEqual([
+      expect.stringMatching(/^missing\.yaml: .*ENOENT/),
+      'events.jsonl: the recorder dropped events before seq 7; the log is incomplete',
+      'state.json: Target headless disconnected',
+    ]);
+    expect((await readdir(dir)).sort()).toEqual(['events.jsonl', 'result.json']);
+    expect(await readFile(path.join(dir, 'events.jsonl'), 'utf8')).toBe('{"seq":9,"t":2,"source":"cart","name":"cleared"}\n');
+    expect(JSON.parse(await readFile(path.join(dir, 'result.json'), 'utf8'))).toEqual(result);
+  });
+
+  it('writes nothing and reports null artifacts when turned off', async () => {
+    const { client, calls } = scripted({ describe: description(), dispatch: stepResult() });
+    const result = await runScenario(client, load('name: Off\nsteps:\n  - send: cart.clear\n'), { file, artifacts: false });
+    expect(result.artifacts).toBeNull();
+    expect(calls.map((call) => call.op)).toEqual(['describe', 'dispatch']);
+    expect(await readdir(root)).toEqual([]);
   });
 });

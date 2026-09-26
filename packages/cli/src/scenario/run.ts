@@ -1,7 +1,7 @@
 import { IronbirdError, conditionHolds, isIronbirdError, suggestNames, toErrorShape, type Description, type ScenarioResult, type StepResult } from '@ironbird/core';
 import path from 'node:path';
 import type { DaemonClient } from '../cli/client';
-import { createRunDirectory } from './artifacts';
+import { createRunArtifacts, type RunArtifacts } from './artifacts';
 import type { Scenario, ScenarioStep } from './parse';
 
 export interface RunScenarioOptions {
@@ -121,7 +121,10 @@ export async function runScenario(client: DaemonClient, scenario: Scenario, opti
   const target = described.target ?? requested;
   if (target === undefined) throw new IronbirdError('INTERNAL', 'The daemon did not report which target answered describe', { message: 'describe envelope has no target' });
   const support: Support = { platform: described.result.app.platform, capabilities: new Set(described.result.capabilities), fakes: Object.keys(described.result.fakes) };
-  const runDir = options.artifacts === false ? null : await createRunDirectory(options.artifacts, scenario.name);
+  const artifacts: RunArtifacts | null = options.artifacts === false ? null : await createRunArtifacts({ root: options.artifacts, scenario, file: options.file, client, target, description: described.result });
+  const runDir = artifacts === null ? null : artifacts.dir;
+  // "During the run" starts here: the cursors captured now bound what `collect` gathers.
+  await artifacts?.capture();
 
   const skipped: number[] = [];
   let stepsRun = 0;
@@ -139,13 +142,15 @@ export async function runScenario(client: DaemonClient, scenario: Scenario, opti
     stepsRun += 1;
     try {
       await runStep(client, target, step, index, runDir);
+      // A reset restarts the event and call logs, so the cursors restart with them.
+      if (step.kind === 'reset') await artifacts?.capture();
     } catch (error) {
       failedStep = { index, step: step.raw, ...(error instanceof StepFailed ? error.failure : { error: toErrorShape(error) }) };
       break;
     }
   }
 
-  return {
+  const result: ScenarioResult = {
     scenario: scenario.name,
     file: options.file,
     target,
@@ -156,4 +161,5 @@ export async function runScenario(client: DaemonClient, scenario: Scenario, opti
     skipped,
     artifacts: runDir,
   };
+  return artifacts === null ? result : artifacts.collect(result);
 }
