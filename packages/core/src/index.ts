@@ -6,6 +6,7 @@ export type {
   Description,
   ErrorShape,
   FakeCall,
+  FakeCallsResult,
   JsonSchema,
   PendingItem,
   Platform,

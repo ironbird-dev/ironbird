@@ -4,7 +4,7 @@
 |---|---|
 | Status | Draft |
 | `PROTOCOL_VERSION` | `1` |
-| Last updated | 2026-09-11 |
+| Last updated | 2026-09-25 |
 | Related | [architecture.md](architecture.md) · [cli.md](cli.md) · [api.md](api.md) |
 
 ironbird has two transports that carry the same operations:
@@ -145,14 +145,14 @@ The daemon sends `{ "type": "ping", "t": <number> }` every 5 s, and the app repl
 | `settle` | `timeoutMs?` | `SettleResult` | ✓ | ✓ |
 | `events` | `since?`, `limit?` | `{ events, nextSeq, truncated }` | ✓ | ✓ |
 | `fakeControl` | `fake`, `control`, `payload?`, `path?`, `settle?` | `StepResult` | ✓ | ✓ when fakes are wired into the build |
-| `fakeCalls` (P1) | `fake`, `since?` | `{ calls }` | ✓ | ✓ when fakes are wired into the build |
-| `clockAdvance` | `ms`, `path?` | `StepResult` plus `now` | ✓ | `UNSUPPORTED` in v1 |
+| `fakeCalls` | `fake`, `since?`, `limit?` | `{ calls, nextSeq, truncated }` | ✓ | ✓ when fakes are wired into the build |
+| `clockAdvance` | `ms`, `path?`, `settle?` | `StepResult` plus `now` | ✓ | `UNSUPPORTED` in v1 |
 | `clockNow` | none | `{ now }` | ✓ | `UNSUPPORTED` in v1 |
 | `snapshotSave` (P1) | none | `{ rev, snapshot }` | if the target persists | if the target persists |
 | `snapshotLoad` (P1) | `snapshot` | `{ rev, path, value }` | if the target restores | if the target restores |
 | `reset` | none | `{ rev, path, value }` | ✓ | `UNSUPPORTED` |
 
-`settle` in params is `true` (the default), `false`, or `{ "timeoutMs": number }`. `waitFor` doesn't advance the manual clock.
+`settle` in params is `true` (the default), `false`, or `{ "timeoutMs": number }`. `waitFor` doesn't advance the manual clock. `fakeCalls` pages like `events`: `calls` are the fake's recorded port calls with `seq` greater than `since` (default 0), at most `limit` of them; `nextSeq` is the cursor to pass as the next `since`, and with `limit: 0` it reports where the log stands without transferring it; `truncated` is true when `since` points into calls the fake has already dropped, since each fake keeps 10,000. `fakeControl` and `fakeCalls` on a target that doesn't declare the `fakes` capability fail with `UNSUPPORTED`; on a target that does, a fake it doesn't wire fails with `UNKNOWN_FAKE`. A control's `INVALID_PAYLOAD` and `DISPATCH_FAILED` name it as `<fake>.<control>`.
 
 ### 4.2 Daemon-only operations (client API)
 
@@ -217,12 +217,19 @@ interface RecordedEvent {
 }
 
 interface FakeCall {
-  seq: number;
+  seq: number;               // per fake, from 1
   t: number;
   fake: string;
   method: string;
-  args: unknown[];
-  outcome: 'returned' | 'resolved' | 'rejected' | 'pending';
+  args: unknown[];           // serialized like state, so a listener argument is a placeholder
+  outcome: 'returned' | 'threw' | 'resolved' | 'rejected' | 'pending';
+  error?: string;            // the error's message, for threw and rejected
+}
+
+interface FakeCallsResult {
+  calls: FakeCall[];
+  nextSeq: number;
+  truncated: boolean;
 }
 
 interface Screenshot {
@@ -256,6 +263,8 @@ interface ErrorShape {
 }
 ```
 
+A call that returns a promise is recorded as `pending` and updated to `resolved` or `rejected` when it settles; `fakeCalls` returns copies, so read again for the final outcome of a call that was pending.
+
 Capabilities say which operations a target supports, and an operation whose capability is absent fails with `UNSUPPORTED`. The headless target declares `settle`, `events`, `clock`, and `reset`, `fakes` when the app wires fakes in, plus `persist` and `restore` when its `Target` implements them. A remote target declares `settle` and `events`, `fakes` when fakes are wired into the build, and `persist` and `restore` from its `Target`; it never declares `clock` or `reset` in v1.
 
 ## 6. Error codes
@@ -263,10 +272,10 @@ Capabilities say which operations a target supports, and an operation whose capa
 | Code | Raised when | `details` |
 |---|---|---|
 | `UNKNOWN_COMMAND` | The name isn't in the registry | `{ name, suggestions }` |
-| `INVALID_PAYLOAD` | The payload fails its schema | `{ name, issues }` |
-| `DISPATCH_FAILED` | App dispatch threw or rejected | `{ name, message }` |
-| `UNKNOWN_FAKE` | The fake isn't wired into the target | `{ fake, available }` |
-| `UNKNOWN_CONTROL` | The fake doesn't declare the control | `{ fake, control, suggestions }` |
+| `INVALID_PAYLOAD` | The payload fails its schema | `{ name, issues }`; for a control, `name` is `<fake>.<control>` |
+| `DISPATCH_FAILED` | App dispatch, or a fake's control handler, threw or rejected | `{ name, message }`; for a control, `name` is `<fake>.<control>` |
+| `UNKNOWN_FAKE` | The fake isn't wired into the target | `{ fake, available, suggestions }` |
+| `UNKNOWN_CONTROL` | The fake doesn't declare the control, or `defineFake` was given a handler for a control it doesn't declare | `{ fake, control, suggestions }` |
 | `WAIT_TIMEOUT` | A condition wasn't met in time | `{ path, value, pending }` |
 | `UNSUPPORTED` | The operation isn't available on this target, or the route is unknown (HTTP 404, `target: null`) | `{ op, target }` |
 | `NO_TARGET` | No target is connected or configured | `{ available }` |

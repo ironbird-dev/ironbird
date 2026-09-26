@@ -1,4 +1,4 @@
-import type { FakeCall } from './protocol';
+import type { FakeCallsResult } from './protocol';
 import type { CommandRegistry, Schemas } from './registry';
 
 /**
@@ -12,5 +12,6 @@ export interface FakeInstance<Port extends object = object, C extends Schemas = 
   readonly port: Port;
   readonly controls: CommandRegistry<C>;
   control(name: string, payload?: unknown): Promise<void>;
-  calls(since?: number): FakeCall[];
+  /** A page of recorded port calls newer than `since`, as copies; `nextSeq` is the cursor to pass next, as with `EventRecorder.since`. */
+  calls(since?: number, limit?: number): FakeCallsResult;
 }

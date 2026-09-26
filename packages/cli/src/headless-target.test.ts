@@ -128,7 +128,7 @@ describe('createHeadlessTarget', () => {
     const fakeControls = defineCommands({ emit: z.object({ event: z.string() }) });
     const withFake = defineHeadless(({ clock }) => {
       const app = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({ now: clock.now() }) });
-      const fake = { name: 'reader', description: 'Fake reader', port: {}, controls: fakeControls, control: async () => {}, calls: () => [] };
+      const fake = { name: 'reader', description: 'Fake reader', port: {}, controls: fakeControls, control: async () => {}, calls: () => ({ calls: [], nextSeq: 0, truncated: false }) };
       return { target: app, fakes: [fake] };
     });
     const t = await bootWith(withFake);

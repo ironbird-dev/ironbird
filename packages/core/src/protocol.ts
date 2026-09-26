@@ -52,12 +52,24 @@ export interface StepResult {
 }
 
 export interface FakeCall {
+  /** Per fake, from 1. */
   seq: number;
   t: number;
   fake: string;
   method: string;
+  /** Serialized like state, so a listener argument is a placeholder rather than a failure. */
   args: unknown[];
-  outcome: 'returned' | 'resolved' | 'rejected' | 'pending';
+  /** A call that returns a promise is `pending` until it settles, then `resolved` or `rejected`. */
+  outcome: 'returned' | 'threw' | 'resolved' | 'rejected' | 'pending';
+  /** The error's message, for `threw` and `rejected`. */
+  error?: string;
+}
+
+/** What `FakeInstance.calls` and the `fakeCalls` operation return; `nextSeq` is the cursor to pass as the next `since`, as with `events`. */
+export interface FakeCallsResult {
+  calls: FakeCall[];
+  nextSeq: number;
+  truncated: boolean;
 }
 
 export interface Screenshot {
