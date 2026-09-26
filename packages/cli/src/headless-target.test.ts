@@ -1,4 +1,4 @@
-import { createTarget, defineCommands, defineHeadless, isIronbirdError, type HeadlessDefinition, type StepResult } from '@ironbird/core';
+import { createTarget, defineCommands, defineFake, defineHeadless, isIronbirdError, type HeadlessDefinition, type StepResult } from '@ironbird/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { counterDefinition as definition, type CounterState as State } from '../test/helpers/counter-app';
@@ -136,6 +136,82 @@ describe('createHeadlessTarget', () => {
     expect(description.capabilities).toContain('fakes');
     expect(description.fakes['reader']?.description).toBe('Fake reader');
     expect(Object.keys(description.fakes['reader']?.controls ?? {})).toEqual(['emit']);
+  });
+
+  it('runs fake controls as settled steps, pages fake calls, and names unknown fakes with the wired ones', async () => {
+    interface ReaderPort {
+      onEvent(listener: (event: string) => void): void;
+      ping(): Promise<string>;
+    }
+    const fakeReader = defineFake('reader', {
+      controls: { emit: z.object({ event: z.string() }) },
+      create: ({ record }) => {
+        const listeners = new Set<(event: string) => void>();
+        const port: ReaderPort = {
+          onEvent: (listener) => {
+            listeners.add(listener);
+          },
+          ping: async () => 'pong',
+        };
+        return {
+          port,
+          controls: {
+            emit: ({ event }) => {
+              record(event);
+              for (const listener of listeners) listener(event);
+            },
+          },
+        };
+      },
+    });
+    const withFake = defineHeadless(({ clock, recorder, tracker }) => {
+      const reader = fakeReader.create({ clock, recorder });
+      const port = tracker.wrap(reader.port, 'reader');
+      let last = 'none';
+      const listeners = new Set<() => void>();
+      port.onEvent((event) => {
+        last = event;
+        listeners.forEach((listener) => listener());
+      });
+      const app = createTarget({
+        commands: defineCommands({ 'reader.ping': z.object({}) }),
+        dispatch: async () => {
+          await port.ping();
+        },
+        getState: () => ({ last }),
+        subscribe: (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      });
+      return { target: app, fakes: [reader] };
+    });
+    const t = await bootWith(withFake);
+    expect(((await t.run('describe', {})) as { capabilities: string[] }).capabilities).toContain('fakes');
+    const result = (await t.run('fakeControl', { fake: 'reader', control: 'emit', payload: { event: 'connected' }, path: 'last' })) as StepResult;
+    expect(result).toMatchObject({ target: 'headless', rev: 1, path: 'last', state: 'connected' });
+    expect(result.events.map((event) => [event.source, event.name])).toEqual([['reader', 'connected']]);
+    expect(result.settle).toMatchObject({ idle: true });
+    await t.run('dispatch', { name: 'reader.ping' });
+    expect(await t.run('fakeCalls', { fake: 'reader' })).toMatchObject({
+      calls: [
+        { seq: 1, method: 'onEvent', args: [{ $unserializable: 'function' }], outcome: 'returned' },
+        { seq: 2, method: 'ping', args: [], outcome: 'resolved' },
+      ],
+      nextSeq: 2,
+      truncated: false,
+    });
+    expect(await t.run('fakeCalls', { fake: 'reader', since: 1, limit: 5 })).toMatchObject({ calls: [{ seq: 2 }], nextSeq: 2 });
+    const unknown = await t.run('fakeControl', { fake: 'readr', control: 'emit' }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(unknown) && unknown.code).toBe('UNKNOWN_FAKE');
+    expect(isIronbirdError(unknown) && unknown.details).toEqual({ fake: 'readr', available: ['reader'], suggestions: ['reader'] });
+    const unknownCalls = await t.run('fakeCalls', { fake: 'api' }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(unknownCalls) && unknownCalls.details).toEqual({ fake: 'api', available: ['reader'], suggestions: ['reader'] });
+    const invalid = await t.run('fakeControl', { fake: 'reader', control: 'emit', payload: { event: 1 } }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(invalid) && invalid.code).toBe('INVALID_PAYLOAD');
+    expect(isIronbirdError(invalid) && (invalid.details as { name: string }).name).toBe('reader.emit');
+    const unknownControl = await t.run('fakeControl', { fake: 'reader', control: 'emitt' }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(unknownControl) && unknownControl.details).toEqual({ fake: 'reader', control: 'emitt', suggestions: ['emit'] });
   });
 
   it('rejects a malformed matches pattern with INVALID_PAYLOAD', async () => {
