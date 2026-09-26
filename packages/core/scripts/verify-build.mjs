@@ -7,7 +7,7 @@ const require = createRequire(import.meta.url);
 
 const cjs = require('../dist/index.cjs');
 const esm = await import('../dist/index.js');
-for (const name of ['defineCommands', 'createTarget', 'createManualClock', 'createTracker', 'createEventRecorder', 'defineHeadless', 'IronbirdError']) {
+for (const name of ['defineCommands', 'createTarget', 'createManualClock', 'createTracker', 'createEventRecorder', 'defineHeadless', 'defineFake', 'IronbirdError']) {
   if (typeof cjs[name] !== 'function') throw new Error(`CJS build is missing ${name}`);
   if (typeof esm[name] !== 'function') throw new Error(`ESM build is missing ${name}`);
 }

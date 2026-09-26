@@ -5,7 +5,7 @@ import { scheduler } from './scheduler';
 
 export const FAKE_PORT_MARK: unique symbol = Symbol.for('ironbird.fakePort');
 
-/** Tags a port so that tracker.wrap marks its calls fake: true. defineFake (M2) does this for every fake port. */
+/** Tags a port so that tracker.wrap marks its calls fake: true. Every port defineFake serves already carries the tag; this is for hand-written fakes. */
 export function markFakePort<P extends object>(port: P): P {
   Object.defineProperty(port, FAKE_PORT_MARK, { value: true, enumerable: false, configurable: false, writable: false });
   return port;
