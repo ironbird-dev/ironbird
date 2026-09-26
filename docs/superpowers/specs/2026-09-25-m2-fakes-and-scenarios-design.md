@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Reviewed 2026-09-25; awaiting maintainer approval |
+| Status | Reviewed and approved by a second model 2026-09-25; awaiting maintainer approval |
 | Milestone | M2 in [roadmap.md](../../roadmap.md) |
 | Builds on | [architecture.md](../../architecture.md) §6.3, §6.5 · [protocol.md](../../protocol.md) operation tables, `Description`, `ScenarioResult`, error table · [api.md](../../api.md) `defineFake` · [cli.md](../../cli.md) `fakes`, `fake`, `scenario run`, "Scenario files", exit codes · [testing-strategy.md](../../testing-strategy.md) headless determinism |
 
@@ -21,7 +21,7 @@ The exit criteria and how each is measured:
 
 | Criterion (roadmap) | Measured by |
 |---|---|
-| A scenario reproduces the planted race: it fails with `PLANT_RACE=1` and passes without it | A serial-project test that boots the daemon twice, once per setting, and runs the race scenario on headless (§8). The roadmap's overview row says "on both targets", so the device build gains the same flag (D12) and the evals record includes one iOS run with it set |
+| A scenario reproduces the planted race: it fails with `PLANT_RACE=1` and passes without it | A serial-project test that boots the daemon twice, once per setting, and runs the race scenario on headless (§8). The roadmap's overview row says "on both targets", so the device build gains the same flag (D12) and the evals record includes one iOS run with it set, bundled with `EXPO_PUBLIC_PLANT_RACE=1 pnpm example:ios` after clearing Metro's cache |
 | The same scenario, with clock steps marked optional, reaches the same final state on the headless and iOS targets | A device test that runs the race scenario, unplanted, on a freshly reloaded iOS app and on a freshly reset headless target, then compares the whole final state (§8) |
 | 100 consecutive headless runs of every example scenario show 0 divergences | A serial-project test in CI, 100 runs per scenario with `reset` between runs (§8) |
 
@@ -42,7 +42,7 @@ Out of scope: `snapshot` steps (P1), the MCP server (M3), a daemon-side scenario
 | D9 | The race scenario controls the order of server events through an api fake control that turns off the automatic echo | The current fake always sends `order.confirmed` before `payment.succeeded`, so the planted race can never fire without control over ordering |
 | D10 | Cross-target equality is a whole-state comparison after a fresh start on each target: `reset` on headless, a Metro reload on iOS | Remote targets have no `reset`. A reload recreates the JS runtime, the fakes, and their id counters, so even `pay_1` and `ord_1` match |
 | D11 | The 100-run determinism check is a serial-project test that runs in CI, calling the runner in process, with an environment variable for longer local soaks | Maintainer decision; determinism stays proven on every commit. In process is required for the time budget (§8) |
-| D12 | The example's device build plants the race when `EXPO_PUBLIC_PLANT_RACE=1`, the way the headless entry reads `PLANT_RACE` | Today only the headless entry can plant the race, which makes the roadmap's "on both targets" wording unachievable. Expo inlines `EXPO_PUBLIC_*`, as `index.js` already relies on |
+| D12 | The example's device build plants the race when `EXPO_PUBLIC_PLANT_RACE=1`, the way the headless entry reads `PLANT_RACE` | Today only the headless entry can plant the race, which makes the roadmap's "on both targets" wording unachievable. Expo inlines `EXPO_PUBLIC_*`, as `index.js` already relies on. The value is fixed when Metro bundles, so the planted iOS run needs Metro restarted with the variable set and its cache cleared |
 | D13 | `fakeCalls` returns a cursor like `events`: params `since?` and `limit?`, result `{ calls, nextSeq, truncated }` | The runner has to learn where each fake's log stands at the start of a run without transferring up to 10,000 calls, and agents paging through calls get the same model as events |
 
 ## 3. Work breakdown
@@ -83,11 +83,11 @@ interface FakeFactory<Port extends object, C extends Schemas> {
 
 `FakeInstance` keeps the shape core already exports, `name`, `description`, `port`, `controls` (the registry), and `control(name, payload)`, with one change: `calls(since = 0, limit = Infinity)` returns `{ calls, nextSeq, truncated }` like `EventRecorder.since`, instead of a bare array (D13). The bridge is the only consumer today and changes in the same release.
 
-**Creating an instance.** `create` runs the definition's `create` and checks that the returned handler keys equal the declared control names. A missing handler is already a compile error; an extra one, such as `emitt` next to `emit`, fails here with `UNKNOWN_CONTROL`, details `{ fake, control, suggestions }`.
+**Creating an instance.** `create` runs the definition's `create` and checks that the returned handler keys equal the declared control names. A missing handler is already a compile error; an extra one, such as `emitt` next to `emit`, fails here with `UNKNOWN_CONTROL`, details `{ fake, control, suggestions }`. That is a programming error, so it surfaces as a boot failure with that code on headless and as a red box on device.
 
 **Running a control.** `control(name, payload)` first checks that the control exists, failing with `UNKNOWN_CONTROL`, details `{ fake, control, suggestions }`. It then parses the payload with the registry and awaits the handler. Errors name the control as `'<fake>.<control>'`: an invalid payload fails with `INVALID_PAYLOAD`, details `{ name, issues }`, and a handler that throws or rejects fails with `DISPATCH_FAILED`, details `{ name, message }`, the same code a throwing command uses. An `IronbirdError` from a handler passes through unchanged.
 
-**Call log (R16).** The instance's `port` is a proxy whose target is a fresh object that forwards reads to the object `create` returned (D3). Reading a function-valued property returns a wrapper, created once per property and cached, that records a `FakeCall` and invokes the original with `this` bound to the returned object. The cache matters beyond speed: `tracker.wrap` identifies methods by identity, so a fresh wrapper on every read would allocate a fresh tracked wrapper on every call. Non-function properties and symbol keys pass through untouched, except that the proxy answers the `FAKE_PORT_MARK` lookup with `true`.
+**Call log (R16).** The instance's `port` is a proxy whose target is a fresh object that forwards reads to the object `create` returned (D3). Reading a function-valued property returns a wrapper, created once per property and cached, that records a `FakeCall` and invokes the original with `this` bound to the returned object. The cache matters beyond speed: `tracker.wrap` identifies methods by identity, so a fresh wrapper on every read would allocate a fresh tracked wrapper on every call. Non-function properties and symbol keys pass through untouched, except that the proxy answers the `FAKE_PORT_MARK` lookup with `true`. The proxy forwards property reads and `in`. A port is a bag of methods, so enumeration, spread, and `instanceof` are not forwarded.
 
 Each call gets a sequence number per fake starting at 1, the clock time, the method name, and the arguments serialized with core's `serializeState`, so a listener argument becomes a placeholder rather than failing. The outcome is `returned` or `threw` for a synchronous call. A call that returns a promise is recorded as `pending` and updated to `resolved` or `rejected` when it settles; `threw` and `rejected` also carry the error's message. `calls()` returns copies, so a caller never sees an entry change after reading it, and a caller that wants the final outcome of a pending call reads again. Calls are kept in a buffer of 10,000 per fake that drops the oldest, and `truncated` reports when `since` points into the dropped range. Recording is always on: fakes exist only in headless and development builds.
 
@@ -145,7 +145,7 @@ A step whose condition is not met is skipped when it is `optional`, and its inde
 | `expect` condition not met | `expected`: the condition; `actual`: the value read |
 | Any other `IronbirdError` from the step's operation, including `INVALID_PAYLOAD`, `DISPATCH_FAILED`, `TARGET_DISCONNECTED`, and `NO_TARGET` | `error`: the error shape |
 
-Only a failure of the initial `describe`, because the daemon is unreachable or the target is not connected, ends the command with its own error instead of a scenario result, exit code 5. The same errors from a later step fail that step like any other.
+A failure of the initial `describe` ends the command with that error and its own exit code instead of a scenario result: 5 for an unreachable daemon or `NO_TARGET`, 2 for `UNAUTHORIZED`, 1 for `TARGET_DISCONNECTED`. The same errors from a later step fail that step like any other.
 
 **Result.** The core type in `protocol.ts` and protocol.md, extended by what R11 asks for:
 
@@ -172,7 +172,7 @@ interface ScenarioResult {
 ironbird scenario run <path...> [--bail] [--target <id>]
 ```
 
-A directory expands to its `*.yaml` and `*.yml` files in name order. Every file is parsed before any runs, so an authoring error costs nothing. Output is one `ScenarioResult` per file, as JSON lines when stdout is not a TTY or `--json` is passed, and otherwise as a one-line summary per scenario plus the failed step. The exit code is 2 if any file is invalid, 5 if the initial `describe` fails as above, 4 if any scenario failed, and 0 otherwise. `--bail` stops after the first failed scenario.
+A directory expands to its `*.yaml` and `*.yml` files in name order. Every file is parsed before any runs, so an authoring error costs nothing. Output is one `ScenarioResult` per file, as JSON lines when stdout is not a TTY or `--json` is passed, and otherwise as a one-line summary per scenario plus the failed step. The exit code is 2 if any file is invalid, the initial `describe`'s own code if it fails as above, 4 if any scenario failed, and 0 otherwise. `--bail` stops after the first failed scenario.
 
 ## 7. Example app
 
