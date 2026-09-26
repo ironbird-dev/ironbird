@@ -245,6 +245,9 @@ importers:
       ws:
         specifier: ^8.21.3
         version: 8.21.3
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
       zod:
         specifier: ^4.2.0
         version: 4.6.2
@@ -5081,6 +5084,7 @@ snapshots:
   '@types/react@19.3.0':
     dependencies:
       csstype: 3.2.3
+    optional: true
 
   '@types/ws@8.18.1':
     dependencies:
