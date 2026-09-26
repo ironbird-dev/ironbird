@@ -93,8 +93,10 @@ export async function createRunArtifacts(options: { root: string; scenario: Scen
       if (fakes.length > 0) await attempt('calls', () => mkdir(path.join(dir, 'calls'), { recursive: true }));
       for (const fake of fakes) {
         await attempt(`calls/${fake}.json`, async () => {
-          const page = await client.rpc<FakeCallsResult>('fakeCalls', { fake, since: cursors.calls[fake] ?? 0 }, target);
+          const since = cursors.calls[fake] ?? 0;
+          const page = await client.rpc<FakeCallsResult>('fakeCalls', { fake, since }, target);
           await writeFile(path.join(dir, 'calls', `${fake}.json`), `${JSON.stringify(page.calls, null, 2)}\n`);
+          if (page.truncated) errors.push(`calls/${fake}.json: the recorder dropped calls before seq ${since}; the log is incomplete`);
         });
       }
       const withErrors = (): ScenarioResult => (errors.length === 0 ? { ...result, artifacts: dir } : { ...result, artifacts: dir, artifactErrors: [...errors] });

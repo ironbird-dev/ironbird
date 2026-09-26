@@ -347,6 +347,25 @@ describe('runScenario artifacts', () => {
     expect(JSON.parse(await readFile(path.join(dir, 'result.json'), 'utf8'))).toEqual(result);
   });
 
+  it('adds an artifactErrors entry when a fake call log was truncated, and still writes the file', async () => {
+    await writeFile(file, 'name: Truncated\nsteps:\n  - send: cart.clear\n');
+    const { client } = scripted({
+      describe: description({ fakes: { api: { controls: {} } } }),
+      dispatch: stepResult(),
+      events: () => ({ events: [], nextSeq: 0, truncated: false }),
+      fakeCalls: (params: Record<string, unknown>) =>
+        params['limit'] === 0
+          ? { calls: [], nextSeq: 3, truncated: false }
+          : { calls: [{ seq: 4, t: 1, fake: 'api', method: 'submit', args: [], outcome: 'returned' }], nextSeq: 4, truncated: true },
+      getState: { rev: 1, path: '', value: {} },
+    });
+    const result = await runScenario(client, parseScenario(await readFile(file, 'utf8'), file), { file, artifacts: root });
+    const dir = result.artifacts as string;
+    expect(result.passed).toBe(true);
+    expect(result.artifactErrors).toEqual(['calls/api.json: the recorder dropped calls before seq 3; the log is incomplete']);
+    expect(JSON.parse(await readFile(path.join(dir, 'calls/api.json'), 'utf8'))).toEqual([{ seq: 4, t: 1, fake: 'api', method: 'submit', args: [], outcome: 'returned' }]);
+  });
+
   it('writes nothing and reports null artifacts when turned off', async () => {
     const { client, calls } = scripted({ describe: description(), dispatch: stepResult() });
     const result = await runScenario(client, load('name: Off\nsteps:\n  - send: cart.clear\n'), { file, artifacts: false });
