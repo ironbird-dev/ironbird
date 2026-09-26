@@ -1,4 +1,4 @@
-import { IronbirdError, suggestNames, toErrorShape, type Description, type ErrorShape, type SettleResult, type StepResult } from '@ironbird/core';
+import { IronbirdError, suggestNames, toErrorShape, type Description, type ErrorShape, type FakeCallsResult, type SettleResult, type StepResult } from '@ironbird/core';
 import { Command, CommanderError, InvalidArgumentError } from 'commander';
 import { createDaemonClient, resolveDaemon, type DaemonClient } from './client';
 import type { runServe } from './commands/serve';
@@ -234,6 +234,29 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
           },
         });
         return { exit: followExit };
+      }),
+    );
+
+  program
+    .command('fake <fake> [control] [payload]')
+    .description('Run a fake control and settle, or print the calls the app made on the fake with --calls')
+    .option('--path <path>', 'return only this subtree of state', '')
+    .option('--no-settle', 'return right after the control runs')
+    .option('--settle-timeout <duration>', 'how long to wait for effects')
+    .option('--calls', 'print recorded port calls instead of running a control')
+    .option('--since <seq>', 'with --calls: only calls newer than this sequence number', integer)
+    .action(
+      wrap(async (ctx, fake: string, control: string | undefined, payload: string | undefined, opts: { path: string; settle: boolean; settleTimeout?: string; calls?: boolean; since?: number }) => {
+        if (opts.calls) {
+          if (control !== undefined) throw new UsageError('fake takes either a control or --calls, not both');
+          const params: Record<string, unknown> = { fake };
+          if (opts.since !== undefined) params['since'] = opts.since;
+          const envelope = await ctx.client.call<FakeCallsResult>('fakeCalls', params, ctx.target);
+          return { value: { ...(envelope.target === undefined ? {} : { target: envelope.target }), fake, ...envelope.result } };
+        }
+        if (control === undefined) throw new UsageError('fake needs a control or --calls');
+        if (opts.since !== undefined) throw new UsageError('--since only applies with --calls');
+        return stepOutcome(await ctx.client.rpc<StepResult>('fakeControl', { fake, control, payload: parsePayload(payload), path: opts.path, settle: settleParam(opts) }, ctx.target));
       }),
     );
 

@@ -231,6 +231,45 @@ describe('screenshot and step', () => {
   });
 });
 
+describe('fake', () => {
+  it('runs a control as a step and exits by the settle outcome', async () => {
+    const h = harness({ fakeControl: step() });
+    expect(await h.run(['fake', 'api', 'emit', '{"event":"payment.succeeded"}', '--path', 'payment', '--settle-timeout', '2s', '--target', 'ios'])).toBe(0);
+    expect(h.calls[0]).toEqual({ op: 'fakeControl', target: 'ios', params: { fake: 'api', control: 'emit', payload: { event: 'payment.succeeded' }, path: 'payment', settle: { timeoutMs: 2_000 } } });
+    expect(await h.run(['fake', 'reader', 'emit', '--no-settle'])).toBe(0);
+    expect(h.calls[1]?.params).toEqual({ fake: 'reader', control: 'emit', payload: {}, path: '', settle: false });
+    const unsettled = harness({ fakeControl: step({ settle: { ...settled, idle: false } }) });
+    expect(await unsettled.run(['fake', 'api', 'emit'])).toBe(3);
+    const unknown = harness({ fakeControl: new IronbirdError('UNKNOWN_FAKE', 'Unknown fake apii', { fake: 'apii', available: ['api', 'reader'], suggestions: ['api'] }) });
+    expect(await unknown.run(['fake', 'apii', 'emit'])).toBe(1);
+    expect(unknown.out()).toEqual({ error: { code: 'UNKNOWN_FAKE', message: 'Unknown fake apii', details: { fake: 'apii', available: ['api', 'reader'], suggestions: ['api'] } } });
+  });
+
+  it('--calls pages the fake call log and names the fake in the output', async () => {
+    const call = { seq: 3, t: 0, fake: 'api', method: 'submitPayment', args: [{ amountCents: 4_500 }], outcome: 'resolved' };
+    const h = harness({ fakeCalls: { calls: [call], nextSeq: 3, truncated: false } });
+    expect(await h.run(['fake', 'api', '--calls', '--since', '2'])).toBe(0);
+    expect(h.calls[0]).toEqual({ op: 'fakeCalls', target: undefined, params: { fake: 'api', since: 2 } });
+    expect(h.out()).toEqual({ target: 'headless', fake: 'api', calls: [call], nextSeq: 3, truncated: false });
+    h.stdout.length = 0;
+    expect(await h.run(['fake', 'api', '--calls', '--target', 'ios'])).toBe(0);
+    expect(h.calls[1]).toEqual({ op: 'fakeCalls', target: 'ios', params: { fake: 'api' } });
+    expect(h.out()).toMatchObject({ target: 'ios', fake: 'api' });
+  });
+
+  it('needs a control or --calls, rejects both together, and rejects --since without --calls', async () => {
+    const h = harness({});
+    expect(await h.run(['fake', 'api'])).toBe(2);
+    expect(h.stderr.join('')).toContain('fake needs a control or --calls');
+    expect(await h.run(['fake', 'api', 'emit', '--calls'])).toBe(2);
+    expect(h.stderr.join('')).toContain('not both');
+    expect(await h.run(['fake', 'api', 'emit', '--since', '1'])).toBe(2);
+    expect(h.stderr.join('')).toContain('--since only applies with --calls');
+    expect(await h.run(['fake', 'api', 'emit', '{oops'])).toBe(2);
+    expect(h.calls).toEqual([]);
+  });
+});
+
 describe('verify-bundle', () => {
   it('exits 0 for clean output, 1 listing files that carry the marker, and 2 for a missing path', async () => {
     const temp = await mkdtemp(path.join(tmpdir(), 'ironbird-verify-cli-'));

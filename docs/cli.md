@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-09-11 |
+| Last updated | 2026-09-25 |
 | Related | [protocol.md](protocol.md) · [api.md](api.md) |
 
 The `ironbird` binary ships in `@ironbird/cli` and requires Node 22 or newer. The unscoped `ironbird` package exposes the same binary, so `npx ironbird <command>` works without a local install. Every command except `serve`, `doctor`, `verify-bundle`, and `mcp` talks to a running daemon.
@@ -156,17 +156,31 @@ ironbird events [--since <seq>] [--limit <n>] [--follow]
 
 Prints `{ events, nextSeq, truncated }`. With `--follow`, the backlog and every later event print as JSON lines regardless of TTY, until interrupted.
 
-### fake (M2)
+### fake
 
 ```text
-ironbird fake <fake> <control> [payload] [--path <path>] [--no-settle]
-ironbird fake <fake> --calls [--since <seq>]          (P1)
+ironbird fake <fake> <control> [payload] [--path <path>] [--no-settle] [--settle-timeout <duration>]
+ironbird fake <fake> --calls [--since <seq>]
 ```
 
-Runs a fake control and prints a step result. With `--calls`, prints recorded port calls.
+One command with two forms. With a control, it runs that control on the named fake, settles unless `--no-settle` is passed, and prints a step result with the same exit codes as `send`: 0, or 3 when the control was applied but the target didn't settle in time. Payloads parse like `send`'s. With `--calls`, it prints the calls the app has made on the fake's port as `{ target, fake, calls, nextSeq, truncated }`, paging like `events`: `--since` returns only calls newer than that sequence number, `nextSeq` is the cursor for the next call, and `truncated` means `--since` points into calls the fake has already dropped, since each fake keeps 10,000. A call that returned a promise shows `pending` until it settles; run the command again for its final outcome. The command needs a control or `--calls` and rejects both together, and `--since` applies only with `--calls`; each is a usage error, exit 2. An unknown fake fails with `UNKNOWN_FAKE` listing the wired fakes and near misses, an unknown control with `UNKNOWN_CONTROL`, and a target without fakes with `UNSUPPORTED`, all exit 1.
 
 ```sh
-ironbird fake api emit '{"event":"payment.succeeded"}'
+ironbird fake api setEcho '{"mode":"manual"}'
+ironbird fake api emit '{"event":"payment.succeeded"}' --path order
+ironbird fake api --calls --since 12
+```
+
+```json
+{
+  "target": "headless",
+  "fake": "api",
+  "calls": [
+    { "seq": 13, "t": 1767225600300, "fake": "api", "method": "submitPayment", "args": [{ "amountCents": 4500, "token": "fake_4500" }], "outcome": "resolved" }
+  ],
+  "nextSeq": 13,
+  "truncated": false
+}
 ```
 
 ### clock
