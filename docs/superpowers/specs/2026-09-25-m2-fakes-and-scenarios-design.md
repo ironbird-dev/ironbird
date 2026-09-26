@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Reviewed and approved by a second model 2026-09-25; awaiting maintainer approval |
+| Status | Reviewed 2026-09-25 (two design passes, one pull-request review); awaiting maintainer approval |
 | Milestone | M2 in [roadmap.md](../../roadmap.md) |
 | Builds on | [architecture.md](../../architecture.md) §6.3, §6.5 · [protocol.md](../../protocol.md) operation tables, `Description`, `ScenarioResult`, error table · [api.md](../../api.md) `defineFake` · [cli.md](../../cli.md) `fakes`, `fake`, `scenario run`, "Scenario files", exit codes · [testing-strategy.md](../../testing-strategy.md) headless determinism |
 
@@ -50,7 +50,7 @@ Out of scope: `snapshot` steps (P1), the MCP server (M3), a daemon-side scenario
 Three implementation plans, in dependency order. Plan 2 needs plan 1 only for `fake` steps and can start against the M0 operations.
 
 1. **Fakes:** `defineFake` and the call log in core; `fakeControl` and `fakeCalls` on the headless target; the bridge's `fakeCalls` result and `UNKNOWN_FAKE` details; the `fake` command; the protocol and API docs.
-2. **Scenarios:** parsing and validation, the runner, artifacts, `INVALID_SCENARIO`, and `scenario run`.
+2. **Scenarios:** parsing and validation, the runner, artifacts, `INVALID_SCENARIO`, `scenario run`, and the `artifactsPath` field in `daemon.json` with the matching `resolveDaemon` result.
 3. **Example and gate:** the rewritten fakes, headless and device wiring including D12, the example scenarios, the race and determinism tests, the cross-target device test, and the M2 exit-criteria record. The determinism test's run time is measured on the first day of this plan, not at the gate.
 
 ## 4. `defineFake`
@@ -80,6 +80,8 @@ interface FakeFactory<Port extends object, C extends Schemas> {
   create(deps: { clock: Clock; recorder?: EventRecorder }): FakeInstance<Port, C>;
 }
 ```
+
+`zod` stays a type-only import in this file, as everywhere in core: `ControlHandlers` needs only `z.output`, and core's build check fails on a load-time `zod` import.
 
 `FakeInstance` keeps the shape core already exports, `name`, `description`, `port`, `controls` (the registry), and `control(name, payload)`, with one change: `calls(since = 0, limit = Infinity)` returns `{ calls, nextSeq, truncated }` like `EventRecorder.since`, instead of a bare array (D13). The bridge is the only consumer today and changes in the same release.
 
@@ -114,9 +116,9 @@ Both forms are one command whose `control` argument is optional: the command req
 
 ## 6. Scenario runner
 
-A module in `packages/cli/src/scenario/` with three files: `parse.ts` turns a file into a validated `Scenario`, `run.ts` exports `runScenario(client, scenario, options): Promise<ScenarioResult>`, and `artifacts.ts` writes the run directory.
+A module in `packages/cli/src/scenario/` with three files: `parse.ts` turns a file into a validated `Scenario`, `run.ts` exports `runScenario(client, scenario, options): Promise<ScenarioResult>`, and `artifacts.ts` writes the run directory. `options` is `{ file: string; target?: string; artifacts: string | false }`: `file` fills `ScenarioResult.file`, `target` overrides the scenario's own, and `artifacts` is the root the run directory goes under, or `false` to write nothing. `stepsRun` counts the steps that ran, including a failed one and excluding skipped ones. `repetition` counts from 1.
 
-**Parsing.** YAML is parsed with line information, then validated with Zod. The top level has `name` (required), `description`, `target`, and a non-empty `steps` list. Each step is exactly one kind, identified by its discriminating key (`send`, `fake`, `clock`, `wait`, `expect`, `screenshot`, `reset`), plus the shared `optional` flag. Unknown keys are rejected, so a typo such as `payloads` fails before anything runs. Durations are a number of milliseconds or a string with an `ms`, `s`, or `m` suffix, parsed by the CLI's existing duration parser. Conditions are exactly one of `equals`, `notEquals`, `exists`, and `matches`, parsed by core's `parseCondition`. An invalid file fails with a new error code, `INVALID_SCENARIO`, details `{ file, issues: [{ path, message, line? }] }`, exit code 2. Payloads are not checked at parse time, because their schemas live in the app; an invalid payload fails its step at run time with `INVALID_PAYLOAD`.
+**Parsing.** YAML is parsed with line information, then validated with Zod. The top level has `name` (required), `description`, `target`, and a non-empty `steps` list. Each step is exactly one kind, identified by its discriminating key (`send`, `fake`, `clock`, `wait`, `expect`, `screenshot`, `reset`), plus the shared `optional` flag. Unknown keys are rejected, so a typo such as `payloads` fails before anything runs. Durations are a number of milliseconds or a string with an `ms`, `s`, or `m` suffix, parsed by the CLI's existing duration parser. Conditions are exactly one of `equals`, `notEquals`, `exists`, and `matches`, parsed by core's `parseCondition`. It throws `INVALID_PAYLOAD` for a bad condition, which the parser catches and reports as an `INVALID_SCENARIO` issue with the step's line. An invalid file fails with a new error code, `INVALID_SCENARIO`, details `{ file, issues: [{ path, message, line? }] }`, exit code 2. Payloads are not checked at parse time, because their schemas live in the app; an invalid payload fails its step at run time with `INVALID_PAYLOAD`.
 
 cli.md's step table gains one field: `fake` and `clock` steps accept `settle`, like `send` steps, so D6's opt-out works for all three.
 
@@ -131,10 +133,10 @@ cli.md's step table gains one field: `fake` and `clock` steps accept `settle`, l
 | `clock` | `clockAdvance` with `ms` and `settle` | The target declares `clock` |
 | `wait` | `waitFor` with `path`, the condition, and `timeoutMs` (default 5 s) | Always |
 | `expect` | `getState` at `path`, then the condition checked locally with core's `conditionHolds` | Always |
-| `screenshot` | `screenshot` with an absolute `out` path in the run directory | The platform is not `headless` |
+| `screenshot` | `screenshot` with an absolute `out` path in the run directory, named `<step index>-<step value>.png` | The platform is not `headless` |
 | `reset` | `reset` | The target declares `reset` |
 
-A step whose condition is not met is skipped when it is `optional`, and its index is added to `skipped`. Otherwise it fails before any operation is sent: with `UNKNOWN_FAKE`, details `{ fake, available, suggestions }` built from `describe`, for a `fake` step, so a typo such as `apii` still gets suggestions; and with `UNSUPPORTED` for the other kinds. `repeat` on `send` and `fake` steps runs the operation that many times; a failure reports which repetition failed.
+A step whose condition is not met is skipped when it is `optional`, and its index is added to `skipped`. Otherwise it fails before any operation is sent, with `UNSUPPORTED` when the target lacks the capability, as R11 says. The one exception is a `fake` step on a target that declares `fakes` but not the named fake: that fails with `UNKNOWN_FAKE`, details `{ fake, available, suggestions }` built from `describe`, so a typo such as `apii` still gets suggestions. cli.md's step table records both cases. `repeat` on `send` and `fake` steps runs the operation that many times; a failure reports which repetition failed.
 
 **Failing a step.** The runner stops at the first failing step and reports it.
 
@@ -147,7 +149,7 @@ A step whose condition is not met is skipped when it is `optional`, and its inde
 
 A failure of the initial `describe` ends the command with that error and its own exit code instead of a scenario result: 5 for an unreachable daemon or `NO_TARGET`, 2 for `UNAUTHORIZED`, 1 for `TARGET_DISCONNECTED`. The same errors from a later step fail that step like any other.
 
-**Result.** The core type in `protocol.ts` and protocol.md, extended by what R11 asks for:
+**Result.** The type core exports from `protocol.ts`, documented in cli.md's output shapes (§10) and extended by what R11 asks for:
 
 ```ts
 interface ScenarioResult {
@@ -164,13 +166,15 @@ interface ScenarioResult {
 }
 ```
 
-**Artifacts.** Client commands do not load the config, so the artifacts directory comes from daemon discovery: `resolveDaemon` returns the `.ironbird` directory where it found `daemon.json`, which `serve` writes into its artifacts path, and falls back to `<cwd>/.ironbird`. Every run, passed or failed, writes `<artifacts>/runs/<UTC stamp with milliseconds>-<scenario slug>/`: `result.json`, a copy of the scenario file, `events.jsonl` with the events recorded during the run, `state.json` with the final root state, `calls/<fake>.json` with each fake's calls during the run, and the screenshots from `screenshot` steps. "During the run" means after the cursors captured at its start, `events` and `fakeCalls` with `limit: 0`, or after the last `reset` step, which restarts both. Collection is best effort: a file that cannot be gathered, such as the state after a `TARGET_DISCONNECTED`, is left out and named in `artifactErrors`. `runScenario` accepts `artifacts: false` so the determinism test can skip writing.
+**Artifacts.** Client commands do not load the config, so the runner learns the artifacts directory from daemon discovery, which needs two small changes in plan 2. `serve` records its resolved `artifactsPath` in `daemon.json`, and `resolveDaemon` returns an `artifactsDir` field: that recorded path, or `<cwd>/.ironbird` when there is no `daemon.json` or when `--daemon <url>` bypasses discovery. Recording the path, rather than returning the directory where discovery found `daemon.json`, keeps a non-default `artifactsDir` in the config working. Every run, passed or failed, writes `<artifacts>/runs/<UTC stamp with milliseconds>-<scenario slug>/`: `result.json`, a copy of the scenario file, `events.jsonl` with the events recorded during the run, `state.json` with the final root state, `calls/<fake>.json` with each fake's calls during the run, and the screenshots from `screenshot` steps. "During the run" means after the cursors captured at its start, `events` and `fakeCalls` with `limit: 0`, or after the last `reset` step, which restarts both. Collection is best effort: a file that cannot be gathered, such as the state after a `TARGET_DISCONNECTED`, is left out and named in `artifactErrors`. `runScenario` accepts `artifacts: false` so the determinism test can skip writing.
 
 **Command.**
 
 ```text
 ironbird scenario run <path...> [--bail] [--target <id>]
 ```
+
+`--target` is the existing global option, not a new one.
 
 A directory expands to its `*.yaml` and `*.yml` files in name order. Every file is parsed before any runs, so an authoring error costs nothing. Output is one `ScenarioResult` per file, as JSON lines when stdout is not a TTY or `--json` is passed, and otherwise as a one-line summary per scenario plus the failed step. The exit code is 2 if any file is invalid, the initial `describe`'s own code if it fails as above, 4 if any scenario failed, and 0 otherwise. `--bail` stops after the first failed scenario.
 
@@ -194,15 +198,17 @@ In `auto` mode the api fake behaves as it does today: 500 ms after a submission 
 | `checkout-saved-card.yaml` | The happy path with the saved card | Both |
 | `race-success-before-confirmation.yaml` | The planted race; the gate scenario | Both |
 | `duplicate-success.yaml` | A second `payment.succeeded` after completion changes nothing | Both |
-| `missing-echo-times-out.yaml` | With the echo held, 30 s of clock fails the payment with a timeout | `target: headless`, since it needs 30 s of clock |
+| `missing-echo-times-out.yaml` | With the echo held, 30 s of clock fails the payment with a timeout. The timeout starts only when the submission resolves, so the file advances `300ms` first, then `30s` | `target: headless`, since it needs 30 s of clock |
 | `reader-disconnect.yaml` | A reader disconnect while collecting fails the payment | `target: headless`, since a remote settle would finish the collection first |
 
-The gate scenario:
+The three scenarios that run on both targets start with `send: ui.setMotion { motion: reduced }`, following api.md's rule for agent-driven builds, so both targets end with the same `ui` slice and the whole-state comparison stays meaningful. The gate scenario:
 
 ```yaml
 name: Payment success arrives before order confirmation
 description: The server reports the payment succeeded before it confirms the order and its total. The receipt must still show the total.
 steps:
+  - send: ui.setMotion
+    payload: { motion: reduced }   # the api.md rule for agent-driven builds
   - fake: api
     control: setEcho
     payload: { mode: manual }
@@ -236,7 +242,7 @@ Per [testing-strategy.md](../../testing-strategy.md):
 - **CLI unit:** headless `fakeControl` and `fakeCalls` with a small test fake, and `UNKNOWN_FAKE` details. Scenario parsing for every step kind, rejected unknown keys, conditions, durations, and `INVALID_SCENARIO` with line numbers. The runner against a scripted client: target pinning from the `describe` envelope, the support table, optional skips, `UNKNOWN_FAKE` suggestions for a missing fake, the unsettled rule on all three step kinds, `repeat`, every failure shape, cursors restarting after a `reset` step, and best-effort artifacts. The `fake` command's two forms and their usage errors, and `scenario run` with its exit codes, `--json`, and directory expansion.
 - **Bridge unit:** the `fakeCalls` result and `UNKNOWN_FAKE` details; `handlers.test.ts` asserts the old details today and changes with them.
 - **Serial (gate criteria 1 and 3):** both tests start one daemon in process and call `runScenario` with a daemon client, because invoking the CLI binary per step would take minutes. The race test boots the daemon with `PLANT_RACE=1` and expects the race scenario to fail at its last step with `actual: 0`, then boots it without the flag and expects a pass. The determinism test runs every example scenario 100 times against one daemon, with `reset` before each run, and requires each run's pass or fail result, final state, and recorded event log to equal the first run's. The serial project sets no test timeout, so these tests pass their own. `IRONBIRD_SOAK_RUNS` raises the count for local soaks.
-- **Device (gate criterion 2):** `examples/checkout/test/scenarios.device.test.ts` reloads the iOS app through Metro, runs the race scenario on `ios`, resets the headless target and runs it there too, and requires the two final root states to be equal. It reuses the M1 device test's reload helper and clears `PLANT_RACE` from the daemon's environment, which the M1 device test does not. It runs with `pnpm test:device`, not in CI.
+- **Device (gate criterion 2):** `examples/checkout/test/scenarios.device.test.ts` reloads the iOS app through Metro, runs the race scenario on `ios`, resets the headless target and runs it there too, and requires the two final root states to be equal, `ui` included. The device test sends nothing before the scenario; the scenario itself reduces motion. It reuses the M1 device test's reload helper and clears `PLANT_RACE` from the daemon's environment, which the M1 device test does not. It runs with `pnpm test:device`, not in CI.
 
 ## 9. Errors and types
 
@@ -253,10 +259,10 @@ No other codes change.
 ## 10. Docs, versioning, and the gate
 
 - `api.md`: `defineFake` rewritten to the final shape in §4, with the reader example returning its handlers.
-- `cli.md`: `fake` loses its M2 marker and gains `--calls` as P0; `scenario run` documents paths, directory expansion, output, exit codes, and the artifact layout; the step table gains `settle` on `fake` and `clock`; the example scenario is replaced by the gate scenario from §7, because the current one asserts `order.total`, which does not exist, and pays by card, so its server events arrive while the payment is still collecting and are ignored; the failure example gains `expected`.
-- `protocol.md`: `fakeCalls` as P0 with the D13 shape; the `FakeCall`, `ScenarioResult`, and error-table changes; and removal of the `scenarioRun` daemon operation, which D5 replaces with the CLI-side runner.
+- `cli.md`: `fake` loses its M2 marker and gains `--calls` as P0; `scenario run` documents paths, directory expansion, output, exit codes, and the artifact layout; the step table gains `settle` on `fake` and `clock`; `clock advance` keeps its current flags, since only scenarios need to set `settle` on it; the example scenario is replaced by the gate scenario from §7, because the current one asserts `order.total`, which does not exist, and pays by card, so its server events arrive while the payment is still collecting and are ignored; the failure example gains `expected`.
+- `protocol.md`: `clockAdvance` gains the `settle?` parameter it already honors in code, which the runner and D6 rely on; `fakeCalls` as P0 with the D13 shape; the `FakeCall`, `ScenarioResult`, and error-table changes; and removal of the `scenarioRun` daemon operation, which D5 replaces with the CLI-side runner. No published daemon ever implemented `scenarioRun`, so this corrects the documentation rather than removing a v1 operation, and it needs neither a `PROTOCOL_VERSION` bump nor an ADR. With no daemon operation returning it, `ScenarioResult` moves from protocol.md to cli.md's output shapes; the type stays exported from core so M3's MCP server can share it.
 - New CLI dependency: `yaml`, justified in the pull request as D8.
-- Changesets: `@ironbird/core` for `defineFake`, `FakeInstance.calls`, `FakeCall`, `ScenarioResult`, and `INVALID_SCENARIO`; `@ironbird/cli` for the fake operations, `fake`, `scenario run`, and the `yaml` dependency; `@ironbird/react-native` for the `fakeCalls` result and the `UNKNOWN_FAKE` details.
+- Changesets: `@ironbird/core` for `defineFake`, `FakeInstance.calls`, `FakeCall`, `ScenarioResult`, and `INVALID_SCENARIO`; `@ironbird/cli` for the fake operations, `fake`, `scenario run`, `artifactsPath` in `daemon.json`, and the `yaml` dependency; `@ironbird/react-native` for the `fakeCalls` result and the `UNKNOWN_FAKE` details.
 - At the gate: `docs/evals/m2-fakes-and-scenarios.md` records the three criteria with their evidence, including the iOS run with the race planted; the roadmap's M2 criteria and the spec's R6, R11, and R16 are ticked.
 
 ## 11. Deferred items folded in
