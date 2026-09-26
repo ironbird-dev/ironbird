@@ -33,3 +33,5 @@ export { hostAllowed, isSameSite } from './same-site';
 export type { TargetEvent } from './daemon';
 export { loadScenarioFiles, parseScenario } from './scenario/parse';
 export type { Scenario, ScenarioIssue, ScenarioStep } from './scenario/parse';
+export { runScenario } from './scenario/run';
+export type { RunScenarioOptions } from './scenario/run';
