@@ -243,13 +243,20 @@ describe('resolveDaemon', () => {
     if (dir) await rm(dir, { recursive: true, force: true });
   });
 
-  it('prefers the flag, then daemon.json found walking up, then the default', async () => {
+  it('prefers the flag, then daemon.json found walking up, then the default, and reports the artifacts directory', async () => {
     dir = await mkdtemp(path.join(tmpdir(), 'ironbird-client-'));
     await mkdir(path.join(dir, '.ironbird'), { recursive: true });
     await mkdir(path.join(dir, 'src/deep'), { recursive: true });
-    await writeFile(path.join(dir, '.ironbird/daemon.json'), JSON.stringify({ url: 'http://127.0.0.1:4999', pid: 1, startedAt: 0, version: '0.0.0', defaultTarget: 'headless' }));
-    expect(await resolveDaemon({ flag: 'http://10.0.0.2:4567', cwd: dir, env: {} })).toEqual({ url: 'http://10.0.0.2:4567', token: undefined, defaultTarget: undefined });
-    expect(await resolveDaemon({ cwd: path.join(dir, 'src/deep'), env: { IRONBIRD_TOKEN: 't' } })).toEqual({ url: 'http://127.0.0.1:4999', token: 't', defaultTarget: 'headless' });
-    expect(await resolveDaemon({ cwd: tmpdir(), env: {} })).toEqual({ url: 'http://127.0.0.1:4567', token: undefined, defaultTarget: undefined });
+    await writeFile(path.join(dir, '.ironbird/daemon.json'), JSON.stringify({ url: 'http://127.0.0.1:4999', pid: 1, startedAt: 0, version: '0.0.0', defaultTarget: 'headless', artifactsPath: path.join(dir, 'out') }));
+    expect(await resolveDaemon({ flag: 'http://10.0.0.2:4567', cwd: path.join(dir, 'src/deep'), env: {} })).toEqual({ url: 'http://10.0.0.2:4567', token: undefined, defaultTarget: undefined, artifactsDir: path.join(dir, 'src/deep/.ironbird') });
+    expect(await resolveDaemon({ cwd: path.join(dir, 'src/deep'), env: { IRONBIRD_TOKEN: 't' } })).toEqual({ url: 'http://127.0.0.1:4999', token: 't', defaultTarget: 'headless', artifactsDir: path.join(dir, 'out') });
+    expect(await resolveDaemon({ cwd: tmpdir(), env: {} })).toEqual({ url: 'http://127.0.0.1:4567', token: undefined, defaultTarget: undefined, artifactsDir: path.join(tmpdir(), '.ironbird') });
+  });
+
+  it('falls back to the directory holding daemon.json when the file predates artifactsPath', async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-client-'));
+    await mkdir(path.join(dir, '.ironbird'), { recursive: true });
+    await writeFile(path.join(dir, '.ironbird/daemon.json'), JSON.stringify({ url: 'http://127.0.0.1:4999', pid: 1, startedAt: 0, version: '0.0.0' }));
+    expect(await resolveDaemon({ cwd: dir, env: {} })).toEqual({ url: 'http://127.0.0.1:4999', token: undefined, defaultTarget: undefined, artifactsDir: path.join(dir, '.ironbird') });
   });
 });

@@ -171,11 +171,24 @@ async function findArtifactsDir(cwd: string): Promise<string | undefined> {
   }
 }
 
-export async function resolveDaemon(options: { flag?: string; cwd: string; env: Record<string, string | undefined> }): Promise<{ url: string; token?: string; defaultTarget?: string }> {
+export interface ResolvedDaemon {
+  url: string;
+  token?: string;
+  defaultTarget?: string;
+  /**
+   * Where files written by client commands go: the `artifactsPath` the daemon recorded in
+   * `daemon.json`, else the directory that held the `daemon.json` discovery found, else
+   * `<cwd>/.ironbird`, including under `--daemon <url>`, which bypasses discovery.
+   */
+  artifactsDir: string;
+}
+
+export async function resolveDaemon(options: { flag?: string; cwd: string; env: Record<string, string | undefined> }): Promise<ResolvedDaemon> {
   const token = options.env['IRONBIRD_TOKEN'];
-  if (options.flag) return { url: options.flag, token, defaultTarget: undefined };
-  const artifactsDir = await findArtifactsDir(options.cwd);
-  const info = artifactsDir ? await readDaemonInfo(artifactsDir) : undefined;
-  if (info) return { url: info.url, token, defaultTarget: info.defaultTarget };
-  return { url: DEFAULT_DAEMON_URL, token, defaultTarget: undefined };
+  const fallback = path.resolve(options.cwd, '.ironbird');
+  if (options.flag) return { url: options.flag, token, defaultTarget: undefined, artifactsDir: fallback };
+  const found = await findArtifactsDir(options.cwd);
+  const info = found ? await readDaemonInfo(found) : undefined;
+  if (info && found) return { url: info.url, token, defaultTarget: info.defaultTarget, artifactsDir: info.artifactsPath ?? found };
+  return { url: DEFAULT_DAEMON_URL, token, defaultTarget: undefined, artifactsDir: fallback };
 }

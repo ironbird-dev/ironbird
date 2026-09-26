@@ -8,6 +8,8 @@ export interface DaemonInfo {
   version: string;
   defaultTarget?: string;
   bridgeUrl?: string;
+  /** The daemon's resolved artifacts directory, so client commands can write under it without loading the config. */
+  artifactsPath?: string;
 }
 
 export const DAEMON_INFO_FILE = 'daemon.json';
@@ -30,6 +32,7 @@ export async function readDaemonInfo(artifactsPath: string): Promise<DaemonInfo 
     if (typeof candidate.version !== 'string') return undefined;
     if (candidate.defaultTarget !== undefined && typeof candidate.defaultTarget !== 'string') return undefined;
     if (candidate.bridgeUrl !== undefined && typeof candidate.bridgeUrl !== 'string') return undefined;
+    if (candidate.artifactsPath !== undefined && typeof candidate.artifactsPath !== 'string') return undefined;
     return candidate as DaemonInfo;
   } catch {
     return undefined;
