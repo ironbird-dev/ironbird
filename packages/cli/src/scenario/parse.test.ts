@@ -1,6 +1,9 @@
 import { isIronbirdError } from '@ironbird/core';
-import { describe, expect, it } from 'vitest';
-import { parseScenario, type ScenarioIssue } from './parse';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { loadScenarioFiles, parseScenario, type ScenarioIssue } from './parse';
 
 const FILE = '/app/ironbird/scenarios/x.yaml';
 
@@ -134,5 +137,47 @@ describe('parseScenario', () => {
 
   it('counts the extra issues in the message', () => {
     expect(failure('name: X\nsteps:\n  - clock: soon\n  - clock: later\n').message).toBe(`Invalid scenario ${FILE}:3: steps.0.clock: Invalid duration "soon"; use a number with an optional ms, s, or m suffix (and 1 more)`);
+  });
+});
+
+describe('loadScenarioFiles', () => {
+  let dir: string;
+  afterEach(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  it('expands directories to their yaml files in name order, resolves against cwd, and parses everything', async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-scenarios-'));
+    await mkdir(path.join(dir, 'scenarios/nested'), { recursive: true });
+    await writeFile(path.join(dir, 'scenarios/b.yaml'), 'name: B\nsteps:\n  - reset: true\n');
+    await writeFile(path.join(dir, 'scenarios/a.yml'), 'name: A\nsteps:\n  - reset: true\n');
+    await writeFile(path.join(dir, 'scenarios/notes.txt'), 'not a scenario');
+    await writeFile(path.join(dir, 'scenarios/nested/c.yaml'), 'name: C\nsteps:\n  - reset: true\n');
+    await writeFile(path.join(dir, 'single.yaml'), 'name: Single\nsteps:\n  - reset: true\n');
+    const loaded = await loadScenarioFiles(['scenarios', 'single.yaml'], dir);
+    expect(loaded.map((entry) => [entry.file, entry.scenario.name])).toEqual([
+      [path.join(dir, 'scenarios/a.yml'), 'A'],
+      [path.join(dir, 'scenarios/b.yaml'), 'B'],
+      [path.join(dir, 'single.yaml'), 'Single'],
+    ]);
+  });
+
+  it('fails with INVALID_SCENARIO for a missing path or a directory without scenario files', async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-scenarios-'));
+    await mkdir(path.join(dir, 'empty'));
+    const missing = await loadScenarioFiles(['nope.yaml'], dir).catch((error: unknown) => error);
+    expect(isIronbirdError(missing) && missing.code).toBe('INVALID_SCENARIO');
+    expect(isIronbirdError(missing) && missing.details).toEqual({ file: path.join(dir, 'nope.yaml'), issues: [{ path: [], message: 'no such file or directory' }] });
+    const empty = await loadScenarioFiles(['empty'], dir).catch((error: unknown) => error);
+    expect(isIronbirdError(empty) && empty.details).toEqual({ file: path.join(dir, 'empty'), issues: [{ path: [], message: 'no scenario files (*.yaml, *.yml) in directory' }] });
+  });
+
+  it('parses every file before returning, so one invalid file fails the whole load', async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-scenarios-'));
+    await writeFile(path.join(dir, 'a.yaml'), 'name: A\nsteps:\n  - reset: true\n');
+    await writeFile(path.join(dir, 'b.yaml'), 'name: B\nsteps:\n  - reset: true\n    extra: 1\n');
+    const error = await loadScenarioFiles([dir], dir).catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('INVALID_SCENARIO');
+    expect(isIronbirdError(error) && (error.details as { file: string }).file).toBe(path.join(dir, 'b.yaml'));
   });
 });

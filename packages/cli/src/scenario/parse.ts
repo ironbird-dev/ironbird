@@ -1,4 +1,6 @@
 import { IronbirdError, isIronbirdError, messageOf, parseCondition, type Condition } from '@ironbird/core';
+import { readFile, readdir, stat } from 'node:fs/promises';
+import path from 'node:path';
 import { LineCounter, isMap, isNode, isScalar, isSeq, parseDocument, type YAMLMap } from 'yaml';
 import { z } from 'zod';
 import { UsageError, parseDuration } from '../cli/durations';
@@ -238,4 +240,32 @@ export function parseScenario(source: string, file: string): Scenario {
     ...(top.data.target === undefined ? {} : { target: top.data.target }),
     steps,
   };
+}
+
+const SCENARIO_FILE = /\.ya?ml$/i;
+
+/**
+ * Resolves `paths` against `cwd`, expands each directory to its `*.yaml` and `*.yml` files in
+ * name order (no recursion), and parses every file before returning, so an authoring error in
+ * any file costs nothing. A missing path or an empty directory is `INVALID_SCENARIO` too.
+ */
+export async function loadScenarioFiles(paths: string[], cwd: string): Promise<Array<{ file: string; scenario: Scenario }>> {
+  const files: string[] = [];
+  for (const entry of paths) {
+    const resolved = path.resolve(cwd, entry);
+    const info = await stat(resolved).catch(() => undefined);
+    if (!info) throw new IronbirdError('INVALID_SCENARIO', `No such file or directory: ${resolved}`, { file: resolved, issues: [{ path: [], message: 'no such file or directory' }] });
+    if (!info.isDirectory()) {
+      files.push(resolved);
+      continue;
+    }
+    const names = (await readdir(resolved)).filter((name) => SCENARIO_FILE.test(name)).sort();
+    if (names.length === 0) {
+      throw new IronbirdError('INVALID_SCENARIO', `No scenario files (*.yaml, *.yml) in ${resolved}`, { file: resolved, issues: [{ path: [], message: 'no scenario files (*.yaml, *.yml) in directory' }] });
+    }
+    files.push(...names.map((name) => path.join(resolved, name)));
+  }
+  const loaded: Array<{ file: string; scenario: Scenario }> = [];
+  for (const file of files) loaded.push({ file, scenario: parseScenario(await readFile(file, 'utf8'), file) });
+  return loaded;
 }
