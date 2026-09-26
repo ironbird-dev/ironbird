@@ -161,7 +161,6 @@ The daemon sends `{ "type": "ping", "t": <number> }` every 5 s, and the app repl
 | `status` | none | `{ version, protocol, uptimeMs, targets: TargetInfo[] }` |
 | `screenshot` | `target?`, `device?`, `out?` | `Screenshot` |
 | `step` | `name`, `payload?`, `target?`, `device?`, `path?`, `settle?` | `StepResult` plus `screenshot: Screenshot` and `settledBeforeCapture: boolean` |
-| `scenarioRun` | `file`, `target?`, `bail?` | `ScenarioResult` |
 
 `settle` in `step` has the same shape as in `dispatch`. `step` captures the screenshot after settling ends, whether or not it reached idle, and `settle: false` captures right after the dispatch. A `SCREENSHOT_FAILED` from `step` means the dispatch itself already applied; only the capture that follows it failed.
 
@@ -246,22 +245,14 @@ interface TargetInfo {
   rev: number;
 }
 
-interface ScenarioResult {
-  scenario: string;
-  target: string;
-  passed: boolean;
-  durationMs: number;
-  failedStep?: { index: number; step: unknown; actual?: unknown; error?: ErrorShape };
-  skipped: number[];         // indexes of optional steps skipped as unsupported
-  artifacts: string;         // directory holding events, results, and screenshots for this run
-}
-
 interface ErrorShape {
   code: ErrorCode;
   message: string;
   details?: unknown;
 }
 ```
+
+`ScenarioResult`, the output of `ironbird scenario run`, is documented in [cli.md's output shapes](cli.md#output-shapes): no daemon operation returns it, and it is exported from `@ironbird/core` only so other packages can share the type.
 
 A call that returns a promise is recorded as `pending` and updated to `resolved` or `rejected` when it settles; `fakeCalls` returns copies, so read again for the final outcome of a call that was pending.
 
@@ -285,6 +276,7 @@ Capabilities say which operations a target supports, and an operation whose capa
 | `SCREENSHOT_FAILED` | The host capture tool failed, or the capture or device resolution timed out (a wedged `simctl`/`adb`/`resolveDevice`) | `{ tool, stderr }` |
 | `HEADLESS_LOAD_FAILED` | The headless entry failed to load | `{ entry, message, importChain? }` |
 | `INVALID_CONFIG` | `ironbird.config.ts` is missing a default export or fails validation | `{ file, issues }` |
+| `INVALID_SCENARIO` | A scenario file fails to parse or validate; raised by the CLI before any operation is sent, never by a target | `{ file, issues }` |
 | `CLOCK_RUNAWAY` | `clockAdvance` exceeded 10,000 timer firings | `{ labels }` |
 | `PROTOCOL_MISMATCH` | Handshake versions differ | `{ daemon, bridge }` |
 | `APP_MISMATCH` | A bridge's app id differs from the app this daemon session serves | `{ expected, received }` |

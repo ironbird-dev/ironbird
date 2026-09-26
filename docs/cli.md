@@ -28,7 +28,7 @@ Payloads are JSON, and an omitted payload means `{}`. Condition values for `--eq
 |---|---|---|
 | 0 | Success, including headless steps that end quiescent | |
 | 1 | Operation failed | `INVALID_PAYLOAD`, `UNKNOWN_COMMAND`, `UNKNOWN_FAKE`, `UNKNOWN_CONTROL`, `DISPATCH_FAILED`, `UNSUPPORTED`, `SCREENSHOT_FAILED`, `TARGET_DISCONNECTED`, `CLOCK_RUNAWAY`, `INTERNAL` |
-| 2 | Usage or configuration error | Bad arguments, `AMBIGUOUS_TARGET`, `AMBIGUOUS_DEVICE`, `HEADLESS_LOAD_FAILED`, `INVALID_CONFIG`, `UNAUTHORIZED`, `PROTOCOL_MISMATCH`, `APP_MISMATCH` |
+| 2 | Usage or configuration error | Bad arguments, `AMBIGUOUS_TARGET`, `AMBIGUOUS_DEVICE`, `HEADLESS_LOAD_FAILED`, `INVALID_CONFIG`, `INVALID_SCENARIO`, `UNAUTHORIZED`, `PROTOCOL_MISMATCH`, `APP_MISMATCH` |
 | 3 | Applied, but not settled within the timeout | See `settle` in the result |
 | 4 | Condition or assertion not met | `WAIT_TIMEOUT`, a failed scenario step |
 | 5 | Nothing to talk to | Daemon unreachable, `NO_TARGET` |
@@ -73,6 +73,23 @@ Errors print to stdout as JSON too, so agents parse one stream:
 In a TTY, the same data is printed in a readable form.
 
 The CLI prints the daemon's `result` object, adding `target` to results that don't already carry it, such as `state` and `reset`. Errors are the daemon's `error` object under an `error` key, without the `ok` envelope described in [protocol.md](protocol.md#21-rpc).
+
+`scenario run` prints one scenario result per file. The type is exported from `@ironbird/core` so other packages can share it:
+
+```ts
+interface ScenarioResult {
+  scenario: string;           // the scenario's name
+  file: string;               // absolute path of the scenario file
+  target: string;             // the target id the run was pinned to
+  passed: boolean;
+  durationMs: number;
+  stepsRun: number;           // steps that ran, including a failed one, excluding skipped ones
+  failedStep?: { index: number; step: unknown; repetition?: number; expected?: unknown; actual?: unknown; error?: ErrorShape };
+  skipped: number[];          // indexes of optional steps skipped because the target can't run them
+  artifacts: string | null;   // the run directory, or null when the caller turned artifacts off
+  artifactErrors?: string[];  // artifact files that could not be written, for example after a disconnect
+}
+```
 
 ## Commands
 

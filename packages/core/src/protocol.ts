@@ -92,12 +92,26 @@ export interface ErrorShape {
   details?: unknown;
 }
 
+/**
+ * The output of the CLI's scenario runner, one per scenario file. No daemon operation returns
+ * it; it lives here so the M3 MCP server and `@ironbird/testing` can share the type.
+ */
 export interface ScenarioResult {
+  /** The scenario's `name`. */
   scenario: string;
+  /** Absolute path of the scenario file. */
+  file: string;
+  /** The target id the run was pinned to, from the first `describe`'s envelope. */
   target: string;
   passed: boolean;
   durationMs: number;
-  failedStep?: { index: number; step: unknown; actual?: unknown; error?: ErrorShape };
+  /** Steps that ran, including a failed one and excluding skipped ones. */
+  stepsRun: number;
+  failedStep?: { index: number; step: unknown; repetition?: number; expected?: unknown; actual?: unknown; error?: ErrorShape };
+  /** Indexes of optional steps skipped because the target can't run them. */
   skipped: number[];
-  artifacts: string;
+  /** The run directory, or null when the caller turned artifacts off. */
+  artifacts: string | null;
+  /** Artifact files that could not be written, for example the state after a disconnect. */
+  artifactErrors?: string[];
 }

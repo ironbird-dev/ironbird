@@ -1,6 +1,6 @@
 import type { ErrorCode, StepResult } from '@ironbird/core';
 
-const USAGE: ReadonlySet<ErrorCode> = new Set(['AMBIGUOUS_TARGET', 'AMBIGUOUS_DEVICE', 'HEADLESS_LOAD_FAILED', 'INVALID_CONFIG', 'UNAUTHORIZED', 'PROTOCOL_MISMATCH', 'APP_MISMATCH']);
+const USAGE: ReadonlySet<ErrorCode> = new Set(['AMBIGUOUS_TARGET', 'AMBIGUOUS_DEVICE', 'HEADLESS_LOAD_FAILED', 'INVALID_CONFIG', 'INVALID_SCENARIO', 'UNAUTHORIZED', 'PROTOCOL_MISMATCH', 'APP_MISMATCH']);
 const CONDITION: ReadonlySet<ErrorCode> = new Set(['WAIT_TIMEOUT']);
 const UNREACHABLE: ReadonlySet<ErrorCode> = new Set(['NO_TARGET']);
 
