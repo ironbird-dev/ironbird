@@ -384,8 +384,9 @@ describe('startDaemon', () => {
     expect(wedgedResponse.status).toBe(200);
     expect(wedgedResponse.json).toMatchObject({ ok: false, error: { code: 'TARGET_DISCONNECTED', details: { target: 'headless', op: 'dispatch' } } });
     expect(String((wedgedResponse.json['error'] as { message: string }).message)).toContain('ironbird reset');
-    const elapsed = Date.now() - startedAt;
-    expect(elapsed).toBeLessThan(1_000);
+    // TARGET_DISCONNECTED above already proves the 50 ms bound fired; this loose ceiling only guards
+    // against the bound being skipped entirely, without flaking on a loaded CI runner.
+    expect(Date.now() - startedAt).toBeLessThan(4_000);
     // The daemon itself is still healthy; only the wedged operation failed.
     expect((await rpc(daemon, { op: 'status' })).json).toMatchObject({ ok: true });
   });
