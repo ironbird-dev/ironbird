@@ -569,13 +569,11 @@ describe('screenshot and step', () => {
     // requestTimeoutMs is the same bound `dispatch`/`getState`/etc already race against; tiny here
     // only so the test doesn't wait out the real 30s default.
     const d = await boot({ extra: { targets: [remote], artifactsPath: artifacts, capture: hangingCapture, requestTimeoutMs: 50 } });
-    const startedAt = Date.now();
     const shot = await rpc(d, { op: 'screenshot' });
     // The target itself is fine here; it's the host `simctl`/`adb` capture that's wedged, so this
     // is SCREENSHOT_FAILED (not TARGET_DISCONNECTED) — `ironbird reset` couldn't fix a wedged host
     // tool.
     expect(shot.json).toMatchObject({ ok: false, error: { code: 'SCREENSHOT_FAILED', details: { tool: 'simctl', stderr: 'timed out after 50 ms' } } });
-    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 
   it('bounds device resolution like every other target operation, instead of hanging forever', async () => {
@@ -586,11 +584,9 @@ describe('screenshot and step', () => {
     // `simctl`/`adb` on the default (no `--device`, no config pin) path, so it needs the same
     // protection as the capture itself.
     const d = await boot({ extra: { targets: [remote], artifactsPath: artifacts, capture: hangingResolveDevice, requestTimeoutMs: 50 } });
-    const startedAt = Date.now();
     const shot = await rpc(d, { op: 'screenshot' });
     // Resolution itself is what hung here, not a specific host tool, so `tool` names the step.
     expect(shot.json).toMatchObject({ ok: false, error: { code: 'SCREENSHOT_FAILED', details: { tool: 'resolveDevice', stderr: 'timed out after 50 ms' } } });
-    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 });
 

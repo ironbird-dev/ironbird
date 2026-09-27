@@ -261,7 +261,7 @@ Every run, passed or failed, writes a directory under the daemon's artifacts dir
 | `events.jsonl` | The events recorded during the run, one per line |
 | `state.json` | The whole state after the last step |
 | `calls/<fake>.json` | Each fake's port calls during the run, on targets that declare `fakes` |
-| `<index>-<name>.png` | One per `screenshot` step, named by the step's index and value |
+| `<index>-<name>.png` | One per `screenshot` step, named by the step's index and its value made filesystem-safe |
 
 "During the run" means after the run's first `describe`, or after the last `reset` step, which restarts the event and call logs. Collection is best effort: a file that cannot be gathered, such as the state after a `TARGET_DISCONNECTED`, is left out and named in `artifactErrors`.
 
@@ -318,7 +318,7 @@ Starts an MCP server over stdio that proxies to the daemon. Tools are listed [be
 
 ## Scenario files
 
-Scenarios live in `ironbird/scenarios/*.yaml` by default. The example app's gate scenario, which reproduces the planted race:
+`ironbird/scenarios/` is the conventional location for scenario files, the config's `scenarios` key; `scenario run` does not read it implicitly, so you pass it (or an individual file) as the command's path argument. The example app's gate scenario, which reproduces the planted race:
 
 ```yaml
 name: Payment success arrives before order confirmation

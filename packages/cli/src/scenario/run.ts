@@ -1,7 +1,7 @@
 import { IronbirdError, conditionHolds, isIronbirdError, suggestNames, toErrorShape, type Description, type ScenarioResult, type StepResult } from '@ironbird/core';
 import path from 'node:path';
 import type { DaemonClient } from '../cli/client';
-import { createRunArtifacts, type RunArtifacts } from './artifacts';
+import { createRunArtifacts, scenarioSlug, type RunArtifacts } from './artifacts';
 import type { Scenario, ScenarioStep } from './parse';
 
 export interface RunScenarioOptions {
@@ -102,7 +102,7 @@ async function runStep(client: DaemonClient, target: string, step: ScenarioStep,
       return;
     }
     case 'screenshot':
-      await client.rpc('screenshot', runDir === null ? {} : { out: path.join(runDir, `${index}-${step.name}.png`) }, target);
+      await client.rpc('screenshot', runDir === null ? {} : { out: path.join(runDir, `${index}-${scenarioSlug(step.name)}.png`) }, target);
       return;
     case 'reset':
       await client.rpc('reset', {}, target);

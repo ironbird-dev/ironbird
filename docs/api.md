@@ -468,7 +468,7 @@ useEffect(() => {
 
 ## @ironbird/cli
 
-The binary is documented in [cli.md](cli.md). The package also exports the pieces the binary is built from, for embedding a daemon in another process: `loadConfig`, `loadTypeScriptModule`, `createHeadlessTarget`, `startDaemon`, `readDaemonInfo` / `writeDaemonInfo` / `removeDaemonInfo`, `buildProgram`, `runServe`, `isLoopbackHost`, and `parseCondition` / `conditionHolds`.
+The binary is documented in [cli.md](cli.md). The package also exports the pieces the binary is built from, for embedding a daemon in another process: `loadConfig`, `loadTypeScriptModule`, `createHeadlessTarget`, `startDaemon`, `readDaemonInfo` / `writeDaemonInfo` / `removeDaemonInfo`, `buildProgram`, `runServe`, `isLoopbackHost`, `parseCondition` / `conditionHolds`, and the scenario runner: `parseScenario` and `loadScenarioFiles` turn a file (or a directory of them) into a validated `Scenario`, made of `ScenarioStep`s and reporting any authoring error as a `ScenarioIssue`; `runScenario` runs one `Scenario` against a `DaemonClient` and returns its `ScenarioResult`, per its `RunScenarioOptions`, whose `reset` resets a target that declares the `reset` capability before the first step (design D14; `scenario run` always sets it).
 
 ### defineConfig (P0)
 

@@ -306,8 +306,9 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
     .option('--bail', 'stop after the first failed scenario')
     .action(
       wrap(async (ctx, paths: string[], opts: { bail?: boolean }) => {
-        // Loaded on demand: the scenario modules pull in yaml and zod, which no other client
-        // command needs on its startup path.
+        // Loaded on demand: the scenario modules pull in yaml and zod, which no other command in
+        // this binary's startup path needs (the package's `index.ts` re-exports them for
+        // embedders, but that is a separate entry point from `bin.js`).
         const [{ loadScenarioFiles }, { runScenario }] = await Promise.all([import('../scenario/parse'), import('../scenario/run')]);
         // Every file is parsed before any run, so an authoring error costs nothing.
         const scenarios = await loadScenarioFiles(paths, io.cwd);

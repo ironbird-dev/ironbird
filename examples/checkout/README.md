@@ -37,8 +37,10 @@ Restart Metro the same way without the variable to unplant it. `ironbird fakes` 
 
 ```sh
 ironbird scenario run ironbird/scenarios                 # every scenario, headless by default
-ironbird scenario run ironbird/scenarios --target ios    # the three both-target scenarios pass; missing-echo fails with UNSUPPORTED at its clock step, and reader-disconnect fails at its first expect, because a remote settle finishes the collection first
+ironbird scenario run ironbird/scenarios --target ios    # missing-echo fails with UNSUPPORTED at its clock step, and reader-disconnect fails at its first expect, because a remote settle finishes the collection first
 ```
+
+On a remote target, `scenario run` does not reset between files, so the scenarios share the app's state: running the three both-target scenarios together on iOS makes later files see the earlier ones' cart quantities and totals accumulate, so they fail (reproduced with `duplicate-success` failing on an actual of 9000 and the race scenario on 13500). Run a both-target file one at a time against a freshly reloaded app, for example `xcrun simctl openurl <udid> exp://127.0.0.1:8081` after terminating Expo Go, or pressing `r` in Metro.
 
 Each run writes its result, events, final state, and fake calls under `.ironbird/runs/`.
 

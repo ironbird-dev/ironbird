@@ -248,6 +248,28 @@ describe('runScenario', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('makes a screenshot step name filesystem-safe, so it cannot write outside the run directory', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'ironbird-runs-'));
+    try {
+      const { client, calls } = scripted(
+        {
+          describe: description({ app: { id: 'a', platform: 'ios' }, fakes: {}, capabilities: ['settle', 'events'] }),
+          screenshot: { path: '/x.png', device: 'SIM-1', capturedAt: 1 },
+          events: { events: [], nextSeq: 0, truncated: false },
+          getState: { rev: 0, path: '', value: {} },
+        },
+        { envelopeTarget: 'ios' },
+      );
+      const result = await runScenario(client, load('name: Escape\nsteps:\n  - screenshot: ../escape/x\n'), { file: '/app/s.yaml', artifacts: root });
+      const dir = result.artifacts as string;
+      const out = (calls.find((call) => call.op === 'screenshot')?.params['out'] as string) ?? '';
+      expect(path.dirname(out)).toBe(dir);
+      expect(out).toBe(path.join(dir, '0-escape-x.png'));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('runScenario reset option', () => {

@@ -3,7 +3,7 @@
 | Criterion | Result | Evidence |
 |---|---|---|
 | A scenario reproduces the planted race: it fails with `PLANT_RACE=1` and passes without it | met | `packages/cli/test/scenarios.integration.test.ts`, "fails at the last expect with PLANT_RACE=1 and passes without it", green in `pnpm test` on Node 22.14.0 and 26.10.0 (2026-09-26). On both targets: on iOS with the race planted in the bundle, `scenario run ... --target ios` exited 4 with `failedStep.index` 9 and `actual` 0 (transcript below) |
-| The same scenario, with clock steps marked optional, reaches the same final state on the headless and iOS targets | met | `examples/checkout/test/scenarios.device.test.ts`, "reaches the same final state on a freshly reloaded iOS app and a freshly reset headless target", passes with `pnpm test:device` (2026-09-26): iOS skipped step 4, headless skipped none, and the two root states are equal, `ui` included (below) |
+| The same scenario, with clock steps marked optional, reaches the same final state on the headless and iOS targets | met | `examples/checkout/test/scenarios.device.test.ts`, "reaches the same final state on a freshly reloaded iOS app and a freshly reset headless target", is a device test: it runs only with `pnpm test:device` against a booted simulator, not in CI, and passed there (2026-09-26): iOS skipped step 4, headless skipped none, and the two root states are equal, `ui` included (below) |
 | 100 consecutive headless runs of every example scenario show 0 divergences | met | "runs every example scenario 100 times with no divergence": 5 scenarios × 100 runs, `reset` before each, pass/fail result, final state, and event log equal to run 1 in every run; 1.36 s on Node 26.10.0 and 1.80 s on Node 22.14.0 (below) |
 
 ## The scenarios
