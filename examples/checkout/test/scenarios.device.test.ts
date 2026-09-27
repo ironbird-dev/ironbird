@@ -18,6 +18,14 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // The race scenario leaves the api fake's echo in manual on the shared iOS app; restore the
+  // default before other device files (e.g. remote.device.test.ts) run against it, tolerating
+  // failure here so a stuck target still lets teardown stop the daemon.
+  await ironbird('fake', 'api', 'setEcho', '{"mode":"auto"}', '--target', 'ios').catch(() => undefined);
+  // The scenario also leaves the cart, payment, and order populated, and `reset` isn't a capability
+  // remote targets support (remote-target.ts strips it), so a reload is the only way to hand the
+  // next device file a clean cart; also tolerated so teardown always reaches the daemon stop below.
+  await reloadApp().catch(() => undefined);
   await daemon?.stop();
 });
 
