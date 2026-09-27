@@ -103,8 +103,8 @@ On 2026-09-10 Shopify described its answer for native apps: business logic decou
 - [ ] `createTracker({ enabled: false })` returns an inert tracker whose `wrap` returns the port untouched, so release builds carry no effect tracking
 
 **R6. Fakes with controls.**
-- [ ] `defineFake` declares controls with Zod schemas, and they appear in `ironbird fakes`
-- [ ] `ironbird fake <name> <control>` validates the payload, runs the control, and returns the same result shape as `send`
+- [x] `defineFake` declares controls with Zod schemas, and they appear in `ironbird fakes`
+- [x] `ironbird fake <name> <control>` validates the payload, runs the control, and returns the same result shape as `send`
 
 **R7. Event recorder.**
 - [ ] Events carry monotonic sequence numbers; `events --since <seq>` returns only newer events
@@ -127,9 +127,9 @@ On 2026-09-10 Shopify described its answer for native apps: business logic decou
 - [ ] Several booted devices with no `--device` fails with `AMBIGUOUS_DEVICE`
 
 **R11. Scenario files.**
-- [ ] YAML steps: `send`, `fake`, `clock`, `wait`, `expect`, `screenshot`, `reset`
-- [ ] One file runs against headless and remote targets; unsupported steps fail with `UNSUPPORTED` unless marked `optional: true`
-- [ ] A failing step reports its index, the expected and actual values, and where artifacts were written
+- [x] YAML steps: `send`, `fake`, `clock`, `wait`, `expect`, `screenshot`, `reset`
+- [x] One file runs against headless and remote targets; unsupported steps fail with `UNSUPPORTED` unless marked `optional: true`
+- [x] A failing step reports its index, the expected and actual values, and where artifacts were written
 
 **R12. Bundle verification.**
 - [ ] `ironbird verify-bundle <path>` exits non-zero if the bridge marker appears in any file under the path, including Hermes bytecode
@@ -142,7 +142,7 @@ On 2026-09-10 Shopify described its answer for native apps: business logic decou
 | R13 | MCP server (`ironbird mcp`) | Tools mirror the CLI; `ironbird_step` returns the screenshot as image content |
 | R14 | Agent skill | A skill file that teaches the loop: describe, send, wait, then escalate to device checks |
 | R15 | Snapshots | `snapshot save` and `load` for targets that implement `persist` and `restore`; others return `UNSUPPORTED` |
-| R16 | Fake call log | `ironbird fake <name> --calls` lists recorded port calls with arguments and outcomes |
+| R16 | Fake call log | `ironbird fake <name> --calls` lists recorded port calls with arguments and outcomes. Delivered in M2 with the D13 cursor shape; see docs/evals/m2-fakes-and-scenarios.md |
 | R17 | `watch` | Streams state revisions and JSON Patch diffs until interrupted |
 | R18 | `@ironbird/testing` | Runs scenarios in Vitest or Jest; model-based testing helper built on fast-check |
 | R19 | Adapters | `@ironbird/xstate` and `@ironbird/redux` targets, with persistence where the library supports it |

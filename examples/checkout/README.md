@@ -27,6 +27,8 @@ On a device the flag is baked into the bundle, because Expo inlines `EXPO_PUBLIC
 EXPO_PUBLIC_PLANT_RACE=1 npx expo start --ios --clear
 ```
 
+With several simulators booted, `--ios` cannot tell them apart; start Metro without it and open the app on the simulator you mean by udid: `EXPO_PUBLIC_PLANT_RACE=1 npx expo start --clear`, then `xcrun simctl openurl <udid> exp://127.0.0.1:8081`.
+
 Restart Metro the same way without the variable to unplant it. `ironbird fakes` lists the two fakes, `reader` and `api`, with their controls on either target.
 
 ## Scenarios
