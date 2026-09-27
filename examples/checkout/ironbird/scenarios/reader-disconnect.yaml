@@ -1,0 +1,22 @@
+name: Reader disconnects while collecting
+description: The card reader drops its connection while it is collecting the card. The payment fails, the reader shows as disconnected, and the late collection result is ignored.
+target: headless   # a remote settle would finish the 1,200 ms collection before the disconnect could arrive
+steps:
+  - send: cart.addItem
+    payload: { sku: cut-45, qty: 1 }
+  - send: payment.start
+    payload: { method: card }
+  - expect: payment.status
+    equals: collecting
+  - fake: reader
+    control: emit
+    payload: { event: disconnected }
+  - expect: payment.status
+    equals: failed
+  - expect: payment.error
+    equals: Reader disconnected
+  - expect: reader.connected
+    equals: false
+  - clock: 1200ms   # the collection still resolves; its token arrives on a failed payment and changes nothing
+  - expect: payment.status
+    equals: failed

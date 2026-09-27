@@ -1,0 +1,17 @@
+name: Checkout with the saved card
+description: The happy path. A haircut is paid with the stored card; the fake server confirms the order and the payment, and the receipt shows the total.
+steps:
+  - send: ui.setMotion
+    payload: { motion: reduced }   # the api.md rule for agent-driven builds
+  - send: cart.addItem
+    payload: { sku: cut-45, qty: 1 }
+  - send: payment.start
+    payload: { method: saved }
+  - clock: 800ms
+    optional: true   # headless: the 300 ms submission plus the 500 ms echo; a remote target's settle already waited for both
+  - expect: payment.status
+    equals: succeeded
+  - expect: order.status
+    equals: completed
+  - expect: order.totalCents
+    equals: 4500

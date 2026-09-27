@@ -1,0 +1,23 @@
+name: Duplicate payment success after completion
+description: The server sends payment.succeeded again, twice, after the order has completed. The receipt keeps its total and the order stays completed.
+steps:
+  - send: ui.setMotion
+    payload: { motion: reduced }   # the api.md rule for agent-driven builds
+  - send: cart.addItem
+    payload: { sku: cut-45, qty: 1 }
+  - send: payment.start
+    payload: { method: saved }
+  - clock: 800ms
+    optional: true   # headless: the submission and the automatic echo; a remote target's settle already waited for both
+  - wait: order.status
+    equals: completed
+  - fake: api
+    control: emit
+    payload: { event: payment.succeeded }
+    repeat: 2
+  - expect: order.status
+    equals: completed
+  - expect: order.totalCents
+    equals: 4500
+  - expect: payment.status
+    equals: succeeded

@@ -1,0 +1,21 @@
+name: Missing server echo times out
+description: The server never confirms. Thirty seconds after the submission resolves, the payment fails with a timeout and no order exists.
+target: headless   # needs 30 s of clock
+steps:
+  - fake: api
+    control: setEcho
+    payload: { mode: manual }
+  - send: cart.addItem
+    payload: { sku: cut-45, qty: 1 }
+  - send: payment.start
+    payload: { method: saved }
+  - clock: 300ms   # resolves the submission; the 30 s server timeout starts here, not at payment.start
+  - wait: payment.status
+    equals: awaitingServerEcho
+  - clock: 30s
+  - expect: payment.status
+    equals: failed
+  - expect: payment.error
+    equals: Server did not confirm within 30 s
+  - expect: order.status
+    equals: none

@@ -29,6 +29,17 @@ EXPO_PUBLIC_PLANT_RACE=1 npx expo start --ios --clear
 
 Restart Metro the same way without the variable to unplant it. `ironbird fakes` lists the two fakes, `reader` and `api`, with their controls on either target.
 
+## Scenarios
+
+`ironbird/scenarios/` holds five scenarios: the saved-card happy path, the planted race (`race-success-before-confirmation.yaml`, the M2 gate scenario, which fails only with the race planted), a duplicated `payment.succeeded`, a missing server echo that times out, and a reader disconnect while collecting. The first three run on both targets; the last two declare `target: headless` because they need the manual clock or a settle that does not outrun the reader. With the daemon running:
+
+```sh
+ironbird scenario run ironbird/scenarios                 # every scenario, headless by default
+ironbird scenario run ironbird/scenarios --target ios    # the three both-target scenarios pass; missing-echo fails with UNSUPPORTED at its clock step, and reader-disconnect fails at its first expect, because a remote settle finishes the collection first
+```
+
+Each run writes its result, events, final state, and fake calls under `.ironbird/runs/`.
+
 ## Monorepo note
 
 Metro resolves through pnpm's isolated node_modules with no extra configuration (Expo SDK 57).

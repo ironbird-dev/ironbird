@@ -1,0 +1,26 @@
+name: Payment success arrives before order confirmation
+description: The server reports the payment succeeded before it confirms the order and its total. The receipt must still show the total.
+steps:
+  - send: ui.setMotion
+    payload: { motion: reduced }   # the api.md rule for agent-driven builds
+  - fake: api
+    control: setEcho
+    payload: { mode: manual }
+  - send: cart.addItem
+    payload: { sku: cut-45, qty: 1 }
+  - send: payment.start
+    payload: { method: saved }
+  - clock: 300ms
+    optional: true   # headless: resolves the submission; a remote target's settle already waited for it
+  - wait: payment.status
+    equals: awaitingServerEcho
+  - fake: api
+    control: emit
+    payload: { event: payment.succeeded }
+  - fake: api
+    control: emit
+    payload: { event: order.confirmed }
+  - expect: order.status
+    equals: completed
+  - expect: order.totalCents
+    equals: 4500
