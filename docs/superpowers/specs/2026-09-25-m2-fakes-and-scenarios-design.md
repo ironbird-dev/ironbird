@@ -44,6 +44,7 @@ Out of scope: `snapshot` steps (P1), the MCP server (M3), a daemon-side scenario
 | D11 | The 100-run determinism check is a serial-project test that runs in CI, calling the runner in process, with an environment variable for longer local soaks | Maintainer decision; determinism stays proven on every commit. In process is required for the time budget (§8) |
 | D12 | The example's device build plants the race when `EXPO_PUBLIC_PLANT_RACE=1`, the way the headless entry reads `PLANT_RACE` | Today only the headless entry can plant the race, which makes the roadmap's "on both targets" wording unachievable. Expo inlines `EXPO_PUBLIC_*`, as `index.js` already relies on. The value is fixed when Metro bundles, so the planted iOS run needs Metro restarted with the variable set and its cache cleared |
 | D13 | `fakeCalls` returns a cursor like `events`: params `since?` and `limit?`, result `{ calls, nextSeq, truncated }` | The runner has to learn where each fake's log stands at the start of a run without transferring up to 10,000 calls, and agents paging through calls get the same model as events |
+| D14 | `ironbird scenario run` resets a target that declares `reset` before each file, through an opt-in `reset` option on `runScenario`; remote apps run against their current state | Found while running the example scenarios: without it, files share app state, so `scenario run` on a directory depends on file order and on anything done by hand before it. Opt-in, so callers that reset themselves keep their step counts |
 
 ## 3. Work breakdown
 

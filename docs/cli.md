@@ -245,6 +245,8 @@ The first operation of every run is `describe`, and the target id in its reply p
 
 Output is one `ScenarioResult` per file (see [Output shapes](#output-shapes)), as JSON lines when stdout is not a TTY or `--json` is passed, and otherwise as a `PASS` or `FAIL` line per scenario followed by the failed step with its `expected` and `actual` values or its error, and any artifacts that could not be written. The exit code is 2 if any file is invalid, the `describe` error's own code as above, 4 if any scenario failed, and 0 otherwise. `--bail` stops after the first failed scenario.
 
+Each file starts from a fresh app: right after `describe`, on a target that declares the `reset` capability (headless), the runner resets it before the first step, so files don't share state and a directory run does not depend on file order. On a remote app, which has no `reset`, the scenario runs against the app's current state; reload the app first for a fresh start.
+
 ```sh
 ironbird scenario run ironbird/scenarios
 ironbird scenario run ironbird/scenarios/race-success-before-confirmation.yaml --target ios

@@ -250,6 +250,45 @@ describe('runScenario', () => {
   });
 });
 
+describe('runScenario reset option', () => {
+  it('resets a target that declares reset before the first step, without counting as a step or appearing in skipped', async () => {
+    const { client, calls } = scripted({ describe: description(), reset: () => ({ rev: 0, path: '', value: {} }), dispatch: stepResult() });
+    const result = await runScenario(client, load('name: r\nsteps:\n  - send: cart.clear\n'), { file: '/app/s.yaml', artifacts: false, reset: true });
+    expect(result).toMatchObject({ passed: true, stepsRun: 1, skipped: [] });
+    expect(calls.map((call) => call.op)).toEqual(['describe', 'reset', 'dispatch']);
+  });
+
+  it('does not reset a target that lacks the reset capability, even when reset is requested', async () => {
+    const { client, calls } = scripted({ describe: description({ capabilities: ['settle', 'events'] }), dispatch: stepResult() });
+    const result = await runScenario(client, load('name: r\nsteps:\n  - send: cart.clear\n'), { file: '/app/s.yaml', artifacts: false, reset: true });
+    expect(result).toMatchObject({ passed: true, stepsRun: 1 });
+    expect(calls.map((call) => call.op)).toEqual(['describe', 'dispatch']);
+  });
+
+  it('sends no reset when the option is left unset, even though the target declares the capability', async () => {
+    const { client, calls } = scripted({ describe: description(), dispatch: stepResult() });
+    await run(client, load('name: r\nsteps:\n  - send: cart.clear\n'));
+    expect(calls.map((call) => call.op)).toEqual(['describe', 'dispatch']);
+  });
+
+  it('captures artifact cursors after the reset, so the run only sees what happened afterward', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'ironbird-reset-artifacts-'));
+    try {
+      const { client, calls } = scripted({
+        describe: description({ fakes: {} }),
+        reset: () => ({ rev: 0, path: '', value: {} }),
+        dispatch: stepResult(),
+        events: { events: [], nextSeq: 0, truncated: false },
+        getState: { rev: 0, path: '', value: {} },
+      });
+      await runScenario(client, load('name: r\nsteps:\n  - send: cart.clear\n'), { file: '/app/s.yaml', artifacts: root, reset: true });
+      expect(calls.map((call) => call.op)).toEqual(['describe', 'reset', 'events', 'dispatch', 'events', 'getState']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('runScenario artifacts', () => {
   let root: string;
   let file: string;

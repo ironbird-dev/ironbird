@@ -293,7 +293,7 @@ describe('scenario run', () => {
   const described = { app: { id: 'a', platform: 'headless' }, commands: {}, fakes: {}, capabilities: ['settle', 'events', 'clock', 'reset'] };
   // The expect step reads order.totalCents; artifact collection reads the root.
   const getState = (params: Record<string, unknown>) => (params['path'] === '' ? { rev: 1, path: '', value: {} } : { rev: 1, path: 'order.totalCents', value: 0 });
-  const collection = { events: { events: [], nextSeq: 0, truncated: false }, getState };
+  const collection = { events: { events: [], nextSeq: 0, truncated: false }, getState, reset: () => ({ rev: 0, path: '', value: {} }) };
 
   beforeEach(async () => {
     dir = await mkdtemp(path.join(tmpdir(), 'ironbird-scenario-cli-'));
@@ -317,6 +317,10 @@ describe('scenario run', () => {
     expect(lines[1]).toMatchObject({ target: 'headless', stepsRun: 1, failedStep: { index: 0, step: { expect: 'order.totalCents', equals: 4500 }, expected: { equals: 4500 }, actual: 0 } });
     expect(String(lines[0]?.['artifacts']).startsWith(path.join(dir, '.ironbird/runs/'))).toBe(true);
     expect(h.calls[0]).toEqual({ op: 'describe', params: {}, target: 'headless' });
+    // Each file's own describe is followed by a reset, before that file's first step.
+    const describeIndices = h.calls.flatMap((call, index) => (call.op === 'describe' ? [index] : []));
+    expect(describeIndices).toHaveLength(2);
+    for (const index of describeIndices) expect(h.calls[index + 1]).toEqual({ op: 'reset', params: {}, target: 'headless' });
   });
 
   it('--bail stops after the first failed scenario', async () => {

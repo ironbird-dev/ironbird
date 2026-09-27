@@ -11,6 +11,8 @@ export interface RunScenarioOptions {
   target?: string;
   /** The artifacts root the run directory goes under, or `false` to write nothing. */
   artifacts: string | false;
+  /** Reset the target before the first step when it declares the reset capability; remote apps run against their current state. */
+  reset?: boolean;
 }
 
 type FailedStep = NonNullable<ScenarioResult['failedStep']>;
@@ -110,9 +112,10 @@ async function runStep(client: DaemonClient, target: string, step: ScenarioStep,
 
 /**
  * Runs one scenario against the daemon: `describe` first, whose envelope pins the target for
- * every later operation, then each step as one operation. Stops at the first failing step. A
- * failure of the initial `describe` is thrown as is, so the caller can exit with its own code;
- * everything after that becomes a `ScenarioResult`.
+ * every later operation, then, with `options.reset` and a target that declares the `reset`
+ * capability, a `reset` before the first step, then each step as one operation. Stops at the
+ * first failing step. A failure of the initial `describe` or of that leading `reset` is thrown as
+ * is, so the caller can exit with its own code; everything after that becomes a `ScenarioResult`.
  */
 export async function runScenario(client: DaemonClient, scenario: Scenario, options: RunScenarioOptions): Promise<ScenarioResult> {
   const started = Date.now();
@@ -121,9 +124,13 @@ export async function runScenario(client: DaemonClient, scenario: Scenario, opti
   const target = described.target ?? requested;
   if (target === undefined) throw new IronbirdError('INTERNAL', 'The daemon did not report which target answered describe', { message: 'describe envelope has no target' });
   const support: Support = { platform: described.result.app.platform, capabilities: new Set(described.result.capabilities), fakes: Object.keys(described.result.fakes) };
+  // A reset here is not a step (design D14): it never counts in stepsRun or skipped, and a
+  // failure of it is thrown like a failure of describe, ending the command with its own exit code.
+  if (options.reset && support.capabilities.has('reset')) await client.rpc('reset', {}, target);
   const artifacts: RunArtifacts | null = options.artifacts === false ? null : await createRunArtifacts({ root: options.artifacts, scenario, file: options.file, client, target, description: described.result });
   const runDir = artifacts === null ? null : artifacts.dir;
-  // "During the run" starts here: the cursors captured now bound what `collect` gathers.
+  // "During the run" starts here: the cursors captured now bound what `collect` gathers. When the
+  // target was just reset above, this captures cursors that start from that reset.
   await artifacts?.capture();
 
   const skipped: number[] = [];

@@ -313,7 +313,7 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
         const scenarios = await loadScenarioFiles(paths, io.cwd);
         let failed = false;
         for (const { file, scenario: parsed } of scenarios) {
-          const result = await runScenario(ctx.client, parsed, { file, target: ctx.target, artifacts: ctx.artifactsDir });
+          const result = await runScenario(ctx.client, parsed, { file, target: ctx.target, artifacts: ctx.artifactsDir, reset: true });
           if (ctx.json) ctx.output.result(result);
           else io.stdout(formatScenarioResult(result, io.cwd));
           if (!result.passed) {
