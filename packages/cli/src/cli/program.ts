@@ -6,6 +6,7 @@ import { UsageError, parseDuration } from './durations';
 import { exitCodeForError, exitCodeForStep } from './exit-codes';
 import { createOutput, type Output } from './output';
 import { parseJsonOrString, parsePayload } from './values';
+import { formatScenarioResult } from '../scenario/format';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { findMarker } from '../verify-bundle';
@@ -34,6 +35,10 @@ interface Context {
   output: Output;
   client: DaemonClient;
   target: string | undefined;
+  /** Where the daemon writes artifacts; scenario runs go under it (see `resolveDaemon`). */
+  artifactsDir: string;
+  /** True when output is JSON: stdout is not a TTY or `--json` was passed. */
+  json: boolean;
 }
 
 type Outcome = { value?: unknown; exit?: number } | undefined;
@@ -83,10 +88,11 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
 
   const context = async (command: Command): Promise<Context> => {
     const opts = command.optsWithGlobals<GlobalOptions>();
-    const output = createOutput({ json: Boolean(opts.json) || !io.isTTY, write: io.stdout });
+    const json = Boolean(opts.json) || !io.isTTY;
+    const output = createOutput({ json, write: io.stdout });
     const daemon = await resolveDaemon({ flag: opts.daemon, cwd: io.cwd, env: io.env });
     const client = (io.createClient ?? createDaemonClient)({ url: daemon.url, token: opts.token ?? daemon.token });
-    return { output, client, target: opts.target };
+    return { output, client, target: opts.target, artifactsDir: daemon.artifactsDir, json };
   };
 
   const withTarget = (envelope: { target?: string; result: unknown }): Record<string, unknown> => {
@@ -291,6 +297,32 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
       wrap(async (ctx, name: string, payload: string | undefined, opts: { device?: string; path: string; settle: boolean; settleTimeout?: string }) =>
         stepOutcome(await ctx.client.rpc<StepResult>('step', { name, payload: parsePayload(payload), path: opts.path, settle: settleParam(opts), ...(opts.device ? { device: opts.device } : {}) }, ctx.target)),
       ),
+    );
+
+  const scenario = program.command('scenario').description('Run scenario files');
+  scenario
+    .command('run <path...>')
+    .description('Run scenario files, or directories of them, and print one result per scenario')
+    .option('--bail', 'stop after the first failed scenario')
+    .action(
+      wrap(async (ctx, paths: string[], opts: { bail?: boolean }) => {
+        // Loaded on demand: the scenario modules pull in yaml and zod, which no other client
+        // command needs on its startup path.
+        const [{ loadScenarioFiles }, { runScenario }] = await Promise.all([import('../scenario/parse'), import('../scenario/run')]);
+        // Every file is parsed before any run, so an authoring error costs nothing.
+        const scenarios = await loadScenarioFiles(paths, io.cwd);
+        let failed = false;
+        for (const { file, scenario: parsed } of scenarios) {
+          const result = await runScenario(ctx.client, parsed, { file, target: ctx.target, artifacts: ctx.artifactsDir });
+          if (ctx.json) ctx.output.result(result);
+          else io.stdout(formatScenarioResult(result, io.cwd));
+          if (!result.passed) {
+            failed = true;
+            if (opts.bail) break;
+          }
+        }
+        return { exit: failed ? 4 : 0 };
+      }),
     );
 
   program

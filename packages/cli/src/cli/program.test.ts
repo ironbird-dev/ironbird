@@ -1,8 +1,8 @@
 import { IronbirdError } from '@ironbird/core';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DaemonClient } from './client';
 import { buildProgram } from './program';
 
@@ -19,7 +19,7 @@ interface StreamFrame {
   data: unknown;
 }
 
-function harness(responses: Record<string, Responder>, options: { isTTY?: boolean; streamFrames?: StreamFrame[]; createClient?: () => DaemonClient } = {}) {
+function harness(responses: Record<string, Responder>, options: { isTTY?: boolean; streamFrames?: StreamFrame[]; createClient?: () => DaemonClient; cwd?: string } = {}) {
   const calls: Call[] = [];
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -42,7 +42,7 @@ function harness(responses: Record<string, Responder>, options: { isTTY?: boolea
     },
   };
   const { run } = buildProgram({
-    cwd: '/tmp/nowhere',
+    cwd: options.cwd ?? '/tmp/nowhere',
     env: {},
     isTTY: options.isTTY ?? false,
     stdout: (t) => stdout.push(t),
@@ -285,5 +285,75 @@ describe('verify-bundle', () => {
     expect(await run(['verify-bundle', 'nope'])).toBe(2);
     expect(stderr.join('')).toContain('No such file or directory');
     await rm(temp, { recursive: true, force: true });
+  });
+});
+
+describe('scenario run', () => {
+  let dir: string;
+  const described = { app: { id: 'a', platform: 'headless' }, commands: {}, fakes: {}, capabilities: ['settle', 'events', 'clock', 'reset'] };
+  // The expect step reads order.totalCents; artifact collection reads the root.
+  const getState = (params: Record<string, unknown>) => (params['path'] === '' ? { rev: 1, path: '', value: {} } : { rev: 1, path: 'order.totalCents', value: 0 });
+  const collection = { events: { events: [], nextSeq: 0, truncated: false }, getState };
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-scenario-cli-'));
+    await mkdir(path.join(dir, 'scenarios'));
+    await writeFile(path.join(dir, 'scenarios/b-fails.yaml'), 'name: B fails\nsteps:\n  - expect: order.totalCents\n    equals: 4500\n');
+    await writeFile(path.join(dir, 'scenarios/a-passes.yml'), 'name: A passes\nsteps:\n  - send: cart.clear\n');
+    await writeFile(path.join(dir, 'broken.yaml'), 'name: Broken\nsteps:\n  - send: cart.clear\n    payloads: {}\n');
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('expands a directory in name order, prints one JSON line per scenario, and exits 4 when any scenario fails', async () => {
+    const h = harness({ describe: described, dispatch: step(), ...collection }, { cwd: dir });
+    expect(await h.run(['scenario', 'run', 'scenarios', '--target', 'headless'])).toBe(4);
+    const lines = h.stdout.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(lines.map((line) => [line['scenario'], line['passed'], line['file']])).toEqual([
+      ['A passes', true, path.join(dir, 'scenarios/a-passes.yml')],
+      ['B fails', false, path.join(dir, 'scenarios/b-fails.yaml')],
+    ]);
+    expect(lines[1]).toMatchObject({ target: 'headless', stepsRun: 1, failedStep: { index: 0, step: { expect: 'order.totalCents', equals: 4500 }, expected: { equals: 4500 }, actual: 0 } });
+    expect(String(lines[0]?.['artifacts']).startsWith(path.join(dir, '.ironbird/runs/'))).toBe(true);
+    expect(h.calls[0]).toEqual({ op: 'describe', params: {}, target: 'headless' });
+  });
+
+  it('--bail stops after the first failed scenario', async () => {
+    const h = harness({ describe: described, ...collection }, { cwd: dir });
+    expect(await h.run(['scenario', 'run', 'scenarios/b-fails.yaml', 'scenarios/b-fails.yaml', '--bail'])).toBe(4);
+    expect(h.stdout).toHaveLength(1);
+    const all = harness({ describe: described, ...collection }, { cwd: dir });
+    expect(await all.run(['scenario', 'run', 'scenarios/b-fails.yaml', 'scenarios/b-fails.yaml'])).toBe(4);
+    expect(all.stdout).toHaveLength(2);
+  });
+
+  it('exits 2 with INVALID_SCENARIO before running anything when any file is invalid', async () => {
+    const h = harness({ describe: described }, { cwd: dir });
+    expect(await h.run(['scenario', 'run', 'scenarios', 'broken.yaml'])).toBe(2);
+    expect(h.calls).toEqual([]);
+    expect(h.out()).toEqual({ error: { code: 'INVALID_SCENARIO', message: `Invalid scenario ${path.join(dir, 'broken.yaml')}:4: steps.0.payloads: unknown key payloads`, details: { file: path.join(dir, 'broken.yaml'), issues: [{ path: ['steps', 0, 'payloads'], message: 'unknown key payloads', line: 4 }] } } });
+    const missing = harness({ describe: described }, { cwd: dir });
+    expect(await missing.run(['scenario', 'run', 'nope.yaml'])).toBe(2);
+    expect(missing.out()).toMatchObject({ error: { code: 'INVALID_SCENARIO' } });
+  });
+
+  it('exits with the describe error code and prints no result when the first describe fails', async () => {
+    const h = harness({ describe: new IronbirdError('NO_TARGET', 'No target is connected or configured', { available: [] }) }, { cwd: dir });
+    expect(await h.run(['scenario', 'run', 'scenarios/a-passes.yml'])).toBe(5);
+    expect(h.stdout).toHaveLength(1);
+    expect(h.out()).toEqual({ error: { code: 'NO_TARGET', message: 'No target is connected or configured', details: { available: [] } } });
+    const unauthorized = harness({ describe: new IronbirdError('UNAUTHORIZED', 'Token missing or wrong') }, { cwd: dir });
+    expect(await unauthorized.run(['scenario', 'run', 'scenarios/a-passes.yml'])).toBe(2);
+  });
+
+  it('prints a summary per scenario in a TTY and JSON lines with --json', async () => {
+    const h = harness({ describe: described, dispatch: step(), ...collection }, { cwd: dir, isTTY: true });
+    expect(await h.run(['scenario', 'run', 'scenarios'])).toBe(4);
+    expect(h.stdout[0]).toMatch(/^PASS A passes {2}headless {2}1 steps {2}\d+ ms {2}\.ironbird\/runs\/\S+-a-passes\n$/);
+    expect(h.stdout[1]).toMatch(/^FAIL B fails {2}headless {2}1 steps {2}\d+ ms {2}\.ironbird\/runs\/\S+-b-fails\n {2}step 0: {"expect":"order\.totalCents","equals":4500}\n {2}expected: {"equals":4500}\n {2}actual: 0\n$/);
+    h.stdout.length = 0;
+    expect(await h.run(['scenario', 'run', 'scenarios/a-passes.yml', '--json'])).toBe(0);
+    expect(JSON.parse(h.stdout[0] ?? '')).toMatchObject({ scenario: 'A passes', passed: true });
   });
 });

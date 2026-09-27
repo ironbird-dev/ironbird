@@ -233,13 +233,35 @@ ironbird step <command> [payload] [--device <udid|serial>] [--path <path>] [--no
 
 Remote targets only. Sends, settles, and captures a screenshot, then prints a step result plus `screenshot` and `settledBeforeCapture`. The screenshot is captured even when settling times out, so the agent can see what went wrong, and the CLI still exits 3. With `--no-settle` the capture happens right after the dispatch. The printed result is the step result with two extra fields: `screenshot: { path, device, capturedAt }` and `settledBeforeCapture`, true only when settling reached idle before the capture.
 
-### scenario run (M2)
+### scenario run
 
 ```text
-ironbird scenario run <file...> [--bail]
+ironbird scenario run <path...> [--bail] [--target <id>]
 ```
 
-Runs scenario files in order and prints one scenario result per file. Exits 4 if any scenario fails.
+Runs scenario files against one target and prints one scenario result per file. Each `path` is a file or a directory; a directory expands to its `*.yaml` and `*.yml` files in name order, without recursing. Every file is parsed before any scenario runs, so an authoring error costs nothing: an invalid file, or a path that does not exist, fails with `INVALID_SCENARIO` and exit code 2 before the daemon is contacted. `--target` is the global option; it overrides the scenario's own `target`, and with neither the daemon picks its default.
+
+The first operation of every run is `describe`, and the target id in its reply pins the target for every later operation, including `screenshot`, whose default target selection differs from everything else's. A `describe` that fails ends the command with that error and its own exit code: 5 when the daemon is unreachable or has no such target, 2 for `UNAUTHORIZED`, 1 for `TARGET_DISCONNECTED`. The same errors from a later step fail that step like any other.
+
+Output is one `ScenarioResult` per file (see [Output shapes](#output-shapes)), as JSON lines when stdout is not a TTY or `--json` is passed, and otherwise as a `PASS` or `FAIL` line per scenario followed by the failed step with its `expected` and `actual` values or its error, and any artifacts that could not be written. The exit code is 2 if any file is invalid, the `describe` error's own code as above, 4 if any scenario failed, and 0 otherwise. `--bail` stops after the first failed scenario.
+
+```sh
+ironbird scenario run ironbird/scenarios
+ironbird scenario run ironbird/scenarios/race-success-before-confirmation.yaml --target ios
+```
+
+Every run, passed or failed, writes a directory under the daemon's artifacts directory (`artifactsPath` in `daemon.json`, else `.ironbird` under the working directory): `runs/<UTC stamp with milliseconds>-<scenario slug>/`, for example `.ironbird/runs/2026-09-25T18-04-12-345Z-payment-success-arrives-before-order-confirmation/`. It holds:
+
+| File | Contents |
+|---|---|
+| `result.json` | The `ScenarioResult` |
+| the scenario file | A copy, under its own name |
+| `events.jsonl` | The events recorded during the run, one per line |
+| `state.json` | The whole state after the last step |
+| `calls/<fake>.json` | Each fake's port calls during the run, on targets that declare `fakes` |
+| `<index>-<name>.png` | One per `screenshot` step, named by the step's index and value |
+
+"During the run" means after the run's first `describe`, or after the last `reset` step, which restarts the event and call logs. Collection is best effort: a file that cannot be gathered, such as the state after a `TARGET_DISCONNECTED`, is left out and named in `artifactErrors`.
 
 ### snapshot (P1)
 
@@ -294,61 +316,78 @@ Starts an MCP server over stdio that proxies to the daemon. Tools are listed [be
 
 ## Scenario files
 
-Scenarios live in `ironbird/scenarios/*.yaml` by default.
+Scenarios live in `ironbird/scenarios/*.yaml` by default. The example app's gate scenario, which reproduces the planted race:
 
 ```yaml
-name: Confirmation arrives before payment success
-description: The server confirms the order before the payment succeeds, then the success event arrives twice.
-target: headless            # optional; --target overrides
+name: Payment success arrives before order confirmation
+description: The server reports the payment succeeded before it confirms the order and its total. The receipt must still show the total.
 steps:
+  - send: ui.setMotion
+    payload: { motion: reduced }   # the api.md rule for agent-driven builds
+  - fake: api
+    control: setEcho
+    payload: { mode: manual }
   - send: cart.addItem
     payload: { sku: cut-45, qty: 1 }
   - send: payment.start
-    payload: { method: card }
-  - fake: api
-    control: emit
-    payload: { event: order.confirmed }
+    payload: { method: saved }
+  - clock: 300ms
+    optional: true   # headless: resolves the submission; a remote target's settle already waited for it
+  - wait: payment.status
+    equals: awaitingServerEcho
   - fake: api
     control: emit
     payload: { event: payment.succeeded }
-    repeat: 2
-  - screenshot: after-duplicate-success
-    optional: true          # skipped on headless targets
-  - clock: 30s
-    optional: true          # skipped on remote targets
-  - wait: payment.status
-    equals: awaitingServerEcho
-    timeout: 2s
-  - expect: order.total
-    notEquals: 0
+  - fake: api
+    control: emit
+    payload: { event: order.confirmed }
+  - expect: order.status
+    equals: completed
+  - expect: order.totalCents
+    equals: 4500
 ```
 
-| Step | Fields | Supported on |
-|---|---|---|
-| `send` | `send` (command), `payload?`, `repeat?`, `settle?` (default `true`) | All targets |
-| `fake` | `fake`, `control`, `payload?`, `repeat?` | Targets with that fake wired in |
-| `clock` | Duration | Headless |
-| `wait` | `wait` (path), one condition, `timeout?` (default 5 s) | All targets |
-| `expect` | `expect` (path), one condition | All targets |
-| `screenshot` | Name used in the artifact filename | Remote |
-| `reset` | `reset: true` | Headless |
-| `snapshot` (P1) | `snapshot: { save: <file> }` or `snapshot: { load: <file> }` | Targets that persist or restore |
+The top level has `name` (required), `description`, `target` (`--target` overrides it), and a non-empty `steps` list. Each step is exactly one kind, identified by its key, plus the shared `optional` flag. Unknown keys are rejected, so a typo such as `payloads` fails with `INVALID_SCENARIO` before anything runs; its `details.issues` list every problem with its path and line. Payloads are not checked until the step runs, because their schemas live in the app: an invalid one fails its step with `INVALID_PAYLOAD`.
 
-Conditions are `equals`, `notEquals`, `exists` (`true` or `false`), and `matches` (a regular expression string). Any step can set `optional: true`, which skips it with a notice when the target doesn't support it; unsupported steps without that flag fail with `UNSUPPORTED`. The runner stops at the first failing step, and `skipped` lists the optional steps it skipped before that point.
+| Step | Fields | Operation | Supported when |
+|---|---|---|---|
+| `send` | `send` (command), `payload?` (default `{}`), `repeat?`, `settle?` (default `true`) | `dispatch` | Always |
+| `fake` | `fake`, `control`, `payload?` (default `{}`), `repeat?`, `settle?` (default `true`) | `fakeControl` | The target declares `fakes` and `describe` lists that fake |
+| `clock` | Duration, `settle?` (default `true`) | `clockAdvance` | The target declares `clock` |
+| `wait` | `wait` (path), one condition, `timeout?` (default 5 s) | `waitFor` | Always |
+| `expect` | `expect` (path), one condition | `getState`, then the condition is checked locally | Always |
+| `screenshot` | Name used in the artifact filename | `screenshot` | The platform is not `headless` |
+| `reset` | `reset: true` | `reset` | The target declares `reset` |
+| `snapshot` (P1) | `snapshot: { save: <file> }` or `snapshot: { load: <file> }` | | Targets that persist or restore |
 
-A failing run against the headless target prints:
+Durations are a number of milliseconds or a string with an `ms`, `s`, or `m` suffix. Conditions are exactly one of `equals`, `notEquals`, `exists` (`true` or `false`), and `matches` (a regular expression string). YAML 1.2 rules apply, so `on` and `yes` are strings, not booleans.
+
+Whether a step can run is decided from `describe` before it runs, never by trying it. A step the target can't run is skipped when it is `optional`, and its index is added to `skipped`; otherwise it fails before any operation is sent:
+
+| Case | Fails with |
+|---|---|
+| The target lacks the capability, or the platform has no screen | `UNSUPPORTED`, details `{ op, target }` |
+| A `fake` step on a target that declares `fakes` but not the named fake | `UNKNOWN_FAKE`, details `{ fake, available, suggestions }` |
+
+A `send`, `fake`, or `clock` step that ends neither idle nor quiescent fails the scenario with `actual: { settle }`, matching the CLI, where a quiescent headless step exits 0; `settle: false` on the step opts out. `repeat` runs the operation that many times, and a failure names the `repetition` that failed, counting from 1. The runner stops at the first failing step. `stepsRun` counts the steps that ran, including a failed one and excluding skipped ones; a step that fails its support check before anything is sent (the two cases above) is not counted either.
+
+A failing run of the scenario above against the headless target with the race planted prints:
 
 ```json
 {
-  "scenario": "Confirmation arrives before payment success",
+  "scenario": "Payment success arrives before order confirmation",
+  "file": "/app/ironbird/scenarios/race-success-before-confirmation.yaml",
   "target": "headless",
   "passed": false,
   "durationMs": 41,
-  "failedStep": { "index": 7, "step": { "expect": "order.total", "notEquals": 0 }, "actual": 0 },
-  "skipped": [4],
-  "artifacts": ".ironbird/runs/2026-09-10T18-04-12Z/"
+  "stepsRun": 10,
+  "failedStep": { "index": 9, "step": { "expect": "order.totalCents", "equals": 4500 }, "expected": { "equals": 4500 }, "actual": 0 },
+  "skipped": [],
+  "artifacts": "/app/.ironbird/runs/2026-09-25T18-04-12-345Z-payment-success-arrives-before-order-confirmation"
 }
 ```
+
+`failedStep` carries `expected` and `actual` for a `wait` that timed out (`actual` is the last value read) and for an `expect` that did not hold, `actual: { settle }` for an unsettled step, and `error` for any other failure, including `INVALID_PAYLOAD`, `DISPATCH_FAILED`, `TARGET_DISCONNECTED`, and `NO_TARGET`.
 
 ## MCP tools (P1)
 
