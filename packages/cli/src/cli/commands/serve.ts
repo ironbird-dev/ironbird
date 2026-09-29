@@ -86,7 +86,7 @@ export async function runServe(options: ServeOptions, io: ServeIo): Promise<numb
     // Emulators reach the host's bridge port at their own localhost only after adb reverse; a
     // machine without adb, or without a device, just logs and moves on.
     await adbReverse(boundBridgePort, { exec: io.exec, log });
-    await writeDaemonInfo(config.artifactsPath, { url: daemon.url, pid: process.pid, startedAt: Date.now(), version: io.version, defaultTarget, ...(daemon.bridgeUrl === undefined ? {} : { bridgeUrl: daemon.bridgeUrl }) });
+    await writeDaemonInfo(config.artifactsPath, { url: daemon.url, pid: process.pid, startedAt: Date.now(), version: io.version, defaultTarget, artifactsPath: config.artifactsPath, ...(daemon.bridgeUrl === undefined ? {} : { bridgeUrl: daemon.bridgeUrl }) });
     wroteInfo = true;
     output.result({ url: daemon.url, bridgeUrl: daemon.bridgeUrl, targets: daemon.targets(), defaultTarget, bridgePort: boundBridgePort });
   } catch (error) {

@@ -47,6 +47,7 @@ describe('runServe', () => {
     expect(line['targets']).toEqual([expect.objectContaining({ id: 'headless', appId: 'com.example.checkout' })]);
     const info = await readDaemonInfo(path.join(example, '.ironbird'));
     expect(info?.url).toBe(line['url']);
+    expect(info?.artifactsPath).toBe(path.join(example, '.ironbird'));
     const response = await fetch(`${line['url'] as string}/v1/rpc`, { method: 'POST', body: JSON.stringify({ op: 'describe' }) });
     const described = (await response.json()) as { result: { commands: Record<string, unknown> } };
     expect(Object.keys(described.result.commands)).toEqual(['cart.addItem', 'cart.clear', 'payment.start', 'ui.setMotion']);

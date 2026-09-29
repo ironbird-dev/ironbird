@@ -42,6 +42,7 @@ describe('exit codes', () => {
     expect(exitCodeForError('AMBIGUOUS_TARGET')).toBe(2);
     expect(exitCodeForError('HEADLESS_LOAD_FAILED')).toBe(2);
     expect(exitCodeForError('INVALID_CONFIG')).toBe(2);
+    expect(exitCodeForError('INVALID_SCENARIO')).toBe(2);
     expect(exitCodeForError('UNAUTHORIZED')).toBe(2);
     expect(exitCodeForError('APP_MISMATCH')).toBe(2);
     expect(exitCodeForError('WAIT_TIMEOUT')).toBe(4);

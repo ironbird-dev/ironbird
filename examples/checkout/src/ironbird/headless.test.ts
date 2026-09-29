@@ -63,4 +63,27 @@ describe('checkout headless entry', () => {
     await app.dispose?.();
     expect(clock.timers()).toEqual([]);
   });
+
+  it('wires the reader and api fakes with their controls', async () => {
+    const { app } = await boot();
+    expect(app.fakes?.map((fake) => fake.name)).toEqual(['reader', 'api']);
+    expect(app.fakes?.map((fake) => fake.controls.names())).toEqual([['emit'], ['emit', 'setEcho']]);
+  });
+
+  it('with the echo held, the controls reorder the server events and the planted race shows a zero total', async () => {
+    const { app, clock } = await boot({ PLANT_RACE: '1' });
+    const api = app.fakes?.find((fake) => fake.name === 'api');
+    if (!api) throw new Error('api fake not wired');
+    await api.control('setEcho', { mode: 'manual' });
+    await app.target.dispatch('cart.addItem', { sku: 'cut-45', qty: 1 });
+    await app.target.dispatch('payment.start', { method: 'saved' });
+    await clock.advance(300);
+    expect(state(app).payment.status).toBe('awaitingServerEcho');
+    expect(clock.timers().map((t) => t.label)).toEqual(['payment.serverTimeout']);
+    await api.control('emit', { event: 'payment.succeeded' });
+    await api.control('emit', { event: 'order.confirmed' });
+    expect(state(app).order).toEqual({ status: 'completed', totalCents: 0, paymentSucceeded: true });
+    expect(clock.timers()).toEqual([]);
+    await app.dispose?.();
+  });
 });

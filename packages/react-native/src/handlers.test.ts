@@ -79,20 +79,26 @@ function app(options: { persist?: boolean } = {}): HandlerContext & { warnings: 
   };
 }
 
-function fakeReader(): FakeInstance & { controlled: string[] } {
+function fakeReader(): FakeInstance & { controlled: string[]; pages: Array<[number, number]> } {
   const controls = defineCommands({ disconnect: z.object({}), present: z.object({ token: z.string() }) });
   const controlled: string[] = [];
+  const pages: Array<[number, number]> = [];
   return {
     name: 'reader',
     description: 'card reader',
     port: {},
     controls,
     controlled,
+    pages,
     async control(name, payload) {
       controls.parse(name as 'disconnect' | 'present', payload);
       controlled.push(name);
     },
-    calls: (since = 0) => [{ seq: since + 1, t: 0, fake: 'reader', method: 'collectPayment', args: [4_500], outcome: 'resolved' }],
+    calls: (since = 0, limit = Number.POSITIVE_INFINITY) => {
+      pages.push([since, limit]);
+      // `as const`: inside `.slice()` the literal gets no contextual type, so `outcome` would widen to `string`.
+      return { calls: [{ seq: since + 1, t: 0, fake: 'reader', method: 'collectPayment', args: [4_500], outcome: 'resolved' as const }].slice(0, limit), nextSeq: since + 1, truncated: false };
+    },
   };
 }
 
@@ -177,7 +183,7 @@ describe('createHandlers', () => {
     expect(await handlers['settle']!({ timeoutMs: 50 })).toMatchObject({ idle: true });
   });
 
-  it('drives fakes and lists their calls, and names unknown fakes', async () => {
+  it('drives fakes, pages their calls with since and limit, and names unknown fakes with the wired ones', async () => {
     const ctx = app();
     const reader = fakeReader();
     ctx.fakes = [reader];
@@ -185,8 +191,14 @@ describe('createHandlers', () => {
     const result = (await handlers['fakeControl']!({ fake: 'reader', control: 'present', payload: { token: 't' }, settle: false })) as StepResult;
     expect(reader.controlled).toEqual(['present']);
     expect(result).toMatchObject({ target: 'ios', settle: null });
-    expect(await handlers['fakeCalls']!({ fake: 'reader', since: 2 })).toEqual({ calls: [expect.objectContaining({ seq: 3, method: 'collectPayment' })] });
-    expect(await failure(handlers['fakeControl']!({ fake: 'printer', control: 'x' }))).toMatchObject({ code: 'UNKNOWN_FAKE', details: { name: 'printer', suggestions: ['reader'] } });
+    expect(await handlers['fakeCalls']!({ fake: 'reader', since: 2, limit: 1 })).toEqual({ calls: [expect.objectContaining({ seq: 3, method: 'collectPayment' })], nextSeq: 3, truncated: false });
+    expect(await handlers['fakeCalls']!({ fake: 'reader' })).toMatchObject({ nextSeq: 1 });
+    expect(reader.pages).toEqual([
+      [2, 1],
+      [0, Number.POSITIVE_INFINITY],
+    ]);
+    expect(await failure(handlers['fakeControl']!({ fake: 'printer', control: 'x' }))).toMatchObject({ code: 'UNKNOWN_FAKE', details: { fake: 'printer', available: ['reader'], suggestions: ['reader'] } });
+    expect(await failure(handlers['fakeCalls']!({ fake: 'printer' }))).toMatchObject({ code: 'UNKNOWN_FAKE', details: { fake: 'printer', available: ['reader'], suggestions: ['reader'] } });
   });
 
   it('saves and restores snapshots when the target can, and refuses otherwise', async () => {

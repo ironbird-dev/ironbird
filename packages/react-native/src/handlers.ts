@@ -74,8 +74,9 @@ export function createHandlers(ctx: HandlerContext): Record<string, Handler> {
 
   const fakeNamed = (name: string): FakeInstance => {
     const fake = ctx.fakes.find((candidate) => candidate.name === name);
-    if (!fake) throw new IronbirdError('UNKNOWN_FAKE', `Unknown fake ${name}`, { name, suggestions: suggestNames(name, ctx.fakes.map((candidate) => candidate.name)) });
-    return fake;
+    if (fake) return fake;
+    const available = ctx.fakes.map((candidate) => candidate.name);
+    throw new IronbirdError('UNKNOWN_FAKE', `Unknown fake ${name}`, { fake: name, available, suggestions: suggestNames(name, available) });
   };
 
   const unsupported = (op: string): never => {
@@ -141,7 +142,7 @@ export function createHandlers(ctx: HandlerContext): Record<string, Handler> {
       const fake = fakeNamed(str(params['fake']));
       return step(params, () => fake.control(str(params['control']), params['payload']));
     },
-    fakeCalls: async (params) => ({ calls: fakeNamed(str(params['fake'])).calls(num(params['since'], 0)) }),
+    fakeCalls: async (params) => fakeNamed(str(params['fake'])).calls(num(params['since'], 0), num(params['limit'], Number.POSITIVE_INFINITY)),
     snapshotSave: async () => {
       if (!ctx.target.persist) return unsupported('snapshotSave');
       const { value } = serializeState(ctx.target.persist());

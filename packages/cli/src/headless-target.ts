@@ -8,8 +8,10 @@ import {
   messageOf,
   parseCondition,
   serializeState,
+  suggestNames,
   type Description,
   type EventRecorder,
+  type FakeInstance,
   type HeadlessApp,
   type HeadlessDefinition,
   type ManualClock,
@@ -152,6 +154,18 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     return { timeoutMs };
   };
 
+  // `fakes` is a capability: an app that wires none answers UNSUPPORTED, as the remote target does
+  // before a request reaches the bridge (protocol.md §5). With fakes wired, a name that isn't one of
+  // them is UNKNOWN_FAKE, listing the wired names and near misses.
+  const fakeNamed = (current: Session, op: string, name: string): FakeInstance => {
+    const fakes = current.app.fakes ?? [];
+    if (fakes.length === 0) throw new IronbirdError('UNSUPPORTED', `The headless target doesn't support ${op}: the app wires no fakes`, { op, target: 'headless' });
+    const fake = fakes.find((candidate) => candidate.name === name);
+    if (fake) return fake;
+    const available = fakes.map((candidate) => candidate.name);
+    throw new IronbirdError('UNKNOWN_FAKE', `Unknown fake ${name}`, { fake: name, available, suggestions: suggestNames(name, available) });
+  };
+
   // Runs a mutating step against `current`, the session that was live when the op started. If a
   // `reset` or `dispose` intervenes while `action` is in flight, the epoch no longer matches, and
   // this op must neither touch the new session nor report state read off the dead one, so every
@@ -284,6 +298,12 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
       return result;
     },
     events: (params) => requireSession('events').recorder.since(num(params['since'], 0), num(params['limit'], Number.POSITIVE_INFINITY)),
+    fakeControl: (params) =>
+      step('fakeControl', params, async (current) => {
+        const fake = fakeNamed(current, 'fakeControl', str(params['fake']));
+        await fake.control(str(params['control']), params['payload']);
+      }),
+    fakeCalls: (params) => fakeNamed(requireSession('fakeCalls'), 'fakeCalls', str(params['fake'])).calls(num(params['since'], 0), num(params['limit'], Number.POSITIVE_INFINITY)),
     clockAdvance: async (params) => {
       const ms = params['ms'];
       if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {

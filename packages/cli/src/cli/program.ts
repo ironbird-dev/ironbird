@@ -1,4 +1,4 @@
-import { IronbirdError, suggestNames, toErrorShape, type Description, type ErrorShape, type SettleResult, type StepResult } from '@ironbird/core';
+import { IronbirdError, suggestNames, toErrorShape, type Description, type ErrorShape, type FakeCallsResult, type SettleResult, type StepResult } from '@ironbird/core';
 import { Command, CommanderError, InvalidArgumentError } from 'commander';
 import { createDaemonClient, resolveDaemon, type DaemonClient } from './client';
 import type { runServe } from './commands/serve';
@@ -6,6 +6,7 @@ import { UsageError, parseDuration } from './durations';
 import { exitCodeForError, exitCodeForStep } from './exit-codes';
 import { createOutput, type Output } from './output';
 import { parseJsonOrString, parsePayload } from './values';
+import { formatScenarioResult } from '../scenario/format';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { findMarker } from '../verify-bundle';
@@ -34,6 +35,10 @@ interface Context {
   output: Output;
   client: DaemonClient;
   target: string | undefined;
+  /** Where the daemon writes artifacts; scenario runs go under it (see `resolveDaemon`). */
+  artifactsDir: string;
+  /** True when output is JSON: stdout is not a TTY or `--json` was passed. */
+  json: boolean;
 }
 
 type Outcome = { value?: unknown; exit?: number } | undefined;
@@ -83,10 +88,11 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
 
   const context = async (command: Command): Promise<Context> => {
     const opts = command.optsWithGlobals<GlobalOptions>();
-    const output = createOutput({ json: Boolean(opts.json) || !io.isTTY, write: io.stdout });
+    const json = Boolean(opts.json) || !io.isTTY;
+    const output = createOutput({ json, write: io.stdout });
     const daemon = await resolveDaemon({ flag: opts.daemon, cwd: io.cwd, env: io.env });
     const client = (io.createClient ?? createDaemonClient)({ url: daemon.url, token: opts.token ?? daemon.token });
-    return { output, client, target: opts.target };
+    return { output, client, target: opts.target, artifactsDir: daemon.artifactsDir, json };
   };
 
   const withTarget = (envelope: { target?: string; result: unknown }): Record<string, unknown> => {
@@ -237,6 +243,29 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
       }),
     );
 
+  program
+    .command('fake <fake> [control] [payload]')
+    .description('Run a fake control and settle, or print the calls the app made on the fake with --calls')
+    .option('--path <path>', 'return only this subtree of state', '')
+    .option('--no-settle', 'return right after the control runs')
+    .option('--settle-timeout <duration>', 'how long to wait for effects')
+    .option('--calls', 'print recorded port calls instead of running a control')
+    .option('--since <seq>', 'with --calls: only calls newer than this sequence number', integer)
+    .action(
+      wrap(async (ctx, fake: string, control: string | undefined, payload: string | undefined, opts: { path: string; settle: boolean; settleTimeout?: string; calls?: boolean; since?: number }) => {
+        if (opts.calls) {
+          if (control !== undefined) throw new UsageError('fake takes either a control or --calls, not both');
+          const params: Record<string, unknown> = { fake };
+          if (opts.since !== undefined) params['since'] = opts.since;
+          const envelope = await ctx.client.call<FakeCallsResult>('fakeCalls', params, ctx.target);
+          return { value: { ...(envelope.target === undefined ? {} : { target: envelope.target }), fake, ...envelope.result } };
+        }
+        if (control === undefined) throw new UsageError('fake needs a control or --calls');
+        if (opts.since !== undefined) throw new UsageError('--since only applies with --calls');
+        return stepOutcome(await ctx.client.rpc<StepResult>('fakeControl', { fake, control, payload: parsePayload(payload), path: opts.path, settle: settleParam(opts) }, ctx.target));
+      }),
+    );
+
   const clock = program.command('clock').description('Manual clock control (headless only)');
   clock
     .command('advance <duration>')
@@ -268,6 +297,33 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
       wrap(async (ctx, name: string, payload: string | undefined, opts: { device?: string; path: string; settle: boolean; settleTimeout?: string }) =>
         stepOutcome(await ctx.client.rpc<StepResult>('step', { name, payload: parsePayload(payload), path: opts.path, settle: settleParam(opts), ...(opts.device ? { device: opts.device } : {}) }, ctx.target)),
       ),
+    );
+
+  const scenario = program.command('scenario').description('Run scenario files');
+  scenario
+    .command('run <path...>')
+    .description('Run scenario files, or directories of them, and print one result per scenario')
+    .option('--bail', 'stop after the first failed scenario')
+    .action(
+      wrap(async (ctx, paths: string[], opts: { bail?: boolean }) => {
+        // Loaded on demand: the scenario modules pull in yaml and zod, which no other command in
+        // this binary's startup path needs (the package's `index.ts` re-exports them for
+        // embedders, but that is a separate entry point from `bin.js`).
+        const [{ loadScenarioFiles }, { runScenario }] = await Promise.all([import('../scenario/parse'), import('../scenario/run')]);
+        // Every file is parsed before any run, so an authoring error costs nothing.
+        const scenarios = await loadScenarioFiles(paths, io.cwd);
+        let failed = false;
+        for (const { file, scenario: parsed } of scenarios) {
+          const result = await runScenario(ctx.client, parsed, { file, target: ctx.target, artifacts: ctx.artifactsDir, reset: true });
+          if (ctx.json) ctx.output.result(result);
+          else io.stdout(formatScenarioResult(result, io.cwd));
+          if (!result.passed) {
+            failed = true;
+            if (opts.bail) break;
+          }
+        }
+        return { exit: failed ? 4 : 0 };
+      }),
     );
 
   program

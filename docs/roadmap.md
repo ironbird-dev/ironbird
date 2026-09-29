@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-09-20 |
+| Last updated | 2026-09-26 |
 | Related | [spec.md](spec.md) (requirement and question IDs) · [testing-strategy.md](testing-strategy.md) |
 
 Estimates assume focused effort and describe a sequence, not calendar dates. Each milestone ends with a short demo and a go/no-go decision against its exit criteria.
@@ -70,16 +70,16 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 
 ## M2: Fakes and scenarios
 
-**Scope:** R6, R11. R16 if time allows.
+**Scope:** R6, R11, R16.
 
 - `defineFake`, controls, the `fakes` and `fake` commands, call recording; the example's hand-written fakes become `defineFake` fakes with controls
 - Scenario runner with YAML steps, optional steps, and structured failure output with artifacts
 
 **Exit criteria**
 
-- [ ] A scenario reproduces the planted race: it fails with `PLANT_RACE=1` and passes without it
-- [ ] The same scenario, with clock steps marked optional, reaches the same final state on the headless and iOS targets
-- [ ] 100 consecutive headless runs of every example scenario show 0 divergences
+- [x] A scenario reproduces the planted race: it fails with `PLANT_RACE=1` and passes without it
+- [x] The same scenario, with clock steps marked optional, reaches the same final state on the headless and iOS targets
+- [x] 100 consecutive headless runs of every example scenario show 0 divergences
 
 ## M3: Agent interface
 

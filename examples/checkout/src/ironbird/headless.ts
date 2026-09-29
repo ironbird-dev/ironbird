@@ -1,12 +1,14 @@
 import { defineHeadless } from '@ironbird/core';
 import { createAppCore } from '../core/app';
-import { createFakeApi } from './fakes/api';
-import { createFakeReader } from './fakes/reader';
+import { fakeApi } from './fakes/api';
+import { fakeReader } from './fakes/reader';
 import { toTarget } from './target';
 
 export default defineHeadless(({ clock, recorder, tracker, env }) => {
-  const reader = createFakeReader({ clock, recorder });
-  const api = createFakeApi({ clock, recorder });
+  // Fresh fakes per boot: `reset` runs this factory again, so counters, pending timers, and call
+  // logs start over, which is what makes repeated headless runs identical.
+  const reader = fakeReader.create({ clock, recorder });
+  const api = fakeApi.create({ clock, recorder });
   const app = createAppCore(
     {
       reader: tracker.wrap(reader.port, 'reader'),
@@ -16,5 +18,5 @@ export default defineHeadless(({ clock, recorder, tracker, env }) => {
     },
     { plantRace: env['PLANT_RACE'] === '1' },
   );
-  return { target: toTarget(app), dispose: () => app.dispose() };
+  return { target: toTarget(app), fakes: [reader, api], dispose: () => app.dispose() };
 });

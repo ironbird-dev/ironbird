@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft; signatures will change during M0–M2 |
-| Last updated | 2026-09-11 |
+| Last updated | 2026-09-25 |
 | Related | [protocol.md](protocol.md) for wire types and error codes · [cli.md](cli.md) for the CLI |
 
 Priority markers match [spec.md](spec.md): **P0** ships in 0.1, **P1** is planned for 0.1 if milestones hold. Sections marked **M1** or **M2** describe APIs planned for those milestones ([roadmap.md](roadmap.md)); they are not in the repository yet.
@@ -154,9 +154,9 @@ function createTracker(options?: { clock?: Clock; timerThresholdMs?: number; ena
 function markFakePort<P extends object>(port: P): P;
 ```
 
-With a real clock, timers due within `timerThresholdMs` (default 1,000) count as pending. Manual-clock timers never count. Wrapping is always explicit, so the app chooses the label; a port tagged as fake has its calls marked `fake: true`, which is what allows `mode: 'quiescent'` to finish without advancing time. `markFakePort` tags a port with the global-registry symbol `FAKE_PORT_MARK`; `defineFake` (M2) will do this for every fake port. Hand-written fakes, such as the M0 example's, call `markFakePort` on the port or pass `{ fake: true }` to `wrap`. With `enabled: false` (app code passes `enabled: __DEV__`), `wrap` returns the port untouched, `track` returns the promise untouched, `pending()` is empty, and `whenIdle` resolves idle at once, so release builds carry no tracking. `PendingItem` and `SettleResult` are defined in [protocol.md](protocol.md#5-types). `whenIdle`'s `timeoutMs` and every `ageMs` are wall-clock milliseconds, because a manual clock never advances on its own; only the settle result's `nextTimerInMs` is manual-clock time. A listener that throws is skipped with a `console.warn`; it never prevents later listeners from running or the tracked promise from settling.
+With a real clock, timers due within `timerThresholdMs` (default 1,000) count as pending. Manual-clock timers never count. Wrapping is always explicit, so the app chooses the label; a port tagged as fake has its calls marked `fake: true`, which is what allows `mode: 'quiescent'` to finish without advancing time. Every port `defineFake` serves answers the global-registry symbol `FAKE_PORT_MARK`, so wrapping a `FakeInstance.port` needs no option. Hand-written fakes call `markFakePort` on the port or pass `{ fake: true }` to `wrap`. With `enabled: false` (app code passes `enabled: __DEV__`), `wrap` returns the port untouched, `track` returns the promise untouched, `pending()` is empty, and `whenIdle` resolves idle at once, so release builds carry no tracking. `PendingItem` and `SettleResult` are defined in [protocol.md](protocol.md#5-types). `whenIdle`'s `timeoutMs` and every `ageMs` are wall-clock milliseconds, because a manual clock never advances on its own; only the settle result's `nextTimerInMs` is manual-clock time. A listener that throws is skipped with a `console.warn`; it never prevents later listeners from running or the tracked promise from settling.
 
-### defineFake (P0, M2)
+### defineFake (P0)
 
 ```ts
 function defineFake<Port extends object, C extends Schemas>(
@@ -164,19 +164,19 @@ function defineFake<Port extends object, C extends Schemas>(
   definition: {
     description?: string;
     controls: C;
-    create(context: FakeContext<C>): Port;
+    create(context: FakeContext): { port: Port; controls: ControlHandlers<C> };
   },
 ): FakeFactory<Port, C>;
 
-interface FakeContext<C extends Schemas> {
+interface FakeContext {
   readonly clock: Clock;
-  on<K extends keyof C & string>(
-    control: K,
-    handler: (payload: z.output<C[K]>) => void | Promise<void>,
-  ): void;
-  /** Records an event with source = the fake's name. */
+  /** Records an event with the fake's name as its source. A no-op without a recorder. */
   record(name: string, data?: unknown): void;
 }
+
+type ControlHandlers<C extends Schemas> = {
+  [K in keyof C]: (payload: z.output<C[K]>) => void | Promise<void>;
+};
 
 interface FakeFactory<Port extends object, C extends Schemas> {
   readonly name: string;
@@ -190,11 +190,23 @@ interface FakeInstance<Port extends object = object, C extends Schemas = Schemas
   readonly port: Port;
   readonly controls: CommandRegistry<C>;
   control(name: string, payload?: unknown): Promise<void>;
-  calls(since?: number): FakeCall[]; // P1
+  calls(since?: number, limit?: number): FakeCallsResult;
+}
+
+interface FakeCallsResult {
+  calls: FakeCall[];
+  nextSeq: number;
+  truncated: boolean;
 }
 ```
 
-Example: a fake card reader. Annotating the return type of `create` lets TypeScript infer both generics.
+`FakeDefinition<Port, C>` names the `definition` parameter's type and is exported with the rest. Controls are declared as Zod schemas and validated by a command registry built from them, so `describe` lists their JSON Schema and an invalid payload fails with `INVALID_PAYLOAD` and the registry's issues. `create` returns the port and a map with one handler per declared control: a missing handler is a compile error, and an extra one, such as `emitt` next to `emit`, fails `FakeFactory.create` with `UNKNOWN_CONTROL`, details `{ fake, control, suggestions }`, which is a boot failure on headless and a red box on device. Both generics infer from the return value, so no annotation is needed beyond typing the port.
+
+`control(name, payload)` checks the control exists (`UNKNOWN_CONTROL` with suggestions), parses the payload, and awaits the handler. Errors name the control as `<fake>.<control>`: `INVALID_PAYLOAD` with details `{ name, issues }`, and `DISPATCH_FAILED` with `{ name, message }` when the handler throws or rejects, the same code a throwing command uses. An `IronbirdError` thrown by a handler passes through unchanged.
+
+`port` is a call-recording proxy, never the object `create` returned: reading a method returns a wrapper, created once per method, that records a `FakeCall` and invokes the original with `this` bound to the returned object, so a frozen port and a class instance both work. Each call gets a per-fake sequence number from 1, the clock time, the method name, the arguments serialized like state (a listener becomes `{ "$unserializable": "function" }`), and an outcome: `returned` or `threw` for a synchronous call, `pending` for a call that returned a promise, updated in place to `resolved` or `rejected` when it settles, with the error's message on `threw` and `rejected`. `calls(since = 0, limit = Infinity)` returns copies of the calls newer than `since`, `nextSeq` as the cursor to pass next (with `limit: 0`, where the log stands), and `truncated` when `since` points into calls already dropped; each fake keeps 10,000. Recording is always on, because fakes exist only in headless and development builds. The port answers `FAKE_PORT_MARK`, so `tracker.wrap(fake.port, name)` marks its effects as fake-backed for quiescence without any option. Nothing in `defineFake` freezes anything, and a fake's state lives in its `create` closure, so the headless target's `reset`, which runs the headless definition again, starts counters, timers, and call logs over.
+
+Example: a fake card reader. Type the port and let `create`'s return value infer the rest.
 
 ```ts
 type ReaderEvent = { type: 'connected' | 'disconnected' | 'cardPresented' | 'declined' };
@@ -212,23 +224,12 @@ export const fakeReader = defineFake('reader', {
     failNextPayment: z.object({ reason: z.string() }),
     setLatency: z.object({ ms: z.number().int().min(0) }),
   },
-  create({ on, clock, record }): CardReaderPort {
+  create({ clock, record }) {
     const listeners = new Set<(event: ReaderEvent) => void>();
     let failReason: string | undefined;
     let latencyMs = 1200;
 
-    on('emit', ({ event }) => {
-      record(event);
-      listeners.forEach((listener) => listener({ type: event }));
-    });
-    on('failNextPayment', ({ reason }) => {
-      failReason = reason;
-    });
-    on('setLatency', ({ ms }) => {
-      latencyMs = ms;
-    });
-
-    return {
+    const port: CardReaderPort = {
       connect: async () => {},
       collectPayment: (amountCents) =>
         new Promise((resolve, reject) => {
@@ -247,9 +248,27 @@ export const fakeReader = defineFake('reader', {
         return () => listeners.delete(listener);
       },
     };
+
+    return {
+      port,
+      controls: {
+        emit: ({ event }) => {
+          record(event);
+          listeners.forEach((listener) => listener({ type: event }));
+        },
+        failNextPayment: ({ reason }) => {
+          failReason = reason;
+        },
+        setLatency: ({ ms }) => {
+          latencyMs = ms;
+        },
+      },
+    };
   },
 });
 ```
+
+Wiring: `const reader = fakeReader.create({ clock, recorder })` in the headless factory or in `instance.ts`, then `tracker.wrap(reader.port, 'reader')` goes to the app core and `[reader]` goes to `HeadlessApp.fakes` or `startBridge`'s `fakes`.
 
 ### createEventRecorder (P0)
 
@@ -449,7 +468,7 @@ useEffect(() => {
 
 ## @ironbird/cli
 
-The binary is documented in [cli.md](cli.md). The package also exports the pieces the binary is built from, for embedding a daemon in another process: `loadConfig`, `loadTypeScriptModule`, `createHeadlessTarget`, `startDaemon`, `readDaemonInfo` / `writeDaemonInfo` / `removeDaemonInfo`, `buildProgram`, `runServe`, `isLoopbackHost`, and `parseCondition` / `conditionHolds`.
+The binary is documented in [cli.md](cli.md). The package also exports the pieces the binary is built from, for embedding a daemon in another process: `loadConfig`, `loadTypeScriptModule`, `createHeadlessTarget`, `startDaemon`, `readDaemonInfo` / `writeDaemonInfo` / `removeDaemonInfo`, `buildProgram`, `runServe`, `isLoopbackHost`, `parseCondition` / `conditionHolds`, and the scenario runner: `parseScenario` and `loadScenarioFiles` turn a file (or a directory of them) into a validated `Scenario`, made of `ScenarioStep`s and reporting any authoring error as a `ScenarioIssue`; `runScenario` runs one `Scenario` against a `DaemonClient` and returns its `ScenarioResult`, per its `RunScenarioOptions`, whose `reset` resets a target that declares the `reset` capability before the first step (design D14; `scenario run` always sets it).
 
 ### defineConfig (P0)
 

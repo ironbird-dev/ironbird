@@ -1,109 +1,21 @@
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createCli, reloadApp, sleep, spawnServe, waitForTarget, type DaemonProcess } from './device-helpers';
 
-// Preconditions: a booted iOS Simulator, and the example running in Expo Go on it via
-// `pnpm example:ios`. The daemon is started here on the default bridge port, 4568, which is the
-// port the app dials.
-const exec = promisify(execFile);
-const here = path.dirname(fileURLToPath(import.meta.url));
-const example = path.resolve(here, '..');
-const bin = path.resolve(example, '../../packages/cli/dist/bin.js');
+// Preconditions: see device-helpers.ts.
 const env = { ...process.env, IRONBIRD_TOKEN: undefined };
-const METRO_MESSAGES = process.env['IRONBIRD_METRO_URL'] ?? 'ws://127.0.0.1:8081/message';
-const EXPO_GO = 'host.exp.Exponent';
+const ironbird = createCli(env);
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-interface Result {
-  code: number;
-  json: Record<string, unknown>;
-}
-
-async function ironbird(...args: string[]): Promise<Result> {
-  try {
-    const { stdout } = await exec('node', [bin, ...args], { cwd: example, env });
-    return { code: 0, json: JSON.parse(stdout.trim().split('\n')[0] ?? '{}') as Record<string, unknown> };
-  } catch (error) {
-    const failure = error as { code: number; stdout: string };
-    return { code: failure.code, json: JSON.parse((failure.stdout ?? '').trim().split('\n')[0] || '{}') as Record<string, unknown> };
-  }
-}
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function targetIds(): Promise<string[]> {
-  const status = await ironbird('status');
-  return ((status.json['targets'] as Array<{ id: string }> | undefined) ?? []).map((target) => target.id);
-}
-
-async function waitForTarget(id: string, timeoutMs: number): Promise<void> {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    if ((await targetIds()).includes(id)) return;
-    await sleep(500);
-  }
-  throw new Error(`No target ${id} after ${timeoutMs} ms. Boot a simulator and start the app with pnpm example:ios; the daemon listens for bridges on port 4568.`);
-}
-
-/**
- * Reloads the JavaScript context the way a developer's Cmd+R does: Metro's message socket
- * accepts a reload command from any client. If Expo's dev server refuses it, Expo Go is relaunched
- * instead, which is also a fresh context.
- */
-async function reloadApp(): Promise<void> {
-  const viaMetro = await new Promise<boolean>((resolve) => {
-    let socket: WebSocket;
-    try {
-      socket = new WebSocket(METRO_MESSAGES);
-    } catch {
-      resolve(false);
-      return;
-    }
-    const giveUp = setTimeout(() => {
-      socket.close();
-      resolve(false);
-    }, 3_000);
-    socket.onopen = () => {
-      socket.send(JSON.stringify({ version: 2, method: 'reload' }));
-      setTimeout(() => {
-        clearTimeout(giveUp);
-        socket.close();
-        resolve(true);
-      }, 200);
-    };
-    socket.onerror = () => {
-      clearTimeout(giveUp);
-      resolve(false);
-    };
-  });
-  if (viaMetro) return;
-  await exec('xcrun', ['simctl', 'terminate', 'booted', EXPO_GO]).catch(() => undefined);
-  await exec('xcrun', ['simctl', 'openurl', 'booted', 'exp://127.0.0.1:8081']);
-}
-
-let daemon: ChildProcess | undefined;
-let exited: Promise<number | null>;
+let daemon: DaemonProcess | undefined;
 
 beforeAll(async () => {
-  daemon = spawn('node', [bin, 'serve', '--port', '0'], { cwd: example, env, stdio: ['ignore', 'pipe', 'inherit'] });
-  exited = new Promise<number | null>((resolve) => {
-    daemon?.once('exit', (code) => resolve(code));
-  });
-  await new Promise<void>((resolve, reject) => {
-    daemon?.stdout?.once('data', () => resolve());
-    void exited.then((code) => reject(new Error(`serve exited early with ${code}`)));
-  });
-  await waitForTarget('ios', 90_000);
+  daemon = await spawnServe(env);
+  await waitForTarget(ironbird, 'ios', 90_000);
 });
 
 afterAll(async () => {
-  if (daemon && daemon.exitCode === null) {
-    daemon.kill('SIGTERM');
-    await exited;
-  }
+  await daemon?.stop();
 });
 
 describe('remote mode on the iOS Simulator', () => {
@@ -136,7 +48,7 @@ describe('remote mode on the iOS Simulator', () => {
     const failed = await waiting;
     expect(failed.code).toBe(1);
     expect(failed.json).toMatchObject({ error: { code: 'TARGET_DISCONNECTED' } });
-    await waitForTarget('ios', 60_000);
+    await waitForTarget(ironbird, 'ios', 60_000);
     const state = await ironbird('state', 'cart', '--target', 'ios');
     expect(state.code).toBe(0);
     expect(state.json['target']).toBe('ios');
