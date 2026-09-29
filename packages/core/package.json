@@ -1,6 +1,6 @@
 {
   "name": "@ironbird/core",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Commands, targets, fakes, clocks, effect tracking, and event recording for ironbird",
   "license": "MIT",
   "repository": {
