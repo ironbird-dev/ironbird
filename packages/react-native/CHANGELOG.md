@@ -1,5 +1,14 @@
 # @ironbird/react-native
 
+## 0.0.2
+
+### Patch Changes
+
+- 431210f: `fakeCalls` takes `since` and `limit` and returns `{ calls, nextSeq, truncated }`, a cursor like `events`. `UNKNOWN_FAKE` details are `{ fake, available, suggestions }`, as the protocol's error table says.
+- Updated dependencies [431210f]
+- Updated dependencies [431210f]
+  - @ironbird/core@0.0.3
+
 ## 0.0.1
 
 ### Patch Changes

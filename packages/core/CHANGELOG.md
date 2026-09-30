@@ -1,5 +1,12 @@
 # @ironbird/core
 
+## 0.0.3
+
+### Patch Changes
+
+- 431210f: `defineFake` declares a fake port with Zod-validated controls: `create` returns the port and one handler per control, an extra handler fails instance creation with `UNKNOWN_CONTROL`, and control errors name the control as `<fake>.<control>`. Every fake port records the calls the app makes on it (`FakeInstance.calls(since, limit)` returns `{ calls, nextSeq, truncated }`, kept to 10,000 per fake) and carries the fake mark that `tracker.wrap` reads. `FakeCall.outcome` gains `threw`, and `FakeCall` gains `error` for `threw` and `rejected`. New exports: `defineFake`, `FakeContext`, `ControlHandlers`, `FakeDefinition`, `FakeFactory`, `FakeCallsResult`.
+- 431210f: The scenario runner. `ironbird scenario run <path...> [--bail]` parses YAML scenario files with the `yaml` package (YAML 1.2, so `on` and `yes` stay strings, and errors carry line numbers), validates every file before anything runs, and runs each step as one daemon operation against the target pinned by the run's first `describe`: `send`, `fake`, `clock`, `wait`, `expect`, `screenshot`, and `reset`, with `optional` skips decided from `describe`, `repeat`, and `settle` on `fake` and `clock` steps as on `send`. A `send`, `fake`, or `clock` step that ends neither idle nor quiescent fails the scenario. Every run writes `runs/<stamp>-<slug>/` under the daemon's artifacts directory with `result.json`, a copy of the scenario, `events.jsonl`, `state.json`, `calls/<fake>.json`, and screenshots; `serve` now records `artifactsPath` in `daemon.json` so client commands find that directory without loading the config, and `resolveDaemon` returns it as `artifactsDir`. `@ironbird/cli` exports `parseScenario`, `loadScenarioFiles`, and `runScenario`. In core, `INVALID_SCENARIO` joins the error codes (exit 2 in the CLI), and `ScenarioResult` gains `file`, `stepsRun`, `failedStep.repetition`, `failedStep.expected`, and `artifactErrors`, with `artifacts` nullable; the never-implemented daemon-side `scenarioRun` operation leaves the protocol docs. `scenario run` resets a headless target before each file, so files don't share app state; a remote app, which has no `reset`, runs against its current state.
+
 ## 0.0.2
 
 ### Patch Changes
