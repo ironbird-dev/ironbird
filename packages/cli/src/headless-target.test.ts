@@ -1,4 +1,4 @@
-import { createTarget, defineCommands, defineFake, defineHeadless, isIronbirdError, type HeadlessDefinition, type StepResult } from '@ironbird/core';
+import { IronbirdError, createTarget, defineCommands, defineFake, defineHeadless, isIronbirdError, type HeadlessDefinition, type StepResult } from '@ironbird/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { counterDefinition as definition, type CounterState as State } from '../test/helpers/counter-app';
@@ -25,6 +25,87 @@ async function bootWith(custom: HeadlessDefinition): Promise<HeadlessTarget> {
 }
 
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+interface Reloadable {
+  /** Loads, boots, and disposals in the order they happened: `load v2`, `boot v2`, `dispose v2`. */
+  log: string[];
+  /**
+   * What the next `loadDefinition` reads: the version to load, a load error, or a factory that
+   * throws. `throwing` is read by the factory itself on every boot, reset or reload alike.
+   */
+  source: { version: number; broken: boolean; explodes: boolean; throwing?: IronbirdError };
+  /** Parks the next `loadDefinition` after it logs, until the returned function is called. */
+  holdNextLoad(): () => void;
+  boot(): Promise<HeadlessTarget>;
+}
+
+const pinger = defineFake('pinger', {
+  controls: { noop: z.object({}) },
+  create: () => ({ port: { ping: async () => 'pong' }, controls: { noop: () => {} } }),
+});
+
+// A headless app whose "source" the test edits between reloads, standing in for the entry file
+// `serve` re-bundles. Each version records an event and a fake call per `count.add`, so a test can
+// see both logs restart.
+function reloadable(): Reloadable {
+  const log: string[] = [];
+  const source: Reloadable['source'] = { version: 1, broken: false, explodes: false };
+  let held: Promise<void> | undefined;
+  const versionApp = (version: number, explodes: boolean): HeadlessDefinition =>
+    defineHeadless(({ clock, recorder, tracker }) => {
+      if (source.throwing) throw source.throwing;
+      if (explodes) throw new Error(`v${version} exploded on boot`);
+      log.push(`boot v${version}`);
+      const fake = pinger.create({ clock, recorder });
+      const port = tracker.wrap(fake.port, 'pinger');
+      let count = 0;
+      const listeners = new Set<() => void>();
+      const app = createTarget({
+        commands: defineCommands({ 'count.add': z.object({}), 'hang.forever': z.object({}) }),
+        dispatch: async ({ name }) => {
+          if (name === 'hang.forever') return new Promise<void>(() => {});
+          await port.ping();
+          count += 1;
+          recorder.record('app', 'added');
+          listeners.forEach((listener) => listener());
+        },
+        getState: () => ({ version, count }),
+        subscribe: (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      });
+      return {
+        target: app,
+        fakes: [fake],
+        dispose: () => {
+          log.push(`dispose v${version}`);
+        },
+      };
+    });
+  const loadDefinition = async (): Promise<HeadlessDefinition> => {
+    const { version, broken, explodes } = source;
+    log.push(`load v${version}`);
+    const waiting = held;
+    held = undefined;
+    if (waiting) await waiting;
+    if (broken) throw new IronbirdError('HEADLESS_LOAD_FAILED', 'Failed to load headless.ts: Unexpected end of file', { entry: 'headless.ts', message: 'Unexpected end of file' });
+    return versionApp(version, explodes);
+  };
+  return {
+    log,
+    source,
+    holdNextLoad: () => {
+      let release: () => void = () => {};
+      held = new Promise<void>((resolve) => (release = resolve));
+      return () => release();
+    },
+    boot: async () => {
+      target = await createHeadlessTarget({ definition: versionApp(1, false), loadDefinition, appId: 'a', clockStart: '2026-01-01T00:00:00.000Z', settleTimeoutMs: 100, env: {}, log: (line) => logs.push(line) });
+      return target;
+    },
+  };
+}
 
 describe('createHeadlessTarget', () => {
   it('describes the app with commands and capabilities', async () => {
@@ -611,5 +692,162 @@ describe('createHeadlessTarget', () => {
     await expect(reset).rejects.toMatchObject({ code: 'UNSUPPORTED' });
     await dispose;
     expect(disposedIds).toEqual([1, 2]);
+  });
+
+  it('declares reload only when it can load its entry again, and answers UNSUPPORTED without it', async () => {
+    const t = await reloadable().boot();
+    expect(((await t.run('describe', {})) as { capabilities: string[] }).capabilities).toEqual(['settle', 'events', 'fakes', 'clock', 'reset', 'reload']);
+    await t.dispose();
+    const plain = await boot();
+    const error = await plain.run('reload', {}).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: 'UNSUPPORTED', details: { op: 'reload', target: 'headless' } });
+  });
+
+  it('reload installs the freshly loaded code with a fresh clock, event log, and fake call log', async () => {
+    const r = reloadable();
+    const t = await r.boot();
+    await t.run('dispatch', { name: 'count.add' });
+    await t.run('clockAdvance', { ms: 250 });
+    expect(await t.run('events', {})).toMatchObject({ events: [{ seq: 1, name: 'added' }], nextSeq: 1 });
+    expect(await t.run('fakeCalls', { fake: 'pinger' })).toMatchObject({ calls: [{ seq: 1, method: 'ping' }], nextSeq: 1 });
+    r.source.version = 2;
+    expect(await t.run('reload', {})).toEqual({ rev: 0 });
+    expect(await t.run('getState', {})).toEqual({ rev: 0, path: '', value: { version: 2, count: 0 } });
+    expect(await t.run('events', {})).toEqual({ events: [], nextSeq: 0, truncated: false });
+    expect(await t.run('fakeCalls', { fake: 'pinger' })).toEqual({ calls: [], nextSeq: 0, truncated: false });
+    expect(await t.run('clockNow', {})).toEqual({ now: Date.parse('2026-01-01T00:00:00.000Z') });
+    expect(r.log).toEqual(['boot v1', 'dispose v1', 'load v2', 'boot v2']);
+  });
+
+  it('a reload abandons in-flight and queued operations with TARGET_DISCONNECTED naming the reload', async () => {
+    const r = reloadable();
+    const t = await r.boot();
+    const hanging = t.run('dispatch', { name: 'hang.forever' });
+    const queued = t.run('dispatch', { name: 'count.add' });
+    hanging.catch(() => undefined);
+    queued.catch(() => undefined);
+    await tick();
+    r.source.version = 2;
+    await t.run('reload', {});
+    await expect(hanging).rejects.toMatchObject({ code: 'TARGET_DISCONNECTED', message: 'Target was reloaded before dispatch completed', details: { target: 'headless', op: 'dispatch' } });
+    await expect(queued).rejects.toMatchObject({ code: 'TARGET_DISCONNECTED', details: { target: 'headless', op: 'dispatch' } });
+    expect(await t.run('dispatch', { name: 'count.add', path: 'count' })).toMatchObject({ state: 1 });
+  });
+
+  it('a failed reload disposes the old code first and leaves HEADLESS_LOAD_FAILED on every later operation, reset included, until a reload succeeds', async () => {
+    const r = reloadable();
+    const t = await r.boot();
+    r.source.broken = true;
+    const failure = await t.run('reload', {}).catch((caught: unknown) => caught);
+    expect(failure).toMatchObject({ code: 'HEADLESS_LOAD_FAILED', details: { entry: 'headless.ts' } });
+    // The old session went first: a failure never leaves the previous code running.
+    expect(r.log).toEqual(['boot v1', 'dispose v1', 'load v1']);
+    for (const [op, params] of [
+      ['describe', {}],
+      ['getState', {}],
+      ['dispatch', { name: 'count.add' }],
+      ['events', {}],
+      ['reset', {}],
+    ] as const) {
+      expect(await t.run(op, params).catch((caught: unknown) => caught)).toBe(failure);
+    }
+    // A factory that throws is a failed reload too, and reset still refuses to run the old code.
+    r.source.broken = false;
+    r.source.explodes = true;
+    r.source.version = 2;
+    const exploded = await t.run('reload', {}).catch((caught: unknown) => caught);
+    expect(exploded).toMatchObject({ code: 'HEADLESS_LOAD_FAILED', message: 'Headless app failed to reload: v2 exploded on boot', details: { entry: 'a', message: 'v2 exploded on boot' } });
+    expect(await t.run('reset', {}).catch((caught: unknown) => caught)).toBe(exploded);
+    r.source.explodes = false;
+    r.source.version = 3;
+    expect(await t.run('reload', {})).toEqual({ rev: 0 });
+    expect(await t.run('reset', {})).toEqual({ rev: 0, path: '', value: { version: 3, count: 0 } });
+    expect(r.log).toEqual(['boot v1', 'dispose v1', 'load v1', 'load v2', 'load v3', 'boot v3', 'dispose v3', 'boot v3']);
+  });
+
+  it('reports any failure of a reload as HEADLESS_LOAD_FAILED naming the original code, while a failed reset keeps its own code', async () => {
+    const r = reloadable();
+    const t = await r.boot();
+    const unknownControl = new IronbirdError('UNKNOWN_CONTROL', 'Unknown control pinger.nope', { fake: 'pinger', control: 'nope', suggestions: [] });
+    r.source.throwing = unknownControl;
+    // Reset is unchanged: the factory's own error becomes the boot error, code and all.
+    expect(await t.run('reset', {}).catch((caught: unknown) => caught)).toBe(unknownControl);
+    const failure = await t.run('reload', {}).catch((caught: unknown) => caught);
+    expect(failure).toBeInstanceOf(IronbirdError);
+    expect(failure).toMatchObject({ code: 'HEADLESS_LOAD_FAILED', message: 'Headless app failed to reload: UNKNOWN_CONTROL: Unknown control pinger.nope' });
+    expect((failure as IronbirdError).details).toEqual({ entry: 'a', message: 'UNKNOWN_CONTROL: Unknown control pinger.nope' });
+    expect(await t.run('getState', {}).catch((caught: unknown) => caught)).toBe(failure);
+    expect(await t.run('reset', {}).catch((caught: unknown) => caught)).toBe(failure);
+    r.source.throwing = undefined;
+    expect(await t.run('reload', {})).toEqual({ rev: 0 });
+    expect(await t.run('getState', {})).toMatchObject({ value: { version: 1, count: 0 } });
+  });
+
+  it('a reset requested during a reload waits for it and resets the freshly loaded code, and resets requested together share one transition', async () => {
+    const r = reloadable();
+    const t = await r.boot();
+    r.source.version = 2;
+    const release = r.holdNextLoad();
+    const reloading = t.run('reload', {});
+    await tick();
+    const firstReset = t.run('reset', {});
+    const secondReset = t.run('reset', {});
+    await tick();
+    expect(r.log).toEqual(['boot v1', 'dispose v1', 'load v2']);
+    release();
+    expect(await reloading).toEqual({ rev: 0 });
+    const [a, b] = await Promise.all([firstReset, secondReset]);
+    expect(a).toEqual({ rev: 0, path: '', value: { version: 2, count: 0 } });
+    expect(b).toBe(a);
+    expect(r.log).toEqual(['boot v1', 'dispose v1', 'load v2', 'boot v2', 'dispose v2', 'boot v2']);
+  });
+
+  it('a reload requested during a reset waits for it and then loads again', async () => {
+    const r = reloadable();
+    const t = await r.boot();
+    r.source.version = 2;
+    const [reset, reload] = await Promise.all([t.run('reset', {}), t.run('reload', {})]);
+    expect(reset).toEqual({ rev: 0, path: '', value: { version: 1, count: 0 } });
+    expect(reload).toEqual({ rev: 0 });
+    expect(r.log).toEqual(['boot v1', 'dispose v1', 'boot v1', 'dispose v1', 'load v2', 'boot v2']);
+    expect(await t.run('getState', { path: 'version' })).toMatchObject({ value: 2 });
+  });
+
+  it('runs two concurrent reloads one after another, never shared, and leaves the last-requested code installed', async () => {
+    const r = reloadable();
+    const t = await r.boot();
+    r.source.version = 2;
+    const release = r.holdNextLoad();
+    const first = t.run('reload', {});
+    await tick();
+    expect(r.log).toEqual(['boot v1', 'dispose v1', 'load v2']);
+    // The source changes while the first reload is still loading: sharing it would install v2.
+    r.source.version = 3;
+    const second = t.run('reload', {});
+    await tick();
+    expect(r.log).toEqual(['boot v1', 'dispose v1', 'load v2']);
+    release();
+    expect(await first).toEqual({ rev: 0 });
+    expect(await second).toEqual({ rev: 0 });
+    expect(r.log).toEqual(['boot v1', 'dispose v1', 'load v2', 'boot v2', 'dispose v2', 'load v3', 'boot v3']);
+    expect(await t.run('getState', {})).toMatchObject({ value: { version: 3, count: 0 } });
+  });
+
+  it('dispose during a reload tears down what the reload booted, and fails it and the reset queued behind it as disposed', async () => {
+    const r = reloadable();
+    const t = await r.boot();
+    r.source.version = 2;
+    const release = r.holdNextLoad();
+    const reloading = t.run('reload', {});
+    reloading.catch(() => undefined);
+    await tick();
+    const resetting = t.run('reset', {});
+    resetting.catch(() => undefined);
+    const disposing = t.dispose();
+    release();
+    await expect(reloading).rejects.toMatchObject({ code: 'UNSUPPORTED', message: 'Target is disposed', details: { op: 'reload', target: 'headless' } });
+    await expect(resetting).rejects.toMatchObject({ code: 'UNSUPPORTED', message: 'Target is disposed', details: { op: 'reset', target: 'headless' } });
+    await disposing;
+    expect(r.log).toEqual(['boot v1', 'dispose v1', 'load v2', 'boot v2', 'dispose v2']);
   });
 });

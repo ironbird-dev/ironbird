@@ -27,6 +27,12 @@ export { MUTATING_OPS, QUEUED_OPS } from './daemon-target';
 
 export interface HeadlessTargetOptions {
   definition: HeadlessDefinition;
+  /**
+   * Loads the headless entry again from source, for `reload`; `serve` passes one that re-bundles
+   * the configured entry. Without it the target doesn't declare `reload`, and the operation fails
+   * with `UNSUPPORTED`, as for a definition built inline with no file behind it.
+   */
+  loadDefinition?: () => Promise<HeadlessDefinition>;
   appId: string;
   clockStart?: string;
   settleTimeoutMs: number;
@@ -34,8 +40,8 @@ export interface HeadlessTargetOptions {
   log?: (line: string) => void;
   /**
    * Wall-clock bound on one `definition.create` call (default 30 s). Without it a factory that
-   * never resolves wedges the target for good: `run` waits on `resetting`, `reset` hands back the
-   * same stuck promise, and `dispose` awaits it too.
+   * never resolves wedges the target for good: `run` waits on the stuck transition, and `dispose`
+   * awaits it too.
    */
   bootTimeoutMs?: number;
   /**
@@ -60,7 +66,10 @@ interface Session {
 }
 
 type Params = Record<string, unknown>;
+/** The target's two lifecycle transitions (spec §4.1). */
+type Transition = 'reset' | 'reload';
 type ResetResult = { rev: number; path: string; value: unknown };
+type ReloadResult = { rev: number };
 
 const str = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
 const num = (value: unknown, fallback: number): number => (typeof value === 'number' && Number.isFinite(value) ? value : fallback);
@@ -72,7 +81,13 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
   const warned = new Set<string>();
   const queue = createOperationQueue('headless');
   let session: Session | undefined;
-  let resetting: Promise<ResetResult> | undefined;
+  // The code `reset` re-runs. A reload clears it before loading and sets it only on success, so
+  // after a failed reload `reset` has nothing to run and fails with the load error: resetting would
+  // run code that no longer matches the source (spec D5).
+  let definition: HeadlessDefinition | undefined = options.definition;
+  // The last transition requested, running or waiting behind an earlier one. Transitions never
+  // overlap, and every other operation waits until none is pending.
+  let lifecycle: { kind: Transition; promise: Promise<ResetResult | ReloadResult> } | undefined;
   let disposed = false;
   let disposing: Promise<void> | undefined;
   let bootError: IronbirdError | undefined;
@@ -83,36 +98,49 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
 
   // A factory that hangs must fail the boot rather than the whole target, so `create` races a
   // timer. The abandoned factory keeps running on its own; nothing else ever reads its result.
-  const createApp = async (context: Parameters<HeadlessDefinition['create']>[0]): Promise<HeadlessApp> => {
+  const createApp = async (source: HeadlessDefinition, context: Parameters<HeadlessDefinition['create']>[0]): Promise<HeadlessApp> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new IronbirdError('HEADLESS_LOAD_FAILED', `Headless app failed to start: the factory did not resolve within ${bootTimeoutMs} ms`, { entry, message: `boot timed out after ${bootTimeoutMs} ms` })), bootTimeoutMs);
     });
     timeout.catch(() => undefined);
     try {
-      return await Promise.race([options.definition.create(context), timeout]);
+      return await Promise.race([source.create(context), timeout]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
   };
 
-  const boot = async (): Promise<Session> => {
+  const boot = async (source: HeadlessDefinition): Promise<Session> => {
     const clock = createManualClock({ now: options.clockStart ? Date.parse(options.clockStart) : 0 });
     const recorder = createEventRecorder({ clock });
     const tracker = createTracker({ clock });
-    const app = await createApp({ clock, recorder, tracker, env: options.env });
+    const app = await createApp(source, { clock, recorder, tracker, env: options.env });
     const offEvents = recorder.subscribe((event) => eventListeners.forEach((listener) => listener(event)));
     const offState = app.target.subscribe(() => stateListeners.forEach((listener) => listener(app.target.revision())));
     return { clock, recorder, tracker, app, unsubscribe: () => (offEvents(), offState()) };
   };
 
   // A boot failure is a load failure whichever boot it was: the app the config names never came
-  // up. An IronbirdError from the factory itself (a bad payload, say) keeps its own code.
+  // up. An IronbirdError from the factory or the loader (a bad payload, say) keeps its own code.
   const bootFailure = (error: unknown): IronbirdError =>
     error instanceof IronbirdError ? error : new IronbirdError('HEADLESS_LOAD_FAILED', `Headless app failed to start: ${messageOf(error)}`, { entry, message: messageOf(error) });
 
+  // A reload that fails for any reason is a load failure: the source no longer yields a running app.
+  // A load error already coded HEADLESS_LOAD_FAILED passes through with its details (an import
+  // chain, say); anything else, including an IronbirdError the factory threw with another code, is
+  // reported under HEADLESS_LOAD_FAILED with the original code kept in the message, so an agent
+  // never mistakes a broken edit for a bad payload or an unknown fake.
+  const reloadFailure = (error: unknown): IronbirdError => {
+    if (error instanceof IronbirdError && error.code === 'HEADLESS_LOAD_FAILED') return error;
+    const message = error instanceof IronbirdError ? `${error.code}: ${error.message}` : messageOf(error);
+    return new IronbirdError('HEADLESS_LOAD_FAILED', `Headless app failed to reload: ${message}`, { entry, message });
+  };
+
+  const disposedError = (op: string): IronbirdError => new IronbirdError('UNSUPPORTED', 'Target is disposed', { op, target: 'headless' });
+
   try {
-    session = await boot();
+    session = await boot(options.definition);
   } catch (error) {
     throw bootFailure(error);
   }
@@ -128,11 +156,11 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     }
   };
 
-  // There is no session between `reset` bumping the epoch and its `boot()` returning, and none
-  // at all after `dispose`. A failed reset leaves `bootError` behind so every later operation
-  // reports why the target is unusable until another reset succeeds.
+  // There is no session while a transition runs, and none at all after `dispose`. A failed
+  // transition leaves `bootError` behind so every later operation reports why the target is
+  // unusable until another transition succeeds.
   const requireSession = (op: string): Session => {
-    if (!session) throw bootError ?? new IronbirdError('UNSUPPORTED', 'Target is disposed', { op, target: 'headless' });
+    if (!session) throw bootError ?? disposedError(op);
     return session;
   };
 
@@ -167,9 +195,9 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
   };
 
   // Runs a mutating step against `current`, the session that was live when the op started. If a
-  // `reset` or `dispose` intervenes while `action` is in flight, the epoch no longer matches, and
-  // this op must neither touch the new session nor report state read off the dead one, so every
-  // await is followed by a bail-out.
+  // transition or `dispose` intervenes while `action` is in flight, the epoch no longer matches,
+  // and this op must neither touch the new session nor report state read off the dead one, so
+  // every await is followed by a bail-out.
   const runStep = async (op: string, startedEpoch: number, current: Session, params: Params, action: () => Promise<void>): Promise<StepResult> => {
     const path = str(params['path']);
     const settle = settleOptions(params);
@@ -206,47 +234,70 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     }
   };
 
-  const performReset = (): Promise<ResetResult> => {
-    const promise = (async (): Promise<ResetResult> => {
-      // First statement, before any await: everything waiting or in flight is invalidated the
-      // instant recovery begins, not once a new session happens to be installed.
-      queue.abandon('reset');
-      const previous = session;
-      session = undefined;
-      warned.clear();
-      if (previous) {
-        try {
-          await disposeSession(previous);
-        } catch (error) {
-          // The old session is gone either way (its listeners are already detached above), but a
-          // dispose that throws must not leave `bootError` unset: without this, `requireSession`
-          // would fall back to its generic "Target is disposed" message for every later op, which
-          // is wrong (the target isn't disposed, only this reset's teardown failed) and hides the
-          // real cause. A later successful reset clears `bootError` again as usual.
-          bootError = bootFailure(error);
-          throw bootError;
-        }
-      }
-      let next: Session;
-      try {
-        next = await boot();
-      } catch (error) {
-        bootError = bootFailure(error);
-        throw bootError;
-      }
-      // `dispose` may have run while `boot()` was in flight: nothing will ever use this session,
-      // so tear it down immediately rather than installing it, keeping every boot's disposal exact.
-      if (disposed) {
-        await disposeSession(next);
-        throw new IronbirdError('UNSUPPORTED', 'Target is disposed', { op: 'reset', target: 'headless' });
-      }
-      session = next;
-      bootError = undefined;
-      return { rev: next.app.target.revision(), path: '', value: snapshotOf(next, '') };
-    })().finally(() => {
-      resetting = undefined;
-    });
-    resetting = promise;
+  const loadAgain = async (): Promise<HeadlessDefinition> => {
+    if (!options.loadDefinition) throw new IronbirdError('UNSUPPORTED', "The headless target doesn't support reload", { op: 'reload', target: 'headless' });
+    return options.loadDefinition();
+  };
+
+  // One lifecycle transition, shared by `reset` and `reload` (spec §4.1). Everything up to the
+  // first await runs synchronously when the transition starts: the queue is abandoned, so every
+  // operation waiting or in flight fails with TARGET_DISCONNECTED, and the old session is detached
+  // before anything is loaded, so no failure below can leave the previous code running.
+  const transition = async (kind: Transition): Promise<Session> => {
+    if (disposed) throw disposedError(kind);
+    const kept = definition;
+    if (kind === 'reset' && kept === undefined) throw bootError ?? disposedError(kind);
+    queue.abandon(kind);
+    const previous = session;
+    session = undefined;
+    warned.clear();
+    if (kind === 'reload') definition = undefined;
+    let loaded: HeadlessDefinition;
+    let next: Session;
+    try {
+      if (previous) await disposeSession(previous);
+      loaded = kind === 'reload' ? await loadAgain() : (kept as HeadlessDefinition);
+      next = await boot(loaded);
+    } catch (error) {
+      // Kept as the boot error so every later operation reports why the target is unusable. After
+      // a failed reset a later reset may retry the same code, and the error keeps its own code as
+      // it always has; after a failed reload only a reload can recover, and the error is always
+      // HEADLESS_LOAD_FAILED.
+      bootError = kind === 'reload' ? reloadFailure(error) : bootFailure(error);
+      throw bootError;
+    }
+    // `dispose` may have run while this transition awaited: nothing will ever use this session, so
+    // tear it down rather than installing it, keeping every boot's disposal exact.
+    if (disposed) {
+      await disposeSession(next);
+      throw disposedError(kind);
+    }
+    definition = loaded;
+    session = next;
+    bootError = undefined;
+    return next;
+  };
+
+  // Transitions run one at a time, in the order requested. A reset requested while the last
+  // pending transition is also a reset shares it, since both would reset the same code, as two
+  // concurrent resets always have. A reload never shares: the source may have changed since the
+  // pending transition read it. A reset requested during a reload waits for it and then resets the
+  // freshly loaded code.
+  const requestTransition = (kind: Transition): Promise<ResetResult | ReloadResult> => {
+    if (kind === 'reset' && lifecycle?.kind === 'reset') return lifecycle.promise;
+    const before = lifecycle?.promise;
+    const promise = (async (): Promise<ResetResult | ReloadResult> => {
+      if (before) await before.catch(() => undefined);
+      const next = await transition(kind);
+      const rev = next.app.target.revision();
+      return kind === 'reset' ? { rev, path: '', value: snapshotOf(next, '') } : { rev };
+    })();
+    const pending = { kind, promise };
+    lifecycle = pending;
+    const settled = (): void => {
+      if (lifecycle === pending) lifecycle = undefined;
+    };
+    promise.then(settled, settled);
     return promise;
   };
 
@@ -261,7 +312,15 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
         app: { id: options.appId, platform: 'headless' },
         commands: current.app.target.commands.describe(),
         fakes,
-        capabilities: ['settle', 'events', ...(current.app.fakes?.length ? (['fakes'] as const) : []), 'clock', 'reset', ...current.app.target.capabilities],
+        capabilities: [
+          'settle',
+          'events',
+          ...(current.app.fakes?.length ? (['fakes'] as const) : []),
+          'clock',
+          'reset',
+          ...(options.loadDefinition ? (['reload'] as const) : []),
+          ...current.app.target.capabilities,
+        ],
       };
     },
     dispatch: (params) => step('dispatch', params, (current) => current.app.target.dispatch(str(params['name']), params['payload'])),
@@ -291,7 +350,7 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     settle: async (params) => {
       const startedEpoch = queue.epoch;
       const current = requireSession('settle');
-      // Through `raceAbandon` like a step's settle, so a reset or dispose rejects this read
+      // Through `raceAbandon` like a step's settle, so a transition or dispose rejects this read
       // immediately instead of leaving the caller to wait out its own timeout.
       const result = await queue.raceAbandon('settle', current.tracker.whenIdle({ timeoutMs: num(params['timeoutMs'], options.settleTimeoutMs), mode: 'quiescent' }));
       if (queue.epoch !== startedEpoch) throw queue.abandoned('settle');
@@ -315,16 +374,8 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
       return { ...result, now: current.clock.now() };
     },
     clockNow: () => ({ now: requireSession('clockNow').clock.now() }),
-    reset: () => {
-      // Not queued (see `run`): a stuck dispatch must not block recovery, so reset abandons
-      // whatever is still waiting in the queue instead of waiting its turn behind it.
-      if (disposed) {
-        throw new IronbirdError('UNSUPPORTED', 'Target is disposed', { op: 'reset', target: 'headless' });
-      }
-      // Two concurrent resets must not dispose the same session twice or orphan one of the two
-      // freshly booted sessions, so a reset already in flight is handed back as-is.
-      return resetting ?? performReset();
-    },
+    reset: () => requestTransition('reset'),
+    ...(options.loadDefinition ? { reload: () => requestTransition('reload') } : {}),
   };
 
   return {
@@ -333,17 +384,19 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     async run(op, params) {
       const handler = ops[op];
       if (!handler) throw new IronbirdError('UNSUPPORTED', `The headless target doesn't support ${op}`, { op, target: 'headless' });
-      if (disposed) throw new IronbirdError('UNSUPPORTED', 'Target is disposed', { op, target: 'headless' });
-      if (op === 'reset') return handler(params);
-      // A reset in progress leaves `session` cleared for its dispose/boot window. An op that
-      // starts here would see no session and fail as if disposed, which is wrong and drops work,
-      // so it waits its turn and then runs against whatever session the reset installs. Looping
-      // covers a reset that starts during the wait too. If the reset fails, `requireSession`
-      // rethrows `bootError` as it already does.
-      while (resetting) await resetting.catch(() => undefined);
+      if (disposed) throw disposedError(op);
+      // Not queued: a stuck dispatch must not block recovery, so a transition abandons whatever is
+      // still waiting in the queue instead of waiting its turn behind it.
+      if (op === 'reset' || op === 'reload') return handler(params);
+      // A transition in progress leaves `session` cleared for its dispose, load, and boot. An op
+      // that starts here would see no session and fail as if disposed, which is wrong and drops
+      // work, so it waits and then runs against whatever session the transition installs. Looping
+      // covers a transition requested during the wait too. If the transition fails,
+      // `requireSession` rethrows `bootError`.
+      while (lifecycle) await lifecycle.promise.catch(() => undefined);
       // `dispose` may have run during that wait, and the ops below would otherwise report the
-      // reset's `bootError` (or run against a session dispose is about to tear down).
-      if (disposed) throw new IronbirdError('UNSUPPORTED', 'Target is disposed', { op, target: 'headless' });
+      // transition's `bootError` (or run against a session dispose is about to tear down).
+      if (disposed) throw disposedError(op);
       if (!QUEUED_OPS.has(op)) return handler(params);
       return queue.enqueue(op, async () => handler(params));
     },
@@ -366,9 +419,10 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
       disposed = true;
       queue.abandon('disposed');
       disposing = (async () => {
-        // Awaiting an in-flight reset first is what keeps the count exact: whatever session it
-        // installs becomes the one this call disposes.
-        await resetting?.catch(() => undefined);
+        // Waiting out every pending transition first keeps the count exact: the running one tears
+        // down whatever it booted instead of installing it, and the ones queued behind it fail as
+        // disposed without booting at all.
+        while (lifecycle) await lifecycle.promise.catch(() => undefined);
         const previous = session;
         session = undefined;
         if (previous) await disposeSession(previous);
