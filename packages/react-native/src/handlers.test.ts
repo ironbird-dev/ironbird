@@ -216,4 +216,22 @@ describe('createHandlers', () => {
       expect(await failure(handlers[op]!({}))).toMatchObject({ code: 'UNSUPPORTED', details: { op, target: 'ios' } });
     }
   });
+
+  it('declares reload only with a reload function, and replies before calling it on the next tick', async () => {
+    expect(capabilitiesOf(app().target, [], () => {})).toEqual(['settle', 'events', 'reload']);
+    expect(capabilitiesOf(app().target, [])).toEqual(['settle', 'events']);
+    const ctx = app();
+    let reloads = 0;
+    ctx.reload = () => {
+      reloads += 1;
+    };
+    const handlers = createHandlers(ctx);
+    expect(((await handlers['describe']!({})) as { capabilities: string[] }).capabilities).toEqual(['settle', 'events', 'reload']);
+    expect(await handlers['reload']!({})).toEqual({});
+    // The reply is in hand and the reload hasn't run: it waits a tick so the response leaves first.
+    expect(reloads).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reloads).toBe(1);
+    expect(await failure(createHandlers(app())['reload']!({}))).toMatchObject({ code: 'UNSUPPORTED', details: { op: 'reload', target: 'ios' } });
+  });
 });

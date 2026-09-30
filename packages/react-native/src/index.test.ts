@@ -1,6 +1,7 @@
 import { PROTOCOL_VERSION, createEventRecorder, createManualClock, createRealClock, createTarget, createTracker, defineCommands } from '@ironbird/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocketServer, type WebSocket as ServerSocket } from 'ws';
+import { DevSettings } from 'react-native';
 import { z } from 'zod';
 import { BRIDGE_MARKER, STATE_NOTIFY_INTERVAL_MS, startBridge, type BridgeHandle } from './index';
 
@@ -136,5 +137,28 @@ describe('startBridge', () => {
     expect(fixture.frames[3]).toEqual({ type: 'notify', kind: 'state', data: { rev: 3 } });
     handle.stop();
     expect(clock.timers()).toEqual([]);
+  });
+
+  it('declares reload when DevSettings.reload exists, answers a reload request, and then reloads', async () => {
+    const settings = DevSettings as { reload?: (reason?: string) => void };
+    const reasons: Array<string | undefined> = [];
+    settings.reload = (reason) => {
+      reasons.push(reason);
+    };
+    try {
+      fixture = await daemon();
+      handle = startBridge({ target: counterTarget(), url: fixture.url, clock: createRealClock(), logger: () => {} });
+      await fixture.until(() => fixture!.frames.length >= 1);
+      expect(fixture.frames[0]).toMatchObject({ type: 'hello', capabilities: ['settle', 'events', 'reload'] });
+      const socket = fixture.sockets[0]!;
+      socket.send(JSON.stringify({ type: 'welcome', protocol: 1, targetId: 'ios' }));
+      await fixture.until(() => handle!.connected);
+      socket.send(JSON.stringify({ type: 'request', id: 'r-1', op: 'reload' }));
+      await fixture.until(() => fixture!.frames.length >= 2 && reasons.length === 1);
+      expect(fixture.frames[1]).toEqual({ type: 'response', id: 'r-1', ok: true, result: {} });
+      expect(reasons).toEqual(['ironbird reload']);
+    } finally {
+      delete settings.reload;
+    }
   });
 });

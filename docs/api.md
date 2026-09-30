@@ -79,7 +79,7 @@ interface Target<S = unknown> {
 
 `TargetDefinition` is exported alongside `createTarget`. `persist` and `restore` ship today: a definition that provides either gets the matching method and capability on the `Target`. What is P1 is the pair of protocol operations that use them, `snapshotSave` and `snapshotLoad`; see [protocol.md §4.1](protocol.md#41-target-operations).
 
-`capabilities` lists only what the `Target` itself provides. The daemon and bridge add `settle`, `events`, `fakes`, `clock`, and `reset` as appropriate when they describe the target; see [protocol.md §5](protocol.md#5-types). A subscriber that throws is skipped with a `console.warn`; it never prevents later subscribers from running or the dispatch from completing.
+`capabilities` lists only what the `Target` itself provides. The daemon and bridge add `settle`, `events`, `fakes`, `clock`, `reset`, and `reload` as appropriate when they describe the target; see [protocol.md §5](protocol.md#5-types). A subscriber that throws is skipped with a `console.warn`; it never prevents later subscribers from running or the dispatch from completing.
 
 Example with an XState actor, adapted by hand (the `@ironbird/xstate` adapter does this for you):
 
@@ -392,6 +392,7 @@ Behavior:
 - Every incoming payload is validated against the app's own registry before dispatch; malformed frames are dropped and logged.
 - Recorded events are forwarded as they happen; state revisions are coalesced to one notification per 100 ms window; serialization warnings are sent once per path per connection.
 - `clockAdvance`, `clockNow`, and `reset` answer `UNSUPPORTED`, and the bridge never declares the `clock` or `reset` capability.
+- When `DevSettings.reload` from `react-native` is a function, as in dev builds, the bridge declares the `reload` capability and answers a `reload` request with `{}`, then calls `DevSettings.reload()` on the next tick of its clock, so the reply leaves before the JavaScript context goes away. The app restarts from the bundler and the bridge reconnects as it does after any reload; `ironbird reload` waits for that and keeps the same target id.
 - iOS Simulator reaches the daemon at `localhost`. Android emulators need `adb reverse tcp:4568 tcp:4568`, which `ironbird serve` runs automatically when `adb` is available. Physical devices use the host's LAN address, and the daemon must be started with `--host` and a token.
 
 Wiring, using the layout from [architecture.md §5](architecture.md#5-integrating-an-app). The tracker and recorder are created in `instance.ts`, which only the app loads, with `enabled: __DEV__` so release builds carry neither:

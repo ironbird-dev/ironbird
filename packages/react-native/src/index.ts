@@ -15,7 +15,7 @@ import { openConnection, type Connection, type Logger } from './connection';
 import { capabilitiesOf, createHandlers } from './handlers';
 import { BRIDGE_MARKER } from './marker';
 import type { BridgePlatform, HelloFrame } from './messages';
-import { platformOs } from './platform';
+import { devSettingsReload, platformOs } from './platform';
 
 export interface BridgeOptions {
   target: Target;
@@ -77,6 +77,7 @@ export function startBridge(options: BridgeOptions): BridgeHandle {
   const app = { id: options.appId ?? 'app', platform, ...(options.appName === undefined ? {} : { name: options.appName }) };
   const settleDefaults = { frames: options.settle?.frames ?? 2, timeoutMs: options.settle?.timeoutMs ?? 5_000 };
   const warned = new Set<string>();
+  const reload = devSettingsReload();
 
   // `handlers` and `hello` close over `connection` before it exists: `openConnection`'s `onRequest`
   // needs `handlers`, and `handlers` needs `connection` for `targetId`/`send`, so one of the two
@@ -95,6 +96,7 @@ export function startBridge(options: BridgeOptions): BridgeHandle {
     },
     app,
     settleDefaults,
+    reload,
     targetId: () => connection.targetId ?? 'remote',
     warn: (path, valueKind) => {
       if (warned.has(path)) return;
@@ -109,7 +111,7 @@ export function startBridge(options: BridgeOptions): BridgeHandle {
     ...(options.token === undefined ? {} : { token: options.token }),
     marker: BRIDGE_MARKER,
     app: { ...app, bridgeVersion: BRIDGE_VERSION },
-    capabilities: capabilitiesOf(options.target, fakes),
+    capabilities: capabilitiesOf(options.target, fakes, reload),
   });
 
   connection = openConnection({
