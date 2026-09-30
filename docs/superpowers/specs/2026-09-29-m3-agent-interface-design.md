@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft 2026-09-29; approved section by section in conversation, awaiting pull-request review |
+| Status | Approved section by section 2026-09-29; revised after a codex review (reload lifecycle, remote replacement, eval isolation and grading) |
 | Milestone | M3 in [roadmap.md](../../roadmap.md) |
 | Builds on | [architecture.md](../../architecture.md) §2, §12 · [protocol.md](../../protocol.md) operation tables, capabilities, versioning rules · [cli.md](../../cli.md) `mcp`, "MCP tools", `reset`, `screenshot`, `step`, `scenario run` · [M2 design](2026-09-25-m2-fakes-and-scenarios-design.md) D5, D14 · [ADR-0001](../../adr/0001-commands-only-agent-surface.md), [ADR-0005](../../adr/0005-pure-javascript-no-native-code.md) |
 
@@ -33,8 +33,8 @@ Out of scope: `watch` (M5), per-command MCP tools (P2), a `reload` scenario step
 | D6 | The skill ships inside `@ironbird/cli` and `ironbird agent setup` installs it and registers the MCP server | Maintainer decision. The skill's version always matches the installed CLI, and the eval installs through the same command users run |
 | D7 | The skill is app-agnostic; it never names the example app, its commands, or the race | The eval would measure the skill leaking the answer, not the agent using the loop |
 | D8 | The eval runs as scripted `claude -p` sessions, one at a time, with the model pinned to Sonnet 5.5 | Maintainer decisions. Scripted runs are repeatable and unsteered by construction; Sonnet tests whether the skill and tools carry an everyday model |
-| D9 | Each eval session proves its isolation from the init event of its own stream: only built-in tools, the ironbird skill, and the ironbird MCP server may be loaded | The maintainer's machine has user-level plugins, skills, and memory; a session that sees them is not a fresh session given only the skill |
-| D10 | A session passes only if four automatic checks pass, and "verified" means an on-disk passing `result.json` for that target written after the agent's last source edit | The criterion's "with evidence" and the false-claim baseline both need a definition that a script can check |
+| D9 | Each eval session runs outside the repository with project-only settings, and proves its isolation from the init event of its own stream: only Claude Code's bundled skills and plugins, the ironbird skill, and the ironbird MCP server may be loaded, and its auto memory must be empty. File access outside the session is denied and audited | The maintainer's machine has user-level plugins, skills, and memory, and the repository holds the answer. A fresh config directory is not an option: it signs the session out |
+| D10 | A session passes only if four automatic checks pass. "Verified" means a passing run of the reproducing scenario for that target, backed by the transcript, matching the final scenario file, and finished after the agent's last edit; the grader also re-runs the reproducing scenario itself on both targets | The criterion's "with evidence" and the false-claim baseline both need a definition that a script can check, and that an easy unrelated pass or a stale run cannot satisfy |
 
 ## 3. Work breakdown
 
@@ -56,22 +56,36 @@ A target that does not declare the `reload` capability fails with `UNSUPPORTED`,
 
 ### 4.1 Headless
 
-The headless target always declares `reload`, so its capabilities become `settle`, `events`, `clock`, `reset`, and `reload`, plus `fakes`, `persist`, and `restore` as before.
+The headless target always declares `reload`, so its capabilities become `settle`, `events`, `clock`, `reset`, and `reload`, plus `fakes`, `persist`, and `restore` as before. `createHeadlessTarget` gains an option `loadDefinition?: () => Promise<HeadlessDefinition>`; `serve` passes one that calls `loadTypeScriptModule` on the headless entry with a fresh label each time (`headless-<n>`), which already evaluates a new module instance per call. A target created without `loadDefinition`, as in tests that build a definition inline, does not declare `reload`.
 
-- `reload` bundles the headless entry again through `loadTypeScriptModule`, which already evaluates a fresh module instance on every call, then tears down the current session and boots the new definition. It takes the same path as `reset` for in-flight work: the queue is abandoned and the epoch moves on.
+**One lifecycle transition.** `reset` and `reload` are both lifecycle transitions and share one serialized path:
+
+1. The transition starts by abandoning the queue (`queue.abandon('reset')` or `queue.abandon('reload')`, a new abandonment cause), clearing `session`, and disposing the old session, all before its first await. Everything in flight or waiting fails with `TARGET_DISCONNECTED`, details `{ target: 'headless', op }`, as a reset does today.
+2. `reload` then calls `loadDefinition()`; `reset` reuses the current definition.
+3. It boots a session from the definition and installs it.
+
+Transitions never overlap: a transition requested while another is running waits for it, then runs. Two concurrent `reset`s still coalesce into one, as today. A `reload` never coalesces, because the source may have changed since the running transition read it. A `reset` requested while a `reload` is running waits for the reload and then resets the freshly loaded code.
+
+**D5, failure.** The old session is disposed before anything is loaded, so a failure never leaves the previous code running. If `loadDefinition()` or the boot fails, the error (`HEADLESS_LOAD_FAILED` with its usual details, including the `react-native` import chain) is kept as the target's boot error and the current definition is cleared. Every later operation fails with that error, and so does `reset`, because resetting would run code that no longer matches the source. Only a `reload` that succeeds clears it.
+
 - The event log and the fake call logs restart, as after `reset`.
 - Only the headless entry is reloaded. `ironbird.config.ts` is read once at daemon start; cli.md says a config change needs a daemon restart.
-- **D5:** if bundling or booting fails, the old session is already torn down. The failure is returned as `HEADLESS_LOAD_FAILED` with its usual details, including the `react-native` import chain, and is kept as the target's boot error, so every later operation fails with it until a `reload` succeeds. `reset` on a target in this state also fails with it, because it would re-run code that no longer matches the source.
-- Each reload writes a new bundle file (`headless-<n>.mjs` under the existing output directory). Node keeps every evaluated module for the life of the process; a daemon reloaded hundreds of times grows accordingly, which is acceptable for a dev tool and noted in cli.md.
+- Node keeps every evaluated module for the life of the process, so a daemon reloaded hundreds of times grows accordingly. That is acceptable for a dev tool, and cli.md notes it.
 
 ### 4.2 Remote
 
 - The bridge declares `reload` when `DevSettings.reload` from `react-native` is a function. That is a JavaScript API that works only in dev builds, and the bridge is dev-only already, so ADR-0005 holds.
 - On `reload`, the bridge replies `ok` and then calls `DevSettings.reload()` on the next tick, so the reply leaves before the JavaScript context goes away.
-- The daemon then waits for that connection to close, and then for a new `hello` with the same `appId` and platform. The target registry reserves ids across disconnects, so the new connection normally lands on the same id, but the result reports the id it actually got.
-- The result's `rev` is the new connection's state revision after its handshake. The daemon does not settle; the caller settles or waits as usual.
-- If no matching app connects within `timeoutMs`, the operation fails with `TARGET_DISCONNECTED`, details `{ target, op: 'reload', timeoutMs }`. The default of 60 seconds allows for Metro rebuilding the bundle after an edit.
-- Operations in flight on the old connection fail with `TARGET_DISCONNECTED` as they do on any disconnect today.
+
+The daemon handles `reload` for a remote target itself, around the bridge operation:
+
+1. **Ambiguity check.** If another connected remote target has the same `appId` and platform, for example the same app on two simulators, the daemon cannot tell which new connection is the reloaded one. It fails before sending anything, with `AMBIGUOUS_TARGET`, details `{ available }` listing those targets.
+2. **Observers first.** Before sending the bridge operation, the daemon installs a target-lifecycle observer and marks the old target as *being replaced*.
+3. **Same id.** When a new connection completes its `hello` with that `appId` and platform while a replacement is pending, the bridge server first closes and unregisters the old connection if its socket has not closed yet, releasing its id, and only then claims an id. The new connection therefore lands on the same id even when it arrives before the old socket's close event.
+4. **Completion.** The reload completes when the replacement target registers, after its `describe`. The daemon then calls `getState` on it and returns `{ target, rev }` from that read; a fresh connection's `rev` is otherwise 0 until its first state notification.
+5. **Timeout.** `timeoutMs` defaults to 60,000 and is applied before the daemon computes its request bound, so the default 30-second request timeout never cuts a reload short. If no replacement registers in time, the operation fails with `TARGET_DISCONNECTED`, details `{ target, op: 'reload', timeoutMs }`, and the pending replacement is cleared.
+
+Operations in flight on the old connection fail with `TARGET_DISCONNECTED`, as on any disconnect today. The skill tells agents to use the `target` that `reload` returns from then on.
 
 ### 4.3 CLI
 
@@ -122,7 +136,7 @@ Rules:
 
 ### 5.2 Dependency
 
-`@ironbird/cli` gains `@modelcontextprotocol/server` (2.x). Pull-request justification: the official MCP server SDK, which ironbird needs to speak MCP, and whose v2 server package adds only its own core and the `zod` the CLI already uses.
+`@ironbird/cli` gains `@modelcontextprotocol/server` (2.x) as a dependency and `@modelcontextprotocol/client` (the matching 2.x) as a dev dependency for the integration test. Pull-request justification: the official MCP server SDK, which ironbird needs to speak MCP, and whose v2 server package adds only its own core and the `zod` the CLI already uses.
 
 ## 6. The skill and `ironbird agent setup`
 
@@ -170,33 +184,34 @@ Runs without a daemon, in the project root (the working directory).
 
 ## 7. The eval harness and the gate
 
-The harness lives in `examples/checkout/eval/` as Node scripts. It runs by hand on macOS, never in CI, and uses the iPhone 17 simulator through `IRONBIRD_SIM_UDID`.
+The harness lives in `examples/checkout/eval/` as Node scripts. It runs by hand on macOS, never in CI, and uses the iPhone 17 simulator through `IRONBIRD_SIM_UDID`. Everything a session must not see (the fixture patch, the held-back scenarios, the grader) stays in the repository; sessions run under `~/.ironbird-eval/`, outside it, so no `AGENTS.md` or `CLAUDE.md` is an ancestor of a session folder.
 
 ### 7.1 Fixture
 
-`prepare` builds a session template outside the repository, under the harness's working folder:
+`prepare` builds a session template at `~/.ironbird-eval/template/`:
 
-1. Copies `examples/checkout` without `node_modules`, `dist`, `.expo`, `.ironbird`, or `eval/`.
+1. Copies `examples/checkout` without `node_modules`, `dist`, `.expo`, `.ironbird`, `eval/`, and `scripts/`.
 2. Applies `fixture.patch`, which makes the race unconditional and removes what would give it away: the `plantRace` option and its threading, the "Planted bug" comments, the race and duplicate-success scenarios, tests that name the race, and README text about it.
-3. Installs dependencies with ironbird taken from `pnpm pack` tarballs of the current build, so the session sees an ordinary npm install and no workspace links.
-4. Runs `npx ironbird agent setup`.
+3. Rewrites `package.json` into a standalone manifest: `@ironbird/core`, `@ironbird/react-native`, and `@ironbird/cli` point at `pnpm pack` tarballs of the current build copied into `vendor/`; `vitest` joins `devDependencies` at the monorepo's version; `test` becomes `vitest run`; the measurement script and its `pngjs` dependencies go. `tsconfig.json` stops extending the monorepo's base config and inlines its compiler options. A `vitest.config.ts` includes `src/**/*.test.ts` and excludes device tests.
+4. Runs `npm install`, which writes a lockfile, then `npx ironbird agent setup`.
 5. Runs `git init` and makes one commit, so the session has no history to read the answer from.
 
-Each session gets an APFS clone (`cp -c -R`) of the template, `node_modules` included. `prepare` checks the template before any session: the held-back race scenario fails headless on it, and every remaining scenario and unit test passes.
+`prepare` then checks the template before any session: `npm test` passes; `ironbird serve` starts and `ironbird status` lists the headless target; every remaining scenario passes; the held-back race scenario fails headless; and Expo bundles the app (`npx expo export --platform ios` into a temporary folder). Each session gets an APFS clone (`cp -c -R`) of the template, `node_modules` included.
 
 ### 7.2 One session
 
 `run-session <n>` runs one session end to end:
 
-1. Clones the template into `sessions/<n>/`.
-2. Starts `ironbird serve` and `npx expo start --clear` there, opens `exp://127.0.0.1:8081` in Expo Go on the iPhone 17 with `xcrun simctl openurl`, and waits for target `ios` to connect.
+1. Clones the template into `~/.ironbird-eval/sessions/<n>/`.
+2. **Fresh device.** Terminates Expo Go on the iPhone 17 (`xcrun simctl terminate <udid> host.exp.Exponent`), starts `ironbird serve` and `npx expo start --clear` in the session folder, and opens `exp://127.0.0.1:8081` with `xcrun simctl openurl <udid>`. It waits for a `connected` target event for `ios` that arrives after the daemon started, then checks the app's initial state (an empty cart and no order). A session whose device never gets there is invalid, not failed.
 3. Runs `claude -p` in the session folder with:
    - `--model claude-sonnet-5-5`
    - `--setting-sources project`, `--strict-mcp-config --mcp-config .mcp.json`
-   - `--permission-prompts none` and an allowlist: `Read`, `Edit`, `Write`, `Glob`, `Grep`, `mcp__ironbird__*`, and `Bash` limited to `npx ironbird`, `npm test`, `npx vitest`, `ls`, `cat`, and read-only `git` commands
-   - `--max-budget-usd 10`, a 45-minute wall-clock limit, and `--output-format stream-json`, with the full stream saved as `transcript.jsonl`
-4. **Isolation check (D9):** reads the stream's init event and aborts the session, marking it invalid rather than failed, if it lists any MCP server other than `ironbird`, any skill other than `ironbird`, or any plugin. An invalid session does not count toward the five and is rerun after the cause is fixed.
-5. Stops Metro and the daemon, and keeps the session folder, including `.ironbird/runs/`, for grading.
+   - `--tools Bash,Read,Edit,Write,Skill`
+   - `--permission-prompts none`, `--allowedTools` for `mcp__ironbird__*` and for `Bash` limited to `npx ironbird *`, `npm test*`, `npx vitest *`, `git status*`, `git diff*`, and `git log*`, and `--settings` with deny rules for reading or editing the repository and `~/.ironbird-eval/template/`
+   - `--max-budget-usd 10`, a 45-minute wall-clock limit, and `--output-format stream-json --verbose`, with the full stream saved as `transcript.jsonl`
+4. **Isolation check (D9).** Before the agent's first tool call counts, the harness reads the stream's init event. The session is invalid if it lists an MCP server other than `ironbird`, a skill other than `ironbird` and Claude Code's bundled skills (recorded once, by `prepare`, from a session with no project skill), or a plugin that is not built in; or if the auto-memory folder it reports is not empty. After the session, the harness also scans the transcript for any tool call that touched a path outside the session folder and records each one.
+5. Copies `.ironbird/runs/` to `agent-runs/` before anything else runs, then stops Metro and the daemon. The session folder is kept for grading.
 
 The prompt is fixed in `prompt.md`:
 
@@ -204,33 +219,33 @@ The prompt is fixed in `prompt.md`:
 
 ### 7.3 Grading
 
-`grade <n>` checks four things; a session succeeds only if all four pass.
+`grade <n>` works on a copy of the session and writes its own runs to a separate artifacts folder, never to `agent-runs/`. A session succeeds only if all four checks pass. "The bug state" below means a final state with `order.status` equal to `completed` and `order.totalCents` equal to 0.
 
 | Check | How |
 |---|---|
-| Reproduced with a scenario | A scenario file the agent added under `ironbird/scenarios/` **fails** headless against the template and passes against the session's code |
-| Fixed | The held-back race and duplicate-success scenarios pass headless against the session's code, and the fixture's remaining scenarios and unit tests still pass |
-| Verified headlessly and on iOS, with evidence (D10) | The session's `.ironbird/runs/` holds a passing `result.json` for target `headless` and one for target `ios`, each written after the last change to a file under `src/` |
-| Unsteered | Holds by construction under `-p`; the count of denied tool calls is reported |
+| Reproduced with a scenario | Among the scenario files the agent added under `ironbird/scenarios/`, at least one, *the reproducing scenario*, fails headless against the template with the bug state in its final `state.json`, and passes headless against the session's code without the bug state |
+| Fixed | The held-back race and duplicate-success scenarios pass headless against the session's code, and the fixture's remaining scenarios and `npm test` still pass |
+| Verified on iOS by the grader | The grader reloads the iOS app against the session's Metro, runs the reproducing scenario on `ios`, and requires a pass without the bug state |
+| Verified by the agent, with evidence (D10) | `agent-runs/` holds a passing run of the reproducing scenario for target `headless` and one for target `ios`. Each run's copied scenario matches the final file byte for byte; each run is named in an `ironbird_run_scenario` or `ironbird scenario run` result in the transcript; each finished after the agent's last edit to any file it changed, taken from the transcript's edit tool calls; and the `ios` run's folder holds a screenshot or the transcript shows an `ironbird_screenshot` or `ironbird_step` after it |
 
-`grade` writes `grade.json` per session with each check's result and its evidence.
+"Unsteered" holds by construction under `-p`. `grade` reports the number of denied tool calls and of out-of-folder paths, and writes `grade.json` with each check's result and its evidence.
 
 ### 7.4 Gate procedure
 
 - Up to two pilot sessions may run first to debug the harness; they are labeled pilots and do not count.
-- The gate is five fresh sessions with the skill and harness frozen. It passes with at least four successes.
+- The gate is five fresh, valid sessions with the skill and harness frozen. It passes with at least four successes.
 - If it fails and the skill changes, all five sessions run again. Every batch is recorded, failures included.
 
 ### 7.5 False-claim baseline
 
-For each gate session, every sentence of the final report that claims something was verified, fixed, reproduced, or passes is a claim. Each claim is checked against `grade.json` and the files on disk: a claim holds only if the evidence it names exists and says what the claim says. A Fable subagent does a first pass, and every claim is then checked by hand. The false-claim rate is the number of claims that don't hold divided by all claims, across the five sessions. The rate and the claims themselves go in `docs/evals/m3-agent-interface.md`, with each session's grade, cost, duration, and transcript location.
+For each gate session, every sentence of the final report that claims something was verified, fixed, reproduced, or passes is a claim. Each claim is checked against `grade.json` and the files on disk: a claim holds only if the evidence it names exists and says what the claim says. A codex review does a first pass, and every claim is then checked by hand. The false-claim rate is the number of claims that don't hold divided by all claims, across the five sessions. The rate and the claims themselves go in `docs/evals/m3-agent-interface.md`, with each session's grade, cost, duration, and transcript location.
 
 ## 8. Testing
 
 Per [testing-strategy.md](../../testing-strategy.md):
 
 - **Core unit:** `reload` in the operation and capability types.
-- **CLI unit:** headless `reload` picks up an edited entry; a broken edit leaves `HEADLESS_LOAD_FAILED` on every later operation, including `reset`, until a good reload; logs restart. The daemon's remote reload against a fake socket that closes and reconnects: the same id, a different id, the timeout, and `UNSUPPORTED` without the capability. `ironbird reload` output and exit codes. `agent setup` on a fresh project, with an existing `.mcp.json` holding other servers, run twice, and with invalid JSON.
+- **CLI unit:** headless `reload` picks up an edited entry; a broken edit leaves `HEADLESS_LOAD_FAILED` on every later operation, including `reset`, until a good reload; logs restart; a `reload` during an in-flight dispatch abandons it with `TARGET_DISCONNECTED`; concurrent `reload` and `reset`, and two concurrent `reload`s, run one after another and leave the last-requested code installed. The daemon's remote reload against fake bridges: the replacement arriving after the old close and before it (both land on the same id), a replacement that arrives after 30 seconds but within `timeoutMs`, the timeout, `AMBIGUOUS_TARGET` with two matching apps, `rev` read from the replacement, and `UNSUPPORTED` without the capability. `ironbird reload` output and exit codes. `agent setup` on a fresh project, with an existing `.mcp.json` holding other servers, run twice, and with invalid JSON.
 - **CLI integration (serial project):** the MCP server driven by the SDK's client over an in-memory transport, against a daemon hosting the example headless app: every tool's happy path, an `isError` result with the CLI's error JSON, `ironbird_run_scenario` on a file and a folder, and image content from `ironbird_screenshot` with a stub screenshot provider.
 - **Bridge unit:** the `reload` capability appears only when `DevSettings.reload` exists, and the handler replies before calling it.
 - **Packaging:** a test that `skills/ironbird/SKILL.md` is in the packed `@ironbird/cli` tarball and that its front matter parses.
@@ -246,8 +261,9 @@ Per [testing-strategy.md](../../testing-strategy.md):
 
 | Risk | Mitigation |
 |---|---|
-| `claude -p` sessions still pick up user-level configuration despite the flags | The isolation check reads what each session actually loaded and invalidates the session instead of counting it |
-| The skill is too specific and leaks the answer, or too generic to help | D7, checked in plan review; the pilots show whether Sonnet follows the loop, and the gate records every batch if the skill has to change |
+| `claude -p` sessions still pick up user-level configuration or read the answer from the repository | Project-only settings, sessions outside the repository, deny rules, the init-event check, and the transcript path audit; a session that fails any of them is invalid, not counted |
+| The skill is too specific and leaks the answer, or too generic to help | D7, checked in review; the pilots show whether Sonnet follows the loop, and the gate records every batch if the skill has to change |
+| A session reuses the previous session's app | Expo Go is terminated and relaunched against the session's own Metro, and the harness checks a new connection and the initial state before the agent starts |
 | Metro or Expo Go flakes during a 45-minute session | `run-session` waits for the `ios` target before starting the agent, and a session whose device never connects is invalid, not failed |
 | `DevSettings.reload()` behaves differently in Expo Go and bare apps | The bridge only declares the capability when the function exists; the device test covers Expo Go, which is what the eval uses |
 | A headless reload that keeps old modules alive leaks memory over a long session | Acceptable for a dev tool; noted in cli.md; a restart clears it |
