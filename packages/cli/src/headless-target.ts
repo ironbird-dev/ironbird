@@ -39,9 +39,9 @@ export interface HeadlessTargetOptions {
   env: Record<string, string | undefined>;
   log?: (line: string) => void;
   /**
-   * Wall-clock bound on one `definition.create` call (default 30 s). Without it a factory that
-   * never resolves wedges the target for good: `run` waits on the stuck transition, and `dispose`
-   * awaits it too.
+   * Wall-clock bound on one `definition.create` call, and separately on one `loadDefinition` call
+   * during a reload (default 30 s each). Without it a factory or a load that never resolves wedges
+   * the target for good: `run` waits on the stuck transition, and `dispose` awaits it too.
    */
   bootTimeoutMs?: number;
   /**
@@ -96,20 +96,27 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
   const bootTimeoutMs = options.bootTimeoutMs ?? 30_000;
   const entry = options.entryPath ?? options.appId;
 
-  // A factory that hangs must fail the boot rather than the whole target, so `create` races a
-  // timer. The abandoned factory keeps running on its own; nothing else ever reads its result.
-  const createApp = async (source: HeadlessDefinition, context: Parameters<HeadlessDefinition['create']>[0]): Promise<HeadlessApp> => {
+  // A factory or a load that hangs must fail its transition rather than the whole target, so each
+  // races a timer. The abandoned work keeps running on its own; nothing else ever reads its result,
+  // so a late result can never be installed.
+  const withinBootTimeout = async <T>(work: Promise<T>, timedOut: () => Error): Promise<T> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new IronbirdError('HEADLESS_LOAD_FAILED', `Headless app failed to start: the factory did not resolve within ${bootTimeoutMs} ms`, { entry, message: `boot timed out after ${bootTimeoutMs} ms` })), bootTimeoutMs);
+      timer = setTimeout(() => reject(timedOut()), bootTimeoutMs);
     });
     timeout.catch(() => undefined);
     try {
-      return await Promise.race([source.create(context), timeout]);
+      return await Promise.race([work, timeout]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
   };
+
+  const createApp = async (source: HeadlessDefinition, context: Parameters<HeadlessDefinition['create']>[0]): Promise<HeadlessApp> =>
+    withinBootTimeout(
+      source.create(context),
+      () => new IronbirdError('HEADLESS_LOAD_FAILED', `Headless app failed to start: the factory did not resolve within ${bootTimeoutMs} ms`, { entry, message: `boot timed out after ${bootTimeoutMs} ms` }),
+    );
 
   const boot = async (source: HeadlessDefinition): Promise<Session> => {
     const clock = createManualClock({ now: options.clockStart ? Date.parse(options.clockStart) : 0 });
@@ -234,9 +241,11 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     }
   };
 
+  // `reloadFailure` turns the timeout into HEADLESS_LOAD_FAILED "Headless app failed to reload:
+  // load timed out after <n> ms", like any other failed load.
   const loadAgain = async (): Promise<HeadlessDefinition> => {
     if (!options.loadDefinition) throw new IronbirdError('UNSUPPORTED', "The headless target doesn't support reload", { op: 'reload', target: 'headless' });
-    return options.loadDefinition();
+    return withinBootTimeout(options.loadDefinition(), () => new Error(`load timed out after ${bootTimeoutMs} ms`));
   };
 
   // One lifecycle transition, shared by `reset` and `reload` (spec §4.1). Everything up to the

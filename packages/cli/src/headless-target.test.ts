@@ -34,9 +34,9 @@ interface Reloadable {
    * throws. `throwing` is read by the factory itself on every boot, reset or reload alike.
    */
   source: { version: number; broken: boolean; explodes: boolean; throwing?: IronbirdError };
-  /** Parks the next `loadDefinition` after it logs, until the returned function is called. */
+  /** Parks the next `loadDefinition` after it logs, until the returned function is called. Never calling it is a load that hangs. */
   holdNextLoad(): () => void;
-  boot(): Promise<HeadlessTarget>;
+  boot(options?: { bootTimeoutMs?: number }): Promise<HeadlessTarget>;
 }
 
 const pinger = defineFake('pinger', {
@@ -100,8 +100,8 @@ function reloadable(): Reloadable {
       held = new Promise<void>((resolve) => (release = resolve));
       return () => release();
     },
-    boot: async () => {
-      target = await createHeadlessTarget({ definition: versionApp(1, false), loadDefinition, appId: 'a', clockStart: '2026-01-01T00:00:00.000Z', settleTimeoutMs: 100, env: {}, log: (line) => logs.push(line) });
+    boot: async (bootOptions = {}) => {
+      target = await createHeadlessTarget({ definition: versionApp(1, false), loadDefinition, appId: 'a', clockStart: '2026-01-01T00:00:00.000Z', settleTimeoutMs: 100, env: {}, log: (line) => logs.push(line), ...bootOptions });
       return target;
     },
   };
@@ -849,5 +849,55 @@ describe('createHeadlessTarget', () => {
     await expect(resetting).rejects.toMatchObject({ code: 'UNSUPPORTED', message: 'Target is disposed', details: { op: 'reset', target: 'headless' } });
     await disposing;
     expect(r.log).toEqual(['boot v1', 'dispose v1', 'load v2', 'boot v2', 'dispose v2']);
+  });
+
+  it('bounds a load that never resolves so the reload fails with HEADLESS_LOAD_FAILED, kept for later operations until a good reload', async () => {
+    const r = reloadable();
+    const t = await r.boot({ bootTimeoutMs: 50 });
+    r.source.version = 2;
+    r.holdNextLoad();
+    const startedAt = Date.now();
+    const failure = await t.run('reload', {}).catch((caught: unknown) => caught);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(failure).toBeInstanceOf(IronbirdError);
+    expect(failure).toMatchObject({ code: 'HEADLESS_LOAD_FAILED', message: 'Headless app failed to reload: load timed out after 50 ms' });
+    expect((failure as IronbirdError).details).toEqual({ entry: 'a', message: 'load timed out after 50 ms' });
+    expect(await t.run('getState', {}).catch((caught: unknown) => caught)).toBe(failure);
+    expect(await t.run('reset', {}).catch((caught: unknown) => caught)).toBe(failure);
+    r.source.version = 3;
+    expect(await t.run('reload', {})).toEqual({ rev: 0 });
+    expect(await t.run('getState', {})).toMatchObject({ value: { version: 3, count: 0 } });
+    expect(r.log).toEqual(['boot v1', 'dispose v1', 'load v2', 'load v3', 'boot v3']);
+  });
+
+  it('never installs the code of a load that resolves after its reload timed out', async () => {
+    const r = reloadable();
+    const t = await r.boot({ bootTimeoutMs: 50 });
+    r.source.version = 2;
+    const release = r.holdNextLoad();
+    const failure = await t.run('reload', {}).catch((caught: unknown) => caught);
+    expect(failure).toMatchObject({ code: 'HEADLESS_LOAD_FAILED' });
+    release();
+    await tick();
+    await tick();
+    expect(r.log).toEqual(['boot v1', 'dispose v1', 'load v2']);
+    expect(await t.run('getState', {}).catch((caught: unknown) => caught)).toBe(failure);
+    expect(await t.run('describe', {}).catch((caught: unknown) => caught)).toBe(failure);
+  });
+
+  it('dispose during a load that never resolves still completes', async () => {
+    const r = reloadable();
+    const t = await r.boot({ bootTimeoutMs: 50 });
+    r.source.version = 2;
+    r.holdNextLoad();
+    const reloading = t.run('reload', {});
+    reloading.catch(() => undefined);
+    await tick();
+    const during = t.run('getState', {});
+    during.catch(() => undefined);
+    await expect(t.dispose()).resolves.toBeUndefined();
+    await expect(reloading).rejects.toMatchObject({ code: 'HEADLESS_LOAD_FAILED' });
+    await expect(during).rejects.toMatchObject({ code: 'UNSUPPORTED', message: 'Target is disposed' });
+    expect(r.log).toEqual(['boot v1', 'dispose v1', 'load v2']);
   });
 });
