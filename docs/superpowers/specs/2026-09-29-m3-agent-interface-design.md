@@ -207,7 +207,7 @@ The harness lives in `examples/checkout/eval/` as Node scripts. It runs by hand 
 3. Runs `claude -p` in the session folder with:
    - `--model claude-sonnet-5-5`
    - `--setting-sources project`, `--strict-mcp-config --mcp-config .mcp.json`
-   - `--tools Bash,Read,Edit,Write,Skill`
+   - `--tools Bash,Read,Edit,Write,Skill,Glob,Grep`, with Read, Glob, and Grep allowed only inside the session folder (Glob and Grep added 2026-09-30 by maintainer decision: they are read-only and confined like Read, and without them the agent could barely explore the project)
    - `--permission-prompts none`, `--allowedTools` for `mcp__ironbird__*` and for `Bash` limited to `npx ironbird *`, `npm test*`, `npx vitest *`, `git status*`, `git diff*`, and `git log*`, and `--settings` with deny rules for reading or editing the repository and `~/.ironbird-eval/template/`
    - `--max-budget-usd 10`, a 45-minute wall-clock limit, and `--output-format stream-json --verbose`, with the full stream saved as `transcript.jsonl`
 4. **Isolation check (D9).** Before the agent's first tool call counts, the harness reads the stream's init event. The session is invalid if it lists an MCP server other than `ironbird`, a skill other than `ironbird` and Claude Code's bundled skills (recorded once, by `prepare`, from a session with no project skill), or a plugin that is not built in; or if the auto-memory folder it reports is not empty. After the session, the harness also scans the transcript for any tool call that touched a path outside the session folder and records each one.
@@ -234,7 +234,7 @@ The prompt is fixed in `prompt.md`:
 
 - Up to two pilot sessions may run first to debug the harness; they are labeled pilots and do not count.
 - The gate is five fresh, valid sessions with the skill and harness frozen. It passes with at least four successes.
-- If it fails and the skill changes, all five sessions run again. Every batch is recorded, failures included.
+- If a batch fails, the failures are analyzed from the transcripts, the skill is improved without leaking the example's answer (D7), the skill and harness are frozen again, and one more full batch of five runs. If that batch also fails, the gate is recorded as failed in the evals record with the analysis, and the milestone proceeds; its pull request states the failed gate. Every batch is recorded, failures included (amended 2026-09-30: the maintainer granted full autonomy).
 
 ### 7.5 False-claim baseline
 
