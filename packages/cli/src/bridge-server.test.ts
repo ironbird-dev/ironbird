@@ -1,7 +1,7 @@
 import { PROTOCOL_VERSION, type TargetInfo } from '@ironbird/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
-import { startBridgeServer, type BridgeServer } from './bridge-server';
+import { startBridgeServer, type BridgeServer, type BridgeServerOptions } from './bridge-server';
 import type { RemoteTarget } from './remote-target';
 
 interface Client {
@@ -46,12 +46,14 @@ const hello = (overrides: Record<string, unknown> = {}): Record<string, unknown>
 let server: BridgeServer | undefined;
 let sessionAppId: string | undefined;
 const connected: TargetInfo[] = [];
+const remotes: RemoteTarget[] = [];
 const disconnected: string[] = [];
 const logs: string[] = [];
 
-async function boot(options: { token?: string; handshakeTimeoutMs?: number } = {}): Promise<BridgeServer> {
+async function boot(options: { token?: string; handshakeTimeoutMs?: number; replacementFor?: BridgeServerOptions['replacementFor'] } = {}): Promise<BridgeServer> {
   sessionAppId = undefined;
   connected.length = 0;
+  remotes.length = 0;
   disconnected.length = 0;
   logs.length = 0;
   server = await startBridgeServer({
@@ -60,8 +62,12 @@ async function boot(options: { token?: string; handshakeTimeoutMs?: number } = {
     token: options.token,
     log: (line) => logs.push(line),
     handshakeTimeoutMs: options.handshakeTimeoutMs,
+    replacementFor: options.replacementFor,
     session: { appId: () => sessionAppId, adopt: (id) => (sessionAppId = id) },
-    onConnect: (target: RemoteTarget) => connected.push(target.info()),
+    onConnect: (target: RemoteTarget) => {
+      connected.push(target.info());
+      remotes.push(target);
+    },
     onDisconnect: (target: RemoteTarget) => disconnected.push(target.id),
   });
   return server;
@@ -186,5 +192,19 @@ describe('startBridgeServer', () => {
     await good.until(() => good.frames.length >= 1);
     expect(good.frames[0]).toMatchObject({ type: 'welcome' });
     expect(logs.some((line) => line.includes('bridge socket error:'))).toBe(true);
+  });
+
+  it('keeps reload among the capabilities a hello declares, so the target forwards the operation', async () => {
+    const s = await boot();
+    const client = await connect(s.url);
+    client.send(hello({ capabilities: ['settle', 'events', 'reload'] }));
+    await client.until(() => client.frames.length >= 2);
+    client.send({ type: 'response', id: client.frames[1]!['id'], ok: true, result: { app: { id: 'com.example.test', platform: 'ios' }, commands: {}, fakes: {}, capabilities: ['settle', 'events', 'reload'] } });
+    await client.until(() => remotes.length === 1);
+    const reloading = remotes[0]!.run('reload', {});
+    await client.until(() => client.frames.some((frame) => frame['op'] === 'reload'));
+    const request = client.frames.find((frame) => frame['op'] === 'reload')!;
+    client.send({ type: 'response', id: request['id'], ok: true, result: {} });
+    expect(await reloading).toEqual({});
   });
 });

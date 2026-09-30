@@ -115,7 +115,7 @@ describe('createRemoteTarget', () => {
   it('answers UNSUPPORTED locally for operations outside the declared capabilities', async () => {
     const fake = fakeSocket();
     const t = boot(fake, { capabilities: ['settle', 'events', 'persist'] });
-    for (const op of ['clockAdvance', 'clockNow', 'reset', 'fakeControl', 'fakeCalls', 'snapshotLoad']) {
+    for (const op of ['clockAdvance', 'clockNow', 'reset', 'reload', 'fakeControl', 'fakeCalls', 'snapshotLoad']) {
       expect(await failure(t.run(op, {}))).toEqual({ code: 'UNSUPPORTED', details: { op, target: 'ios' } });
     }
     expect(fake.sent).toEqual([]);
@@ -124,6 +124,18 @@ describe('createRemoteTarget', () => {
     expect(fake.sent[0]).toMatchObject({ op: 'snapshotSave' });
     respondTo(fake, 'snapshotSave', { rev: 0, snapshot: {} });
     await saving;
+  });
+
+  it('sends reload at once when the bridge declares it, never queued behind a mutating operation', async () => {
+    const fake = fakeSocket();
+    const t = boot(fake, { capabilities: ['settle', 'events', 'reload'] });
+    const stuck = t.run('dispatch', { name: 'hang' });
+    stuck.catch(() => undefined);
+    const reloading = t.run('reload', {});
+    await tick();
+    expect(fake.sent.map((frame) => frame['op'])).toEqual(['dispatch', 'reload']);
+    respondTo(fake, 'reload', {});
+    expect(await reloading).toEqual({});
   });
 
   it('caches the description once loaded', async () => {

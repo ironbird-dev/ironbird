@@ -5,6 +5,13 @@ import { createRemoteTarget, type RemoteSocket, type RemoteTarget } from './remo
 import { hostAllowed } from './same-site';
 import { createTargetRegistry, type RemotePlatform } from './target-registry';
 
+/** A pending reload's hold on a target id, handed to one candidate connection at a time. */
+export interface ReplacementTicket {
+  readonly id: string;
+  /** Gives the id back for another candidate; the server calls it when this candidate closes before it is registered. */
+  release(): void;
+}
+
 export interface BridgeServerOptions {
   host: string;
   port: number;
@@ -16,6 +23,14 @@ export interface BridgeServerOptions {
   onConnect(target: RemoteTarget): void;
   /** Called when a target's socket closes, whether or not `onConnect` ever ran for it. */
   onDisconnect(target: RemoteTarget): void;
+  /**
+   * Asked once a hello passes the handshake checks, before an id is claimed: a ticket for the id
+   * of a target this connection replaces because a `reload` of it is pending, or undefined. The
+   * server closes that target's connection if it is still open and gives the new connection its
+   * id; if the new connection closes before it is registered (its `describe` failed, say), the
+   * server releases the ticket so the next matching hello can have it.
+   */
+  replacementFor?(app: { id: string; platform: RemotePlatform }): ReplacementTicket | undefined;
   /** How long a fresh connection has to send `hello` (default 5000 ms). */
   handshakeTimeoutMs?: number;
   pingIntervalMs?: number;
@@ -29,7 +44,7 @@ export interface BridgeServer {
 
 export const CLOSE_CODES = { PROTOCOL_MISMATCH: 4001, APP_MISMATCH: 4002, UNAUTHORIZED: 4003 } as const;
 
-const CAPABILITIES: ReadonlySet<string> = new Set<Capability>(['settle', 'events', 'fakes', 'clock', 'persist', 'restore', 'reset']);
+const CAPABILITIES: ReadonlySet<string> = new Set<Capability>(['settle', 'events', 'fakes', 'clock', 'persist', 'restore', 'reset', 'reload']);
 
 interface Hello {
   protocol: number;

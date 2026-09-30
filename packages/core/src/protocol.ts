@@ -2,7 +2,7 @@ import type { ErrorCode } from './errors';
 
 export type Platform = 'headless' | 'ios' | 'android';
 
-export type Capability = 'settle' | 'events' | 'fakes' | 'clock' | 'persist' | 'restore' | 'reset';
+export type Capability = 'settle' | 'events' | 'fakes' | 'clock' | 'persist' | 'restore' | 'reset' | 'reload';
 
 /** A JSON Schema document. Kept loose on purpose; agents consume it, core doesn't interpret it. */
 export type JsonSchema = Record<string, unknown>;
