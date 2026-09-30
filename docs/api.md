@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft; signatures will change during M0–M2 |
-| Last updated | 2026-09-25 |
+| Last updated | 2026-09-29 |
 | Related | [protocol.md](protocol.md) for wire types and error codes · [cli.md](cli.md) for the CLI |
 
 Priority markers match [spec.md](spec.md): **P0** ships in 0.1, **P1** is planned for 0.1 if milestones hold. Sections marked **M1** or **M2** describe APIs planned for those milestones ([roadmap.md](roadmap.md)); they are not in the repository yet.
@@ -468,7 +468,7 @@ useEffect(() => {
 
 ## @ironbird/cli
 
-The binary is documented in [cli.md](cli.md). The package also exports the pieces the binary is built from, for embedding a daemon in another process: `loadConfig`, `loadTypeScriptModule`, `createHeadlessTarget`, `startDaemon`, `readDaemonInfo` / `writeDaemonInfo` / `removeDaemonInfo`, `buildProgram`, `runServe`, `isLoopbackHost`, `parseCondition` / `conditionHolds`, and the scenario runner: `parseScenario` and `loadScenarioFiles` turn a file (or a directory of them) into a validated `Scenario`, made of `ScenarioStep`s and reporting any authoring error as a `ScenarioIssue`; `runScenario` runs one `Scenario` against a `DaemonClient` and returns its `ScenarioResult`, per its `RunScenarioOptions`, whose `reset` resets a target that declares the `reset` capability before the first step (design D14; `scenario run` always sets it).
+The binary is documented in [cli.md](cli.md). The package also exports the pieces the binary is built from, for embedding a daemon in another process: `loadConfig`, `loadTypeScriptModule`, `createHeadlessTarget`, `startDaemon`, `readDaemonInfo` / `writeDaemonInfo` / `removeDaemonInfo`, `buildProgram`, `runServe`, `isLoopbackHost`, `parseCondition` / `conditionHolds`, and the scenario runner: `parseScenario` and `loadScenarioFiles` turn a file (or a directory of them) into a validated `Scenario`, made of `ScenarioStep`s and reporting any authoring error as a `ScenarioIssue`; `runScenario` runs one `Scenario` against a `DaemonClient` and returns its `ScenarioResult`, per its `RunScenarioOptions`, whose `reset` resets a target that declares the `reset` capability before the first step (design D14; `scenario run` always sets it). `createHeadlessTarget` takes an optional `loadDefinition`, which the `reload` operation calls to load the headless entry again (`runServe` passes one that re-bundles the configured entry under a fresh label); a target created without it doesn't declare `reload`.
 
 ### defineConfig (P0)
 
