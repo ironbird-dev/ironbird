@@ -55,6 +55,7 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024;
 const STATE_THROTTLE_MS = 100;
 const PING_INTERVAL_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 30_000;
+const RELOAD_TIMEOUT_MS = 60_000;
 
 /**
  * The operation-specific timeout a caller asked for, read straight from the wire `params`:
@@ -84,6 +85,16 @@ function operationTimeoutMs(params: Record<string, unknown>): number {
 function requestBoundFor(requestTimeoutMs: number, params: Record<string, unknown>): number {
   const opTimeout = operationTimeoutMs(params);
   return opTimeout > 0 ? Math.max(requestTimeoutMs, opTimeout + 5_000) : requestTimeoutMs;
+}
+
+/** A remote reload's wait for the app to come back: `params.timeoutMs`, default 60 s (spec §4.2). */
+function reloadTimeoutMs(params: Record<string, unknown>): number {
+  const value = params['timeoutMs'];
+  if (value === undefined) return RELOAD_TIMEOUT_MS;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new IronbirdError('INVALID_PAYLOAD', 'reload needs a positive timeoutMs', { name: 'reload', issues: [{ path: ['timeoutMs'], message: 'expected a positive number of milliseconds' }] });
+  }
+  return value;
 }
 
 const IPV4_LOOPBACK = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
@@ -129,6 +140,14 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
   const targets = new Map<string, DaemonTarget>();
   if (options.headless) targets.set(options.headless.id, options.headless);
   for (const target of options.targets ?? []) targets.set(target.id, target);
+  // Remote targets a pending `reload` will replace, by id. The bridge server asks before it claims
+  // an id for a new connection (see `replacementFor` below), and the reservation goes to one
+  // candidate at a time: `held` is set while a candidate has it, from its hello until the reload
+  // ends, and cleared if that candidate closes before it registers.
+  const replacing = new Map<string, { appId: string; platform: Platform; held: boolean }>();
+  // Remote reloads in progress, by target id, so a second reload of the same app waits for the
+  // first and then reloads the replacement.
+  const remoteReloads = new Map<string, Promise<{ target: string; rev: number }>>();
 
   // One app per session (architecture.md §7.3): the headless target names it, else the first
   // bridge to connect does, and it stays for the daemon's life.
@@ -185,6 +204,93 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
     if (remotes.length === 1) return remotes[0] as DaemonTarget;
     if (remotes.length === 0) throw new IronbirdError('NO_TARGET', 'No app is connected', { available: [...targets.keys()] });
     throw new IronbirdError('AMBIGUOUS_TARGET', 'Several apps are connected; pass --target', { available: remotes.map((target) => target.id) });
+  };
+
+  // A remote reload (spec §4.2). The bridge answers and then reloads; the reloaded app arrives as a
+  // new connection, which the bridge server lands on the same id, and the reload completes once
+  // that replacement has registered and its `rev` has been read.
+  const reloadRemoteNow = async (target: DaemonTarget, timeoutMs: number, signal: AbortSignal): Promise<{ target: string; rev: number }> => {
+    const { id, platform, appId } = target.info();
+    if (signal.aborted) throw new IronbirdError('TARGET_DISCONNECTED', 'The reload request timed out before the reload started', { target: id, op: 'reload' });
+    // Checked before anything is sent: with two builds of the app on one platform, nothing tells
+    // which new connection is the reloaded one.
+    const twins = [...targets.values()].filter((other) => {
+      const info = other.info();
+      return info.platform === platform && info.appId === appId;
+    });
+    if (twins.length > 1) {
+      throw new IronbirdError('AMBIGUOUS_TARGET', `Several ${platform} builds of ${appId} are connected, so the reloaded one can't be told apart; disconnect the others and retry`, { available: twins.map((twin) => twin.id) });
+    }
+    const expired = (): IronbirdError => new IronbirdError('TARGET_DISCONNECTED', `${id} did not reconnect within ${timeoutMs} ms of the reload`, { target: id, op: 'reload', timeoutMs });
+    // One deadline bounds every wait below: the bridge's reply, the replacement's registration, and
+    // its getState. A bridge that stays connected but never answers therefore fails here at
+    // `timeoutMs`, and the request bound aborting the reload ends it the same way, so the observer
+    // and the reservation never outlive the request.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abortListener: () => void = () => {};
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(expired()), timeoutMs);
+      abortListener = () => reject(expired());
+      signal.addEventListener('abort', abortListener, { once: true });
+    });
+    deadline.catch(() => undefined);
+    // The observer and the reservation go in before the request goes out, so a replacement that
+    // connects before the reply has arrived is still caught.
+    let stopObserving: () => void = () => {};
+    const replaced = new Promise<DaemonTarget>((resolve) => {
+      const observe = (event: TargetEvent): void => {
+        if (event.status !== 'connected' || event.id !== id) return;
+        const next = targets.get(id);
+        if (next !== undefined && next !== target) resolve(next);
+      };
+      targetListeners.add(observe);
+      stopObserving = () => {
+        targetListeners.delete(observe);
+      };
+    });
+    const reservation = { appId, platform, held: false };
+    replacing.set(id, reservation);
+    try {
+      const sent = target.run('reload', {}).then(
+        () => undefined,
+        (error: unknown) => {
+          // The app may tear its connection down before the reply leaves; whether it reloaded is
+          // for the replacement to show, so only an error the bridge actually sent fails here.
+          if (isIronbirdError(error) && error.code === 'TARGET_DISCONNECTED') return;
+          throw error;
+        },
+      );
+      // Losing the race below leaves `sent` pending; a rejection it settles with later is handled.
+      sent.catch(() => undefined);
+      await Promise.race([sent, deadline]);
+      const next = await Promise.race([replaced, deadline]);
+      const reading = next.run('getState', {});
+      reading.catch(() => undefined);
+      // A fresh connection's `rev` is 0 until its first state notification; read the real one.
+      const { rev } = (await Promise.race([reading, deadline])) as { rev: number };
+      return { target: next.id, rev };
+    } finally {
+      stopObserving();
+      if (timer !== undefined) clearTimeout(timer);
+      signal.removeEventListener('abort', abortListener);
+      if (replacing.get(id) === reservation) replacing.delete(id);
+    }
+  };
+
+  const reloadRemote = (id: string, timeoutMs: number, signal: AbortSignal): Promise<{ target: string; rev: number }> => {
+    const earlier = remoteReloads.get(id);
+    const run = (async () => {
+      if (earlier) await earlier.catch(() => undefined);
+      // `reloadRemoteNow` refuses to start once `signal` has aborted, so a reload whose request
+      // already failed while it waited here never reloads the app.
+      return reloadRemoteNow(selectTarget(id), timeoutMs, signal);
+    })();
+    remoteReloads.set(id, run);
+    const settled = (): void => {
+      if (remoteReloads.get(id) === run) remoteReloads.delete(id);
+    };
+    run.then(settled, settled);
+    return run;
   };
 
   const authorized = (req: IncomingMessage): boolean => {
@@ -307,6 +413,20 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         return;
       }
       const target = selectTarget(requestedTarget);
+      if (op === 'reload' && target.info().platform !== 'headless') {
+        const timeoutMs = reloadTimeoutMs(params);
+        // The reload's own timeout goes into the bound, so the default 30 s request timeout never
+        // cuts short a reload that is still waiting for the app to come back. The bound can still
+        // fire first for a reload queued behind another; it then aborts that reload, so the reload
+        // cleans up and never starts after its request has failed.
+        const controller = new AbortController();
+        const reloaded = await withRequestTimeout(target.id, op, requestBoundFor(requestTimeoutMs, { timeoutMs }), reloadRemote(target.id, timeoutMs, controller.signal), (boundMs) => {
+          controller.abort();
+          return new IronbirdError('TARGET_DISCONNECTED', `Reload request timed out after ${boundMs} ms`, { target: target.id, op: 'reload' });
+        });
+        sendJson(res, 200, { ok: true, target: reloaded.target, result: { rev: reloaded.rev } });
+        return;
+      }
       const bound = requestBoundFor(requestTimeoutMs, params);
       const result = await withRequestTimeout(target.id, op, bound, target.run(op, params));
       sendJson(res, 200, { ok: true, target: target.id, result });
@@ -523,6 +643,21 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         log,
         pingIntervalMs: options.bridge.pingIntervalMs,
         handshakeTimeoutMs: options.bridge.handshakeTimeoutMs,
+        // One candidate at a time: a hello that matches a reservation another candidate holds gets
+        // a normal claim instead, so it can never dispose the replacement being read.
+        replacementFor: (app) => {
+          for (const [id, pending] of replacing) {
+            if (pending.held || pending.appId !== app.id || pending.platform !== app.platform) continue;
+            pending.held = true;
+            return {
+              id,
+              release: () => {
+                pending.held = false;
+              },
+            };
+          }
+          return undefined;
+        },
         session: {
           appId: () => sessionAppId,
           adopt: (appId) => {

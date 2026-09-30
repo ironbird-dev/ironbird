@@ -99,6 +99,8 @@ export async function startBridgeServer(options: BridgeServerOptions): Promise<B
   const log = options.log ?? (() => {});
   const handshakeTimeoutMs = options.handshakeTimeoutMs ?? 5_000;
   const registry = createTargetRegistry();
+  // Open connections by id, so a reload's replacement can close the connection it replaces.
+  const live = new Map<string, RemoteTarget>();
   const server = new WebSocketServer({
     host: options.host,
     port: options.port,
@@ -150,7 +152,19 @@ export async function startBridgeServer(options: BridgeServerOptions): Promise<B
         return reject('APP_MISMATCH', `This daemon serves ${expected}; the bridge is ${hello.app.id}`, { expected, received: hello.app.id });
       }
       options.session.adopt(hello.app.id);
-      const id = registry.claim(hello.app.platform);
+      // A pending reload's replacement first closes the connection it replaces, if that socket
+      // hasn't closed on its own yet, then claims the same id: the old id is released before the
+      // claim, so the replacement lands on it even when its hello beats the old close.
+      // `RemoteTarget.dispose` runs its close handling synchronously (its body has no await), so the
+      // id is free and `onDisconnect` has fired by the time it returns. The ticket belongs to this
+      // one candidate; if it closes before it is registered, the ticket goes back for the next.
+      const ticket = options.replacementFor?.({ id: hello.app.id, platform: hello.app.platform });
+      if (ticket !== undefined) {
+        const previous = live.get(ticket.id);
+        if (previous && !previous.closed) void previous.dispose();
+      }
+      const id = registry.claim(hello.app.platform, ticket?.id);
+      let registered = false;
       socket.off('error', onSocketError);
       const target: RemoteTarget = createRemoteTarget({
         id,
@@ -162,14 +176,19 @@ export async function startBridgeServer(options: BridgeServerOptions): Promise<B
         log,
         pingIntervalMs: options.pingIntervalMs,
         onClose: () => {
+          if (live.get(id) === target) live.delete(id);
           registry.release(id);
+          if (!registered) ticket?.release();
           options.onDisconnect(target);
         },
       });
+      live.set(id, target);
       socket.send(JSON.stringify({ type: 'welcome', protocol: PROTOCOL_VERSION, targetId: id }));
       target.loadDescription().then(
         () => {
-          if (!target.closed) options.onConnect(target);
+          if (target.closed) return;
+          registered = true;
+          options.onConnect(target);
         },
         (error: unknown) => {
           log(`${id} failed to describe itself: ${messageOf(error)}`);

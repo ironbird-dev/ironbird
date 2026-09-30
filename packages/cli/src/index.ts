@@ -21,7 +21,7 @@ export type { ServeIo, ServeOptions } from './cli/commands/serve';
 export { BRIDGE_MARKER_BYTES, findMarker } from './verify-bundle';
 export type { MarkerHit } from './verify-bundle';
 export { startBridgeServer, CLOSE_CODES } from './bridge-server';
-export type { BridgeServer, BridgeServerOptions } from './bridge-server';
+export type { BridgeServer, BridgeServerOptions, ReplacementTicket } from './bridge-server';
 export { createRemoteTarget, DEFAULT_PING_INTERVAL_MS, MISSED_PONG_LIMIT } from './remote-target';
 export type { RemoteSocket, RemoteTarget, RemoteTargetOptions } from './remote-target';
 export { createTargetRegistry } from './target-registry';

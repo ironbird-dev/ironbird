@@ -29,4 +29,16 @@ describe('createTargetRegistry', () => {
     registry.release('nope');
     expect(registry.claim('android')).toBe('android');
   });
+
+  it('hands out a preferred id when it is reserved for the platform and free, and falls back otherwise', () => {
+    const registry = createTargetRegistry();
+    registry.claim('ios');
+    registry.claim('ios');
+    registry.release('ios');
+    registry.release('ios-2');
+    // A reload's replacement keeps its id even though a lower one is free.
+    expect(registry.claim('ios', 'ios-2')).toBe('ios-2');
+    expect(registry.claim('ios', 'ios-2')).toBe('ios');
+    expect(registry.claim('ios', 'android')).toBe('ios-3');
+  });
 });

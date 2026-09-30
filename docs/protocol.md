@@ -4,7 +4,7 @@
 |---|---|
 | Status | Draft |
 | `PROTOCOL_VERSION` | `1` |
-| Last updated | 2026-09-25 |
+| Last updated | 2026-09-29 |
 | Related | [architecture.md](architecture.md) · [cli.md](cli.md) · [api.md](api.md) |
 
 ironbird has two transports that carry the same operations:
@@ -46,7 +46,7 @@ When the daemon was started with a token, requests must include `Authorization: 
 
 ### 2.2 Streams
 
-`GET /v1/stream?target=<id>&since=<seq>` returns Server-Sent Events. Event types are `event` for recorded events, `state` for revision changes, `target` for apps connecting and disconnecting, and a terminal `error` carrying an `ErrorShape`. A `target` frame is `{ "id": "ios", "platform": "ios", "appId": "com.example.checkout", "status": "connected" | "disconnected" }` and reaches every open stream, whatever target it follows. When the stream's own target disconnects, the stream ends with a `target` frame followed by an `error` frame carrying `TARGET_DISCONNECTED`, because its subscriptions died with the connection; the client reconnects to the new connection's stream when the app comes back. The `error` frame is also how a backlog read that fails ends the stream. The CLI uses this for `events --follow` and `watch`. Sequence numbers restart at 1 after `reset`; a stream that spans a reset sees them go backwards.
+`GET /v1/stream?target=<id>&since=<seq>` returns Server-Sent Events. Event types are `event` for recorded events, `state` for revision changes, `target` for apps connecting and disconnecting, and a terminal `error` carrying an `ErrorShape`. A `target` frame is `{ "id": "ios", "platform": "ios", "appId": "com.example.checkout", "status": "connected" | "disconnected" }` and reaches every open stream, whatever target it follows. When the stream's own target disconnects, the stream ends with a `target` frame followed by an `error` frame carrying `TARGET_DISCONNECTED`, because its subscriptions died with the connection; the client reconnects to the new connection's stream when the app comes back. The `error` frame is also how a backlog read that fails ends the stream. The CLI uses this for `events --follow` and `watch`. Sequence numbers restart at 1 after `reset` and `reload`; a stream that spans one sees them go backwards.
 
 ## 3. Target channel
 
@@ -108,7 +108,7 @@ Upgrade requests whose `Origin` header names a host other than loopback or the d
 }
 ```
 
-Failures use the same `ok: false` error shape as the client API. Mutating operations (`dispatch`, `fakeControl`, `clockAdvance`, `reset`, `snapshotLoad`) are processed one at a time per target, in arrival order. Read-only operations (`describe`, `getState`, `events`, `settle`, `waitFor`, `fakeCalls`, `snapshotSave`, `clockNow`) are not queued behind them, so a pending `waitFor` never blocks the operation that would satisfy it. `reset` is the exception among mutating operations: it is not queued, so it can recover a target whose dispatch never settles; any operation still waiting in the queue, or in flight, fails with `TARGET_DISCONNECTED`. Operations that arrive while a reset is in progress run after it, against the new session. The daemon bounds every target operation at 30 s by default, or at the operation's own timeout plus five seconds when it carries one, and fails the request with `TARGET_DISCONNECTED` when the bound elapses; the operation itself is left to the target's queue and `reset`.
+Failures use the same `ok: false` error shape as the client API. Mutating operations (`dispatch`, `fakeControl`, `clockAdvance`, `reset`, `reload`, `snapshotLoad`) are processed one at a time per target, in arrival order. Read-only operations (`describe`, `getState`, `events`, `settle`, `waitFor`, `fakeCalls`, `snapshotSave`, `clockNow`) are not queued behind them, so a pending `waitFor` never blocks the operation that would satisfy it. `reset` and `reload` are the exception among mutating operations: they are not queued, so they can recover a target whose dispatch never settles; any operation still waiting in the queue, or in flight, fails with `TARGET_DISCONNECTED`. On the headless target they are one lifecycle transition: transitions run one at a time in the order requested, a `reset` requested while the last pending transition is a `reset` shares it, a `reload` never shares one, and operations that arrive while a transition is in progress run after it, against the new session. The daemon bounds every target operation at 30 s by default, or at the operation's own timeout plus five seconds when it carries one, and fails the request with `TARGET_DISCONNECTED` when the bound elapses; the operation itself is left to the target's queue and `reset`. A remote `reload`'s own timeout is its `timeoutMs`, 60 s by default, so its bound is 65 s unless the caller sets one.
 
 ### 3.3 Notifications
 
@@ -151,8 +151,11 @@ The daemon sends `{ "type": "ping", "t": <number> }` every 5 s, and the app repl
 | `snapshotSave` (P1) | none | `{ rev, snapshot }` | if the target persists | if the target persists |
 | `snapshotLoad` (P1) | `snapshot` | `{ rev, path, value }` | if the target restores | if the target restores |
 | `reset` | none | `{ rev, path, value }` | ✓ | `UNSUPPORTED` |
+| `reload` | `timeoutMs?` (remote only, default 60,000) | `{ rev }` | ✓ when the daemon loaded the entry from config | ✓ when the build has `DevSettings.reload` |
 
 `settle` in params is `true` (the default), `false`, or `{ "timeoutMs": number }`. `waitFor` doesn't advance the manual clock. `fakeCalls` pages like `events`: `calls` are the fake's recorded port calls with `seq` greater than `since` (default 0), at most `limit` of them; `nextSeq` is the cursor to pass as the next `since`, and with `limit: 0` it reports where the log stands without transferring it; `truncated` is true when `since` points into calls the fake has already dropped, since each fake keeps 10,000. `fakeControl` and `fakeCalls` on a target that doesn't declare the `fakes` capability fail with `UNSUPPORTED`; on a target that does, a fake it doesn't wire fails with `UNKNOWN_FAKE`. A control's `INVALID_PAYLOAD` and `DISPATCH_FAILED` name it as `<fake>.<control>`.
+
+`reload` loads the app's current code from a fresh start. Its `rev` belongs to the target named in the response envelope, which the CLI and the MCP tools print as `{ target, rev }`. On the headless target it disposes the old session first, re-bundles the headless entry, and boots it with a fresh clock, event log, and fakes; `ironbird.config.ts` is not read again. If loading or booting fails, the old code is gone too: every later operation, `reset` included, fails with that `HEADLESS_LOAD_FAILED` until a `reload` succeeds. On a remote target the bridge replies `{}` and then calls `DevSettings.reload()` on the next tick, and the daemon answers the client once the reloaded app has reconnected and described itself, with the `rev` it reads from the new connection by `getState`. Before sending anything, the daemon fails with `AMBIGUOUS_TARGET` when another connected target has the same app id and platform, since it couldn't tell which new connection is the reloaded one. The reconnection takes the old target's id, even when its `hello` arrives before the old socket's close, because the daemon closes the old connection first. Only one new connection at a time is taken as the replacement; another connection of the same app that arrives meanwhile gets an id of its own. One deadline of `timeoutMs` covers the bridge's reply, the replacement's registration, and that read: if any of them is still outstanding when it runs out, the request fails with `TARGET_DISCONNECTED` and details `{ target, op: 'reload', timeoutMs }`; a `timeoutMs` that is present but not a positive number fails with `INVALID_PAYLOAD`. Operations in flight on the old connection fail with `TARGET_DISCONNECTED`, as on any disconnect; use the `target` the reload returns from then on.
 
 ### 4.2 Daemon-only operations (client API)
 
@@ -171,7 +174,7 @@ Both operations pick the only connected app when `target` is omitted, fail with 
 ```ts
 type Platform = 'headless' | 'ios' | 'android';
 
-type Capability = 'settle' | 'events' | 'fakes' | 'clock' | 'persist' | 'restore' | 'reset';
+type Capability = 'settle' | 'events' | 'fakes' | 'clock' | 'persist' | 'restore' | 'reset' | 'reload';
 
 interface Description {
   app: { id: string; platform: Platform; name?: string };
@@ -256,7 +259,7 @@ interface ErrorShape {
 
 A call that returns a promise is recorded as `pending` and updated to `resolved` or `rejected` when it settles; `fakeCalls` returns copies, so read again for the final outcome of a call that was pending.
 
-Capabilities say which operations a target supports, and an operation whose capability is absent fails with `UNSUPPORTED`. The headless target declares `settle`, `events`, `clock`, and `reset`, `fakes` when the app wires fakes in, plus `persist` and `restore` when its `Target` implements them. A remote target declares `settle` and `events`, `fakes` when fakes are wired into the build, and `persist` and `restore` from its `Target`; it never declares `clock` or `reset` in v1.
+Capabilities say which operations a target supports, and an operation whose capability is absent fails with `UNSUPPORTED`. The headless target declares `settle`, `events`, `clock`, and `reset`, `reload` when the daemon loaded its entry from config (`ironbird serve` always does), `fakes` when the app wires fakes in, plus `persist` and `restore` when its `Target` implements them. A remote target declares `settle` and `events`, `fakes` when fakes are wired into the build, `reload` when `DevSettings.reload` is a function, as in dev builds, and `persist` and `restore` from its `Target`; it never declares `clock` or `reset` in v1.
 
 ## 6. Error codes
 
@@ -270,11 +273,11 @@ Capabilities say which operations a target supports, and an operation whose capa
 | `WAIT_TIMEOUT` | A condition wasn't met in time | `{ path, value, pending }` |
 | `UNSUPPORTED` | The operation isn't available on this target, or the route is unknown (HTTP 404, `target: null`) | `{ op, target }` |
 | `NO_TARGET` | No target is connected or configured | `{ available }` |
-| `AMBIGUOUS_TARGET` | Several targets qualify and none was chosen | `{ available }` |
-| `TARGET_DISCONNECTED` | The connection dropped before a response, the request timeout elapsed, or a reset or dispose abandoned the operation | `{ target, op }` |
+| `AMBIGUOUS_TARGET` | Several targets qualify and none was chosen, or a remote `reload` found another connected target with the same app id and platform | `{ available }` |
+| `TARGET_DISCONNECTED` | The connection dropped before a response, the request timeout elapsed, a reset, reload, or dispose abandoned the operation, or a reloaded app didn't reconnect within `timeoutMs` | `{ target, op }`; for a reload that timed out, `{ target, op: 'reload', timeoutMs }` |
 | `AMBIGUOUS_DEVICE` | Several booted devices and none was chosen | `{ devices }` |
 | `SCREENSHOT_FAILED` | The host capture tool failed, or the capture or device resolution timed out (a wedged `simctl`/`adb`/`resolveDevice`) | `{ tool, stderr }` |
-| `HEADLESS_LOAD_FAILED` | The headless entry failed to load | `{ entry, message, importChain? }` |
+| `HEADLESS_LOAD_FAILED` | The headless entry failed to load, at start or on `reload` | `{ entry, message, importChain? }` |
 | `INVALID_CONFIG` | `ironbird.config.ts` is missing a default export or fails validation | `{ file, issues }` |
 | `INVALID_SCENARIO` | A scenario file fails to parse or validate; raised by the CLI before any operation is sent, never by a target | `{ file, issues }` |
 | `CLOCK_RUNAWAY` | `clockAdvance` exceeded 10,000 timer firings | `{ labels }` |

@@ -49,6 +49,9 @@ const connected: TargetInfo[] = [];
 const remotes: RemoteTarget[] = [];
 const disconnected: string[] = [];
 const logs: string[] = [];
+// Bumped by every `boot`: a server closed in `afterEach` can still report a terminated socket's
+// close after the next test has booted, and that late callback must not land in its arrays.
+let generation = 0;
 
 async function boot(options: { token?: string; handshakeTimeoutMs?: number; replacementFor?: BridgeServerOptions['replacementFor'] } = {}): Promise<BridgeServer> {
   sessionAppId = undefined;
@@ -56,19 +59,27 @@ async function boot(options: { token?: string; handshakeTimeoutMs?: number; repl
   remotes.length = 0;
   disconnected.length = 0;
   logs.length = 0;
+  generation += 1;
+  const mine = generation;
+  const current = (): boolean => mine === generation;
   server = await startBridgeServer({
     host: '127.0.0.1',
     port: 0,
     token: options.token,
-    log: (line) => logs.push(line),
+    log: (line) => {
+      if (current()) logs.push(line);
+    },
     handshakeTimeoutMs: options.handshakeTimeoutMs,
     replacementFor: options.replacementFor,
     session: { appId: () => sessionAppId, adopt: (id) => (sessionAppId = id) },
     onConnect: (target: RemoteTarget) => {
+      if (!current()) return;
       connected.push(target.info());
       remotes.push(target);
     },
-    onDisconnect: (target: RemoteTarget) => disconnected.push(target.id),
+    onDisconnect: (target: RemoteTarget) => {
+      if (current()) disconnected.push(target.id);
+    },
   });
   return server;
 }
@@ -206,5 +217,77 @@ describe('startBridgeServer', () => {
     const request = client.frames.find((frame) => frame['op'] === 'reload')!;
     client.send({ type: 'response', id: request['id'], ok: true, result: {} });
     expect(await reloading).toEqual({});
+  });
+
+  it('lets a pending replacement close the connection it replaces and take that id, even with a lower id free', async () => {
+    let replacing: string | undefined;
+    const s = await boot({
+      replacementFor: (app) => (app.id === 'com.example.test' && app.platform === 'ios' && replacing !== undefined ? { id: replacing, release: () => {} } : undefined),
+    });
+    const first = await connect(s.url);
+    first.send(hello());
+    await first.until(() => first.frames.length >= 1);
+    const second = await connect(s.url);
+    second.send(hello());
+    await second.until(() => second.frames.length >= 1);
+    expect(second.frames[0]).toMatchObject({ targetId: 'ios-2' });
+    first.socket.close();
+    await first.until(() => disconnected.length === 1);
+
+    // `ios` is free now; the replacement for `ios-2` must still come back as `ios-2`, and its
+    // hello arrives while `ios-2`'s socket is open.
+    replacing = 'ios-2';
+    const replacement = await connect(s.url);
+    replacement.send(hello());
+    await replacement.until(() => replacement.frames.length >= 1);
+    expect(replacement.frames[0]).toEqual({ type: 'welcome', protocol: 1, targetId: 'ios-2' });
+    expect(await second.closed).toMatchObject({ code: 1001 });
+    expect(disconnected).toEqual(['ios', 'ios-2']);
+
+    replacing = undefined;
+    const unrelated = await connect(s.url);
+    unrelated.send(hello());
+    await unrelated.until(() => unrelated.frames.length >= 1);
+    expect(unrelated.frames[0]).toMatchObject({ targetId: 'ios' });
+  });
+
+  it('releases a replacement ticket when its candidate closes before it is registered, and keeps it once registered', async () => {
+    const events: string[] = [];
+    let available = true;
+    const s = await boot({
+      replacementFor: () => {
+        if (!available) return undefined;
+        available = false;
+        events.push('taken');
+        return {
+          id: 'ios',
+          release: () => {
+            available = true;
+            events.push('released');
+          },
+        };
+      },
+    });
+    const failing = await connect(s.url);
+    failing.send(hello());
+    await failing.until(() => failing.frames.length >= 2);
+    expect(failing.frames[0]).toMatchObject({ targetId: 'ios' });
+    // Its describe fails, so the server drops the connection before registering it.
+    failing.send({ type: 'response', id: failing.frames[1]!['id'], ok: false, error: { code: 'INTERNAL', message: 'describe exploded' } });
+    await failing.closed;
+    await failing.until(() => events.length === 2);
+    expect(events).toEqual(['taken', 'released']);
+    expect(remotes).toEqual([]);
+
+    const retry = await connect(s.url);
+    retry.send(hello());
+    await retry.until(() => retry.frames.length >= 2);
+    expect(retry.frames[0]).toMatchObject({ targetId: 'ios' });
+    retry.send({ type: 'response', id: retry.frames[1]!['id'], ok: true, result: { app: { id: 'com.example.test', platform: 'ios' }, commands: {}, fakes: {}, capabilities: ['settle', 'events'] } });
+    await retry.until(() => remotes.length === 1);
+    retry.socket.close();
+    await retry.until(() => disconnected.length === 2);
+    // A registered candidate's ticket is the daemon's to clear, never the server's.
+    expect(events).toEqual(['taken', 'released', 'taken']);
   });
 });
