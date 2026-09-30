@@ -119,8 +119,8 @@ This table replaces cli.md's "MCP tools" table.
 | `ironbird_fake` | `fake`, `control`, `payload?`, `target?`, `path?`, `settle?` | `StepResult` | `fakeControl` |
 | `ironbird_fake_calls` | `fake`, `since?`, `limit?`, `target?` | `{ calls, nextSeq, truncated }` | `fakeCalls` |
 | `ironbird_events` | `since?`, `limit?`, `target?` | `{ events, nextSeq, truncated }` | `events` |
-| `ironbird_clock_advance` | `ms`, `path?`, `settle?` | `StepResult` plus `now` | `clockAdvance` |
-| `ironbird_clock_now` | none | `{ now }` | `clockNow` |
+| `ironbird_clock_advance` | `ms`, `path?`, `settle?`, `target?` | `StepResult` plus `now` | `clockAdvance` |
+| `ironbird_clock_now` | `target?` | `{ now }` | `clockNow` |
 | `ironbird_screenshot` | `target?`, `device?` | `Screenshot` and the image as image content | `screenshot` |
 | `ironbird_run_scenario` | `path` (a file or a folder), `target?`, `bail?` | `{ results: ScenarioResult[] }`, one per file | `runScenario` in process |
 | `ironbird_reset` | `target?` | `{ target, rev, path, value }` | `reset` |
