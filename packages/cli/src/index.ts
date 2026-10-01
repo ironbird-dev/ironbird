@@ -35,3 +35,5 @@ export { loadScenarioFiles, parseScenario } from './scenario/parse';
 export type { Scenario, ScenarioIssue, ScenarioStep } from './scenario/parse';
 export { runScenario } from './scenario/run';
 export type { RunScenarioOptions } from './scenario/run';
+export { createMcpServer } from './mcp/server';
+export type { McpServerOptions } from './mcp/server';

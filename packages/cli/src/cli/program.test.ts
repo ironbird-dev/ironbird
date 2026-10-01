@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DaemonClient } from './client';
+import type { McpServerOptions } from '../mcp/server';
 import { buildProgram } from './program';
 
 interface Call {
@@ -386,5 +387,56 @@ describe('scenario run', () => {
     h.stdout.length = 0;
     expect(await h.run(['scenario', 'run', 'scenarios/a-passes.yml', '--json'])).toBe(0);
     expect(JSON.parse(h.stdout[0] ?? '')).toMatchObject({ scenario: 'A passes', passed: true });
+  });
+});
+
+describe('mcp', () => {
+  function mcpHarness(serve: (options: McpServerOptions) => Promise<void>) {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const created: Array<{ url: string; token?: string }> = [];
+    const { run } = buildProgram({
+      cwd: '/tmp/nowhere',
+      env: {},
+      isTTY: false,
+      stdout: (t) => stdout.push(t),
+      stderr: (t) => stderr.push(t),
+      version: '0.0.0-test',
+      createClient: (options) => {
+        created.push(options);
+        return { url: options.url } as DaemonClient;
+      },
+      mcp: serve,
+      signal: AbortSignal.abort(),
+    });
+    return { run, stdout, stderr, created };
+  }
+
+  it('serves with the package version and working directory, and resolves the daemon on every tool call, never at start', async () => {
+    let served: McpServerOptions | undefined;
+    const h = mcpHarness(async (options) => {
+      served = options;
+    });
+    expect(await h.run(['mcp', '--daemon', 'http://127.0.0.1:9999', '--token', 'secret'])).toBe(0);
+    expect(h.stdout).toEqual([]);
+    if (!served) throw new Error('mcp was not served');
+    expect(served).toMatchObject({ version: '0.0.0-test', cwd: '/tmp/nowhere' });
+    expect(h.created).toEqual([]);
+    const first = await served.resolve();
+    await served.resolve();
+    expect(h.created).toEqual([
+      { url: 'http://127.0.0.1:9999', token: 'secret' },
+      { url: 'http://127.0.0.1:9999', token: 'secret' },
+    ]);
+    expect(first.artifactsDir).toBe(path.resolve('/tmp/nowhere', '.ironbird'));
+  });
+
+  it('reports a start-up failure on stderr, never stdout, and exits 1', async () => {
+    const h = mcpHarness(async () => {
+      throw new Error('stdin is not readable');
+    });
+    expect(await h.run(['mcp'])).toBe(1);
+    expect(h.stdout).toEqual([]);
+    expect(h.stderr.join('')).toContain('ironbird mcp: stdin is not readable');
   });
 });
