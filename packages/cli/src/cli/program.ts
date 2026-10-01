@@ -4,7 +4,7 @@ import { createDaemonClient, resolveDaemon, type DaemonClient } from './client';
 import type { runServe } from './commands/serve';
 import { UsageError, parseDuration } from './durations';
 import { exitCodeForError, exitCodeForStep } from './exit-codes';
-import { createOutput, type Output } from './output';
+import { createOutput, withTarget, type Output } from './output';
 import { parseJsonOrString, parsePayload } from './values';
 import { formatScenarioResult } from '../scenario/format';
 import { access } from 'node:fs/promises';
@@ -93,11 +93,6 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
     const daemon = await resolveDaemon({ flag: opts.daemon, cwd: io.cwd, env: io.env });
     const client = (io.createClient ?? createDaemonClient)({ url: daemon.url, token: opts.token ?? daemon.token });
     return { output, client, target: opts.target, artifactsDir: daemon.artifactsDir, json };
-  };
-
-  const withTarget = (envelope: { target?: string; result: unknown }): Record<string, unknown> => {
-    const result = envelope.result as Record<string, unknown>;
-    return envelope.target === undefined || 'target' in result ? result : { target: envelope.target, ...result };
   };
 
   const wrap =

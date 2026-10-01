@@ -44,6 +44,7 @@
   },
   "dependencies": {
     "@ironbird/core": "workspace:*",
+    "@modelcontextprotocol/server": "^2.2.0",
     "commander": "^15.0.0",
     "esbuild": "^0.25.0",
     "ws": "^8.21.3",
@@ -52,6 +53,7 @@
   },
   "devDependencies": {
     "@ironbird/react-native": "workspace:*",
+    "@modelcontextprotocol/client": "^2.2.0",
     "@types/ws": "^8.18.1"
   }
 }

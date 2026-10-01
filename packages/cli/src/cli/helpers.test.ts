@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { UsageError, parseDuration } from './durations';
 import { exitCodeForError, exitCodeForStep } from './exit-codes';
-import { createOutput } from './output';
+import { createOutput, withTarget } from './output';
 import { parseJsonOrString, parsePayload } from './values';
 
 describe('parseDuration', () => {
@@ -74,5 +74,13 @@ describe('createOutput', () => {
     output.error({ code: 'WAIT_TIMEOUT', message: 'timed out', details: { path: 'a' } });
     expect(lines[0]).toBe('{\n  "rev": 1\n}\n');
     expect(lines[1]).toBe('error WAIT_TIMEOUT: timed out\n  {\n    "path": "a"\n  }\n');
+  });
+});
+
+describe('withTarget', () => {
+  it('adds the envelope target unless the result already carries one', () => {
+    expect(withTarget({ target: 'headless', result: { rev: 1 } })).toEqual({ target: 'headless', rev: 1 });
+    expect(withTarget({ target: 'headless', result: { target: 'ios', rev: 1 } })).toEqual({ target: 'ios', rev: 1 });
+    expect(withTarget({ result: { version: '1' } })).toEqual({ version: '1' });
   });
 });
