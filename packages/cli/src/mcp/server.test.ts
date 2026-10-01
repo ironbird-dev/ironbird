@@ -266,6 +266,38 @@ describe('image tools', () => {
     expect(h.calls).toEqual([{ op: 'screenshot', params: {}, target: 'ios' }]);
   });
 
+  it('ironbird_screenshot fails with SCREENSHOT_FAILED when the captured PNG cannot be read', async () => {
+    const h = await connect({ screenshot: shot }, {
+      readImage: async () => {
+        throw new Error('ENOENT: no such file');
+      },
+    });
+    const result = await h.call('ironbird_screenshot', { target: 'ios' });
+    expect(result.isError).toBe(true);
+    expect(result.content).toHaveLength(1);
+    expect(json(result)).toEqual({
+      error: {
+        code: 'SCREENSHOT_FAILED',
+        message: `The screenshot at ${shot.path} could not be read: ENOENT: no such file`,
+        details: { tool: 'readImage', stderr: 'ENOENT: no such file' },
+      },
+    });
+  });
+
+  it('ironbird_step says a SCREENSHOT_FAILED from the daemon happened after the command applied', async () => {
+    const error = new IronbirdError('SCREENSHOT_FAILED', 'Screenshot of SIM-1 failed: boom', { tool: 'simctl', stderr: 'boom' });
+    const h = await connect({ step: error });
+    const result = await h.call('ironbird_step', { command: 'cart.addItem', target: 'ios' });
+    expect(result.isError).toBe(true);
+    expect(json(result)).toEqual({ error: { code: 'SCREENSHOT_FAILED', message: 'Screenshot of SIM-1 failed: boom', details: { tool: 'simctl', stderr: 'boom' } } });
+    expect(result.content).toHaveLength(2);
+    expect(result.content[1]?.type).toBe('text');
+    expect(result.content[1]?.text).toMatch(/already applied.*Do not retry.*ironbird_state/);
+    // Any other step failure stays a single error block.
+    const other = await connect({ step: new IronbirdError('UNKNOWN_COMMAND', 'Unknown command x') });
+    expect((await other.call('ironbird_step', { command: 'x' })).content).toHaveLength(1);
+  });
+
   it('keeps an applied step a success when the screenshot file cannot be read', async () => {
     const h = await connect({ step: stepped }, {
       readImage: async () => {

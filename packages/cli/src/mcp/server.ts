@@ -1,4 +1,4 @@
-import { messageOf, toErrorShape, type Description, type FakeCallsResult, type ScenarioResult, type Screenshot, type SettleResult, type StepResult } from '@ironbird/core';
+import { IronbirdError, isIronbirdError, messageOf, toErrorShape, type Description, type FakeCallsResult, type ScenarioResult, type Screenshot, type SettleResult, type StepResult } from '@ironbird/core';
 import { McpServer } from '@modelcontextprotocol/server';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
@@ -38,6 +38,9 @@ async function guard(work: () => Promise<ToolResult>): Promise<ToolResult> {
     return failure(error);
   }
 }
+
+/** The second text block on a `step` whose capture failed after its dispatch applied. */
+const STEP_APPLIED_NOTE = 'The command was already applied; only the screenshot failed. Do not retry the step, which would apply the command twice. Read the result with ironbird_state instead.';
 
 const CONDITIONS = ['equals', 'notEquals', 'exists', 'matches'] as const;
 /** The CLI's `wait --timeout` default. */
@@ -230,14 +233,19 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 
   const readImage = options.readImage ?? ((file: string) => readFile(file));
 
-  // The step or capture has already happened, so a PNG that can't be read must not turn the
-  // result into an error: an agent that retried the step would apply it twice.
-  const withImage = async (value: unknown, shot: Screenshot): Promise<ToolResult> => {
+  // For a step the dispatch has already applied, so a PNG that can't be read must not turn the
+  // result into an error: an agent that retried the step would apply it twice. A screenshot has
+  // nothing but the image to offer, so there an unreadable PNG is a SCREENSHOT_FAILED failure.
+  const withImage = async (value: unknown, shot: Screenshot, whenUnreadable: 'note' | 'fail'): Promise<ToolResult> => {
     try {
       const png = await readImage(shot.path);
       return success(value, { type: 'image', data: png.toString('base64'), mimeType: 'image/png' });
     } catch (error) {
-      return success(value, { type: 'text', text: `The screenshot at ${shot.path} could not be read: ${messageOf(error)}` });
+      const reason = messageOf(error);
+      if (whenUnreadable === 'fail') {
+        return failure(new IronbirdError('SCREENSHOT_FAILED', `The screenshot at ${shot.path} could not be read: ${reason}`, { tool: 'readImage', stderr: reason }));
+      }
+      return success(value, { type: 'text', text: `The screenshot at ${shot.path} could not be read: ${reason}` });
     }
   };
 
@@ -245,17 +253,27 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     'ironbird_step',
     {
       description:
-        'Connected apps only. Like ironbird_send, then capture a screenshot once settling ends, returned as an image. settledBeforeCapture is true only when settling reached idle first. The headless target has no screen.',
+        'Connected apps only. Like ironbird_send, then capture a screenshot once settling ends, returned as an image. settledBeforeCapture is true only when settling reached idle first. The headless target has no screen. A SCREENSHOT_FAILED error from this tool means the command was already applied and only the capture failed: do not retry the step, read state with ironbird_state instead.',
       inputSchema: z.object({ command: z.string().min(1).describe('Command name from ironbird_describe.'), payload, target, path: statePath, settle, device }),
     },
     (input) =>
       guard(async () => {
-        const result = await (await daemon()).rpc<StepResult & { screenshot: Screenshot; settledBeforeCapture: boolean }>(
-          'step',
-          { name: input.command, payload: input.payload ?? {}, path: input.path ?? '', settle: input.settle ?? true, ...(input.device === undefined ? {} : { device: input.device }) },
-          input.target,
-        );
-        return withImage(result, result.screenshot);
+        try {
+          const result = await (await daemon()).rpc<StepResult & { screenshot: Screenshot; settledBeforeCapture: boolean }>(
+            'step',
+            { name: input.command, payload: input.payload ?? {}, path: input.path ?? '', settle: input.settle ?? true, ...(input.device === undefined ? {} : { device: input.device }) },
+            input.target,
+          );
+          return withImage(result, result.screenshot, 'note');
+        } catch (error) {
+          // The daemon captures after the dispatch applied (docs/protocol.md, `step`), so this failure
+          // is not a failed command. Say so, or the agent retries and dispatches twice.
+          if (isIronbirdError(error) && error.code === 'SCREENSHOT_FAILED') {
+            const failed = failure(error);
+            return { ...failed, content: [...failed.content, { type: 'text', text: STEP_APPLIED_NOTE }] };
+          }
+          throw error;
+        }
       }),
   );
 
@@ -268,7 +286,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     (input) =>
       guard(async () => {
         const envelope = await (await daemon()).call<Screenshot>('screenshot', input.device === undefined ? {} : { device: input.device }, input.target);
-        return withImage(withTarget(envelope), envelope.result);
+        return withImage(withTarget(envelope), envelope.result, 'fail');
       }),
   );
 
