@@ -949,4 +949,51 @@ describe('remote reload', () => {
     const later = await registerBridge(d.bridgeUrl as string, RELOADABLE);
     expect(later.targetId).toBe('ios-2');
   }, 15_000);
+  it('fails at once with the error a still-connected bridge answers the reload with, even TARGET_DISCONNECTED, and leaves no reservation behind', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    const old = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    await untilListed(d, 'ios');
+    // The default 60 s deadline: only the bridge's own answer can end this reload inside the test.
+    const reloading = rpc(d, { op: 'reload', target: 'ios' });
+    await old.client.until(() => nextRequest(old.client, 'reload', 2) !== undefined);
+    old.client.send({
+      type: 'response',
+      id: (nextRequest(old.client, 'reload', 2) as { id: string }).id,
+      ok: false,
+      error: { code: 'TARGET_DISCONNECTED', message: 'the app refused to reload', details: { target: 'ios', op: 'reload' } },
+    });
+    expect((await reloading).json).toEqual({ ok: false, error: { code: 'TARGET_DISCONNECTED', message: 'the app refused to reload', details: { target: 'ios', op: 'reload' } } });
+    expect(old.client.socket.readyState).toBe(WebSocket.OPEN);
+    const later = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    expect(later.targetId).toBe('ios-2');
+  });
+
+  it('rejects a timeoutMs past the longest timer Node can arm, and arms the longest one without overflowing', async () => {
+    const warnings: string[] = [];
+    const onWarning = (warning: Error): void => {
+      warnings.push(warning.name);
+    };
+    process.on('warning', onWarning);
+    try {
+      const d = await boot({ extra: { bridge: { port: 0 } } });
+      const old = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+      await untilListed(d, 'ios');
+      expect((await rpc(d, { op: 'reload', target: 'ios', params: { timeoutMs: 2_147_483_648 } })).json).toMatchObject({
+        ok: false,
+        error: { code: 'INVALID_PAYLOAD', details: { name: 'reload', issues: [{ path: ['timeoutMs'] }] } },
+      });
+      expect(nextRequest(old.client, 'reload', 0)).toBeUndefined();
+      // The largest accepted value arms its deadline and its request bound without either clamping to 1 ms.
+      const reloading = rpc(d, { op: 'reload', target: 'ios', params: { timeoutMs: 2_147_483_647 } });
+      await answer(old.client, 'reload', {}, 2);
+      old.client.socket.close();
+      await pause(50);
+      await connectReplacement(d.bridgeUrl as string, 8);
+      expect((await reloading).json).toEqual({ ok: true, target: 'ios', result: { rev: 8 } });
+      await pause(20);
+      expect(warnings).not.toContain('TimeoutOverflowWarning');
+    } finally {
+      process.off('warning', onWarning);
+    }
+  });
 });

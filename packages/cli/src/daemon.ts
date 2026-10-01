@@ -56,6 +56,8 @@ const STATE_THROTTLE_MS = 100;
 const PING_INTERVAL_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const RELOAD_TIMEOUT_MS = 60_000;
+// The longest delay a Node timer can arm; a longer one fires after 1 ms with a TimeoutOverflowWarning.
+const MAX_TIMER_MS = 2_147_483_647;
 
 /**
  * The operation-specific timeout a caller asked for, read straight from the wire `params`:
@@ -91,8 +93,11 @@ function requestBoundFor(requestTimeoutMs: number, params: Record<string, unknow
 function reloadTimeoutMs(params: Record<string, unknown>): number {
   const value = params['timeoutMs'];
   if (value === undefined) return RELOAD_TIMEOUT_MS;
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-    throw new IronbirdError('INVALID_PAYLOAD', 'reload needs a positive timeoutMs', { name: 'reload', issues: [{ path: ['timeoutMs'], message: 'expected a positive number of milliseconds' }] });
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > MAX_TIMER_MS) {
+    throw new IronbirdError('INVALID_PAYLOAD', `reload needs a positive timeoutMs of at most ${MAX_TIMER_MS}`, {
+      name: 'reload',
+      issues: [{ path: ['timeoutMs'], message: `expected a positive number of milliseconds, at most ${MAX_TIMER_MS}` }],
+    });
   }
   return value;
 }
@@ -255,8 +260,12 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         () => undefined,
         (error: unknown) => {
           // The app may tear its connection down before the reply leaves; whether it reloaded is
-          // for the replacement to show, so only an error the bridge actually sent fails here.
-          if (isIronbirdError(error) && error.code === 'TARGET_DISCONNECTED') return;
+          // for the replacement to show. A connection that closed has left the target map by the
+          // time this runs, because its close handling unregisters it synchronously (and so does a
+          // replacement's hello disposing it). Only that case keeps waiting: an error response from
+          // a bridge that is still connected, even one carrying TARGET_DISCONNECTED, is the
+          // bridge's answer and fails the reload.
+          if (isIronbirdError(error) && error.code === 'TARGET_DISCONNECTED' && targets.get(id) !== target) return;
           throw error;
         },
       );
@@ -420,7 +429,9 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         // fire first for a reload queued behind another; it then aborts that reload, so the reload
         // cleans up and never starts after its request has failed.
         const controller = new AbortController();
-        const reloaded = await withRequestTimeout(target.id, op, requestBoundFor(requestTimeoutMs, { timeoutMs }), reloadRemote(target.id, timeoutMs, controller.signal), (boundMs) => {
+        // Clamped so the longest accepted timeoutMs doesn't push the bound past what a timer can arm.
+        const bound = Math.min(MAX_TIMER_MS, requestBoundFor(requestTimeoutMs, { timeoutMs }));
+        const reloaded = await withRequestTimeout(target.id, op, bound, reloadRemote(target.id, timeoutMs, controller.signal), (boundMs) => {
           controller.abort();
           return new IronbirdError('TARGET_DISCONNECTED', `Reload request timed out after ${boundMs} ms`, { target: target.id, op: 'reload' });
         });
