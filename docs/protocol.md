@@ -165,7 +165,7 @@ The daemon sends `{ "type": "ping", "t": <number> }` every 5 s, and the app repl
 | `screenshot` | `target?`, `device?`, `out?` | `Screenshot` |
 | `step` | `name`, `payload?`, `target?`, `device?`, `path?`, `settle?` | `StepResult` plus `screenshot: Screenshot` and `settledBeforeCapture: boolean` |
 
-`settle` in `step` has the same shape as in `dispatch`. `step` captures the screenshot after settling ends, whether or not it reached idle, and `settle: false` captures right after the dispatch. A `SCREENSHOT_FAILED` from `step` means the dispatch itself already applied; only the capture that follows it failed.
+`settle` in `step` has the same shape as in `dispatch`. `step` captures the screenshot after settling ends, whether or not it reached idle, and `settle: false` captures right after the dispatch. A `SCREENSHOT_FAILED` from `step` with `details.applied: true` means the dispatch itself already applied; only the capture that follows it failed, so do not retry the step. The daemon resolves the device before it dispatches, so a `SCREENSHOT_FAILED` from that (listing devices, or a timeout in `resolveDevice`) carries no `applied` and nothing was applied.
 
 Both operations pick the only connected app when `target` is omitted, fail with `NO_TARGET` when none is connected and `AMBIGUOUS_TARGET` when several are, and refuse the headless target with `UNSUPPORTED`. `device` is a simulator udid or adb serial; without it the daemon uses `devices.<platform>` from config, then the single booted simulator or connected device, else `AMBIGUOUS_DEVICE` listing the candidates.
 
@@ -276,7 +276,7 @@ Capabilities say which operations a target supports, and an operation whose capa
 | `AMBIGUOUS_TARGET` | Several targets qualify and none was chosen, or a remote `reload` found another connected target with the same app id and platform | `{ available }` |
 | `TARGET_DISCONNECTED` | The connection dropped before a response, the request timeout elapsed, a reset, reload, or dispose abandoned the operation, or a reloaded app didn't reconnect within `timeoutMs` | `{ target, op }`; for a reload that timed out, `{ target, op: 'reload', timeoutMs }` |
 | `AMBIGUOUS_DEVICE` | Several booted devices and none was chosen | `{ devices }` |
-| `SCREENSHOT_FAILED` | The host capture tool failed, or the capture or device resolution timed out (a wedged `simctl`/`adb`/`resolveDevice`) | `{ tool, stderr }` |
+| `SCREENSHOT_FAILED` | The host capture tool failed, or the capture or device resolution timed out (a wedged `simctl`/`adb`/`resolveDevice`) | `{ tool, stderr }`; from `step`, plus `applied: true` when the dispatch already applied |
 | `HEADLESS_LOAD_FAILED` | The headless entry failed to load, at start or on `reload` | `{ entry, message, importChain? }` |
 | `INVALID_CONFIG` | `ironbird.config.ts` is missing a default export or fails validation | `{ file, issues }` |
 | `INVALID_SCENARIO` | A scenario file fails to parse or validate; raised by the CLI before any operation is sent, never by a target | `{ file, issues }` |

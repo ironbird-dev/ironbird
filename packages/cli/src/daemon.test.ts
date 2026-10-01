@@ -563,6 +563,53 @@ describe('screenshot and step', () => {
     expect(remote.calls).toEqual([]);
   });
 
+  it('marks a capture failure after the dispatch as applied, and a device failure before it as not', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const failing = new IronbirdError('SCREENSHOT_FAILED', 'Screenshot of SIM-1 failed: boom', { tool: 'simctl', stderr: 'boom' });
+    const afterDispatch = fakeRemote('ios');
+    const failedCapture = await boot({
+      extra: {
+        targets: [afterDispatch],
+        artifactsPath: artifacts,
+        capture: {
+          resolveDevice: capture.resolveDevice,
+          capture: async (): Promise<never> => {
+            throw failing;
+          },
+        },
+      },
+    });
+    const stepped = await rpc(failedCapture, { op: 'step', params: { name: 'cart.addItem' } });
+    expect(stepped.json).toMatchObject({ ok: false, error: { code: 'SCREENSHOT_FAILED', details: { tool: 'simctl', stderr: 'boom', applied: true } } });
+    expect(afterDispatch.calls).toHaveLength(1);
+    // A plain `screenshot` applied nothing, so it never says so.
+    expect(((await rpc(failedCapture, { op: 'screenshot' })).json['error'] as { details: Record<string, unknown> }).details).not.toHaveProperty('applied');
+
+    // Listing devices (devices.ts) and resolving one both fail before the dispatch.
+    for (const resolveFailure of [
+      new IronbirdError('SCREENSHOT_FAILED', 'Cannot list ios devices: boom', { tool: 'simctl', stderr: 'boom' }),
+      new IronbirdError('SCREENSHOT_FAILED', 'resolveDevice timed out after 50 ms', { tool: 'resolveDevice', stderr: 'timed out after 50 ms' }),
+    ]) {
+      const remote = fakeRemote('ios');
+      const d = await boot({
+        extra: {
+          targets: [remote],
+          artifactsPath: artifacts,
+          capture: {
+            resolveDevice: async (): Promise<never> => {
+              throw resolveFailure;
+            },
+            capture: capture.capture,
+          },
+        },
+      });
+      const result = await rpc(d, { op: 'step', params: { name: 'cart.addItem' } });
+      expect(result.json).toMatchObject({ ok: false, error: { code: 'SCREENSHOT_FAILED', details: resolveFailure.details } });
+      expect((result.json['error'] as { details: Record<string, unknown> }).details).not.toHaveProperty('applied');
+      expect(remote.calls).toEqual([]);
+    }
+  });
+
   it('bounds the screenshot capture like every other target operation, instead of hanging forever', async () => {
     artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
     const remote = fakeRemote('ios');

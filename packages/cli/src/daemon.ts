@@ -415,9 +415,16 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         const bound = requestBoundFor(requestTimeoutMs, dispatchParams);
         const stepResult = (await withRequestTimeout(target.id, 'dispatch', bound, target.run('dispatch', dispatchParams))) as StepResult;
         // Captured after settling ends whether or not it reached idle, so the agent sees the screen
-        // either way. A SCREENSHOT_FAILED from here means the dispatch above already applied
-        // (docs/protocol.md §4.2).
-        const screenshot = await takeScreenshot(target, device);
+        // either way. A SCREENSHOT_FAILED from here means the dispatch above already applied, so it
+        // says so with `applied: true` (docs/protocol.md §4.2); the ones raised while resolving the
+        // device above never carry it, since nothing was applied then.
+        const screenshot = await takeScreenshot(target, device).catch((error: unknown) => {
+          if (isIronbirdError(error) && error.code === 'SCREENSHOT_FAILED') {
+            const details = typeof error.details === 'object' && error.details !== null ? error.details : {};
+            throw new IronbirdError(error.code, error.message, { ...details, applied: true });
+          }
+          throw error;
+        });
         sendJson(res, 200, { ok: true, target: target.id, result: { ...stepResult, screenshot, settledBeforeCapture: stepResult.settle?.idle === true } });
         return;
       }
