@@ -32,7 +32,8 @@
     "./bin": "./dist/bin.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "skills"
   ],
   "bin": {
     "ironbird": "./dist/bin.js"
