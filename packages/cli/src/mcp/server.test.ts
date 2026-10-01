@@ -1,6 +1,9 @@
-import { IronbirdError } from '@ironbird/core';
+import { IronbirdError, type ScenarioResult } from '@ironbird/core';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDaemonClient, type DaemonClient } from '../cli/client';
 import { createMcpServer, type McpServerOptions } from './server';
 
@@ -84,10 +87,11 @@ function json(result: ToolResult): Record<string, unknown> {
 const settled = { idle: true, quiescent: false, waitedMs: 1, pending: [] };
 const step = (overrides: Record<string, unknown> = {}) => ({ target: 'headless', rev: 1, path: '', state: {}, events: [], settle: settled, ...overrides });
 
-const DAEMON_TOOLS = [
+const ALL_TOOLS = [
   'ironbird_status',
   'ironbird_describe',
   'ironbird_send',
+  'ironbird_step',
   'ironbird_state',
   'ironbird_wait',
   'ironbird_settle',
@@ -96,16 +100,18 @@ const DAEMON_TOOLS = [
   'ironbird_events',
   'ironbird_clock_advance',
   'ironbird_clock_now',
+  'ironbird_screenshot',
+  'ironbird_run_scenario',
   'ironbird_reset',
   'ironbird_reload',
 ];
 
 describe('createMcpServer', () => {
-  it('names itself ironbird with the package version and lists the daemon tools without contacting the daemon', async () => {
+  it('names itself ironbird with the package version and lists all sixteen tools without contacting the daemon', async () => {
     const h = await connect({});
     expect(h.mcp.getServerVersion()).toMatchObject({ name: 'ironbird', version: '0.0.0-test' });
     const { tools } = await h.mcp.listTools();
-    expect(tools.map((tool) => tool.name).sort()).toEqual([...DAEMON_TOOLS].sort());
+    expect(tools.map((tool) => tool.name).sort()).toEqual([...ALL_TOOLS].sort());
     for (const tool of tools) {
       expect(tool.description, tool.name).toMatch(/\S/);
       expect(tool.inputSchema.type, tool.name).toBe('object');
@@ -227,5 +233,122 @@ describe('createMcpServer', () => {
     expect(two.content[0]?.text).toContain('exactly one of equals, notEquals, exists, matches');
     expect(h.calls).toEqual([]);
     expect(h.resolves()).toBe(0);
+  });
+});
+
+describe('image tools', () => {
+  const shot = { path: '/shots/ios.png', device: 'SIM-1', capturedAt: 5 };
+  const png = Buffer.from('not really a png');
+  const stepped = { ...step({ target: 'ios' }), screenshot: shot, settledBeforeCapture: true };
+
+  it('ironbird_step returns the step result and the screenshot as image content', async () => {
+    const read: string[] = [];
+    const h = await connect({ step: stepped }, {
+      readImage: async (file) => {
+        read.push(file);
+        return png;
+      },
+    });
+    const result = await h.call('ironbird_step', { command: 'cart.addItem', payload: { sku: 'x' }, target: 'ios', device: 'SIM-1' });
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toHaveLength(2);
+    expect(json(result)).toMatchObject({ target: 'ios', screenshot: shot, settledBeforeCapture: true });
+    expect(result.content[1]).toEqual({ type: 'image', data: png.toString('base64'), mimeType: 'image/png' });
+    expect(read).toEqual([shot.path]);
+    expect(h.calls).toEqual([{ op: 'step', params: { name: 'cart.addItem', payload: { sku: 'x' }, path: '', settle: true, device: 'SIM-1' }, target: 'ios' }]);
+  });
+
+  it('ironbird_screenshot returns the capture record with its target and the image', async () => {
+    const h = await connect({ screenshot: shot }, { readImage: async () => png });
+    const result = await h.call('ironbird_screenshot', { target: 'ios' });
+    expect(json(result)).toEqual({ target: 'ios', ...shot });
+    expect(result.content[1]).toEqual({ type: 'image', data: png.toString('base64'), mimeType: 'image/png' });
+    expect(h.calls).toEqual([{ op: 'screenshot', params: {}, target: 'ios' }]);
+  });
+
+  it('keeps an applied step a success when the screenshot file cannot be read', async () => {
+    const h = await connect({ step: stepped }, {
+      readImage: async () => {
+        throw new Error('ENOENT: no such file');
+      },
+    });
+    const result = await h.call('ironbird_step', { command: 'cart.addItem', target: 'ios' });
+    expect(result.isError).toBeFalsy();
+    expect(json(result)).toMatchObject({ screenshot: shot });
+    expect(result.content[1]).toEqual({ type: 'text', text: `The screenshot at ${shot.path} could not be read: ENOENT: no such file` });
+  });
+});
+
+describe('ironbird_run_scenario', () => {
+  let dir: string;
+  const described = { app: { id: 'a', platform: 'headless' }, commands: {}, fakes: {}, capabilities: ['settle', 'events', 'clock', 'reset'] };
+  // The expect step reads order.totalCents; artifact collection reads the root.
+  const responses = {
+    describe: described,
+    reset: { rev: 0, path: '', value: {} },
+    dispatch: step(),
+    events: { events: [], nextSeq: 0, truncated: false },
+    getState: (params: Record<string, unknown>) => (params['path'] === '' ? { rev: 1, path: '', value: {} } : { rev: 1, path: 'order.totalCents', value: 0 }),
+  };
+  const open = (extra: Record<string, Responder> = {}) => connect({ ...responses, ...extra }, { cwd: dir, artifactsDir: path.join(dir, '.ironbird') });
+  const results = (result: { content: Array<{ type: string; text?: string }> }): ScenarioResult[] => (json(result) as { results: ScenarioResult[] }).results;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-mcp-scenario-'));
+    await mkdir(path.join(dir, 'scenarios'));
+    await mkdir(path.join(dir, 'empty'));
+    await writeFile(path.join(dir, 'scenarios/a-passes.yml'), 'name: A passes\nsteps:\n  - send: cart.clear\n');
+    await writeFile(path.join(dir, 'scenarios/b-fails.yaml'), 'name: B fails\nsteps:\n  - expect: order.totalCents\n    equals: 4500\n');
+    await writeFile(path.join(dir, 'scenarios/c-passes.yaml'), 'name: C passes\nsteps:\n  - send: cart.clear\n');
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('runs every file in a folder, resetting the headless target before each, and returns { results }', async () => {
+    const h = await open();
+    const result = await h.call('ironbird_run_scenario', { path: 'scenarios', target: 'headless' });
+    expect(result.isError).toBeFalsy();
+    const ran = results(result);
+    expect(ran.map((r) => [r.scenario, r.passed, r.file])).toEqual([
+      ['A passes', true, path.join(dir, 'scenarios/a-passes.yml')],
+      ['B fails', false, path.join(dir, 'scenarios/b-fails.yaml')],
+      ['C passes', true, path.join(dir, 'scenarios/c-passes.yaml')],
+    ]);
+    expect(ran[1]).toMatchObject({ target: 'headless', failedStep: { index: 0, expected: { equals: 4_500 }, actual: 0 } });
+    for (const r of ran) expect(String(r.artifacts).startsWith(path.join(dir, '.ironbird', 'runs'))).toBe(true);
+    expect(h.calls.filter((c) => c.op === 'reset')).toHaveLength(3);
+    expect(h.calls.filter((c) => c.op === 'describe').every((c) => c.target === 'headless')).toBe(true);
+  });
+
+  it('runs a single file by relative path and stops after the first failed file with bail', async () => {
+    const one = await open();
+    expect(results(await one.call('ironbird_run_scenario', { path: 'scenarios/a-passes.yml' })).map((r) => r.passed)).toEqual([true]);
+    const bailed = await open();
+    expect(results(await bailed.call('ironbird_run_scenario', { path: 'scenarios', bail: true })).map((r) => r.scenario)).toEqual(['A passes', 'B fails']);
+  });
+
+  it('reports an invalid file, a missing path, or an empty folder as INVALID_SCENARIO before looking up the daemon', async () => {
+    await writeFile(path.join(dir, 'scenarios/d-broken.yaml'), 'name: Broken\nsteps:\n  - send: cart.clear\n    payloads: {}\n');
+    const h = await open();
+    const broken = await h.call('ironbird_run_scenario', { path: 'scenarios' });
+    expect(broken.isError).toBe(true);
+    expect(json(broken)).toMatchObject({
+      error: { code: 'INVALID_SCENARIO', details: { file: path.join(dir, 'scenarios/d-broken.yaml'), issues: [{ path: ['steps', 0, 'payloads'], line: 4 }] } },
+    });
+    for (const where of ['nope.yaml', 'empty']) {
+      const result = await h.call('ironbird_run_scenario', { path: where });
+      expect(result.isError, where).toBe(true);
+      expect(json(result), where).toMatchObject({ error: { code: 'INVALID_SCENARIO' } });
+    }
+    expect(h.resolves()).toBe(0);
+    expect(h.calls).toEqual([]);
+  });
+
+  it('returns a failure of the first describe as an isError result', async () => {
+    const h = await open({ describe: new IronbirdError('NO_TARGET', 'No target ios', { available: ['headless'] }) });
+    const result = await h.call('ironbird_run_scenario', { path: 'scenarios/a-passes.yml', target: 'ios' });
+    expect(result.isError).toBe(true);
+    expect(json(result)).toEqual({ error: { code: 'NO_TARGET', message: 'No target ios', details: { available: ['headless'] } } });
   });
 });

@@ -1,8 +1,11 @@
-import { toErrorShape, type Description, type FakeCallsResult, type SettleResult, type StepResult } from '@ironbird/core';
+import { messageOf, toErrorShape, type Description, type FakeCallsResult, type ScenarioResult, type Screenshot, type SettleResult, type StepResult } from '@ironbird/core';
 import { McpServer } from '@modelcontextprotocol/server';
+import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import type { DaemonClient } from '../cli/client';
 import { withTarget } from '../cli/output';
+import { loadScenarioFiles } from '../scenario/parse';
+import { runScenario } from '../scenario/run';
 
 /** What the MCP server needs from its host; `ironbird mcp` builds it (docs/cli.md, `mcp`). */
 export interface McpServerOptions {
@@ -49,6 +52,7 @@ const settle = z
 const payload = z.unknown().optional().describe('The JSON payload, matching the payload schema from ironbird_describe. Default {}.');
 const cursor = (what: string) => z.number().int().nonnegative().optional().describe(`Only ${what} with a sequence number above this; pass the previous nextSeq.`);
 const limit = z.number().int().nonnegative().optional().describe('At most this many.');
+const device = z.string().min(1).optional().describe('Simulator udid or adb serial. Omit for the configured device, else the only booted one.');
 
 /** Builds the `ironbird` MCP server: each tool is one daemon operation (spec §5.1). */
 export function createMcpServer(options: McpServerOptions): McpServer {
@@ -222,6 +226,77 @@ export function createMcpServer(options: McpServerOptions): McpServer {
       }),
     },
     (input) => guard(async () => success(withTarget(await (await daemon()).call('reload', input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }, input.target)))),
+  );
+
+  const readImage = options.readImage ?? ((file: string) => readFile(file));
+
+  // The step or capture has already happened, so a PNG that can't be read must not turn the
+  // result into an error: an agent that retried the step would apply it twice.
+  const withImage = async (value: unknown, shot: Screenshot): Promise<ToolResult> => {
+    try {
+      const png = await readImage(shot.path);
+      return success(value, { type: 'image', data: png.toString('base64'), mimeType: 'image/png' });
+    } catch (error) {
+      return success(value, { type: 'text', text: `The screenshot at ${shot.path} could not be read: ${messageOf(error)}` });
+    }
+  };
+
+  server.registerTool(
+    'ironbird_step',
+    {
+      description:
+        'Connected apps only. Like ironbird_send, then capture a screenshot once settling ends, returned as an image. settledBeforeCapture is true only when settling reached idle first. The headless target has no screen.',
+      inputSchema: z.object({ command: z.string().min(1).describe('Command name from ironbird_describe.'), payload, target, path: statePath, settle, device }),
+    },
+    (input) =>
+      guard(async () => {
+        const result = await (await daemon()).rpc<StepResult & { screenshot: Screenshot; settledBeforeCapture: boolean }>(
+          'step',
+          { name: input.command, payload: input.payload ?? {}, path: input.path ?? '', settle: input.settle ?? true, ...(input.device === undefined ? {} : { device: input.device }) },
+          input.target,
+        );
+        return withImage(result, result.screenshot);
+      }),
+  );
+
+  server.registerTool(
+    'ironbird_screenshot',
+    {
+      description: 'Connected apps only. Capture the screen, returned as an image and as { target, path, device, capturedAt }. Look at it before describing what the app shows.',
+      inputSchema: z.object({ target, device }),
+    },
+    (input) =>
+      guard(async () => {
+        const envelope = await (await daemon()).call<Screenshot>('screenshot', input.device === undefined ? {} : { device: input.device }, input.target);
+        return withImage(withTarget(envelope), envelope.result);
+      }),
+  );
+
+  server.registerTool(
+    'ironbird_run_scenario',
+    {
+      description:
+        'Run a YAML scenario file, or every *.yaml and *.yml file in a folder, and return { results }, one per file, each with passed, failedStep, and its artifacts folder. Every file is validated before any runs. The headless target is reset before each file. A connected app runs against its current state, so call ironbird_reload on it first after changing code. A failing scenario is a normal result with passed: false.',
+      inputSchema: z.object({
+        path: z.string().min(1).describe('A scenario file or a folder of them, relative to the project root.'),
+        target,
+        bail: z.boolean().optional().describe('Stop after the first failed scenario.'),
+      }),
+    },
+    (input) =>
+      guard(async () => {
+        // Every file is parsed before anything runs, and before the daemon is looked up, so an
+        // authoring error costs nothing and needs no daemon.
+        const scenarios = await loadScenarioFiles([input.path], options.cwd);
+        const { client, artifactsDir } = await options.resolve();
+        const results: ScenarioResult[] = [];
+        for (const { file, scenario } of scenarios) {
+          const result = await runScenario(client, scenario, { file, target: input.target, artifacts: artifactsDir, reset: true });
+          results.push(result);
+          if (!result.passed && input.bail) break;
+        }
+        return success({ results });
+      }),
   );
 
   return server;
