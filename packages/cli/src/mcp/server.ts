@@ -42,6 +42,9 @@ async function guard(work: () => Promise<ToolResult>): Promise<ToolResult> {
 /** The second text block on a `step` whose capture failed after its dispatch applied. */
 const STEP_APPLIED_NOTE = 'The command was already applied; only the screenshot failed. Do not retry the step, which would apply the command twice. Read the result with ironbird_state instead.';
 
+/** True for the SCREENSHOT_FAILED the daemon raises while resolving the device, which is before it dispatches. */
+const isDeviceResolution = (error: IronbirdError): boolean => (error.details as { tool?: unknown } | undefined)?.tool === 'resolveDevice';
+
 const CONDITIONS = ['equals', 'notEquals', 'exists', 'matches'] as const;
 /** The CLI's `wait --timeout` default. */
 const WAIT_TIMEOUT_MS = 5_000;
@@ -253,7 +256,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
     'ironbird_step',
     {
       description:
-        'Connected apps only. Like ironbird_send, then capture a screenshot once settling ends, returned as an image. settledBeforeCapture is true only when settling reached idle first. The headless target has no screen. A SCREENSHOT_FAILED error from this tool means the command was already applied and only the capture failed: do not retry the step, read state with ironbird_state instead.',
+        'Connected apps only. Like ironbird_send, then capture a screenshot once settling ends, returned as an image. settledBeforeCapture is true only when settling reached idle first. The headless target has no screen. A SCREENSHOT_FAILED error from this tool followed by a note that the command was already applied means only the capture failed: do not retry the step, read state with ironbird_state instead. Without that note, nothing was applied.',
       inputSchema: z.object({ command: z.string().min(1).describe('Command name from ironbird_describe.'), payload, target, path: statePath, settle, device }),
     },
     (input) =>
@@ -267,8 +270,10 @@ export function createMcpServer(options: McpServerOptions): McpServer {
           return withImage(result, result.screenshot, 'note');
         } catch (error) {
           // The daemon captures after the dispatch applied (docs/protocol.md, `step`), so this failure
-          // is not a failed command. Say so, or the agent retries and dispatches twice.
-          if (isIronbirdError(error) && error.code === 'SCREENSHOT_FAILED') {
+          // is not a failed command. Say so, or the agent retries and dispatches twice. A
+          // resolveDevice timeout is the exception: the daemon resolves the device before it
+          // dispatches, so nothing was applied and a retry is right.
+          if (isIronbirdError(error) && error.code === 'SCREENSHOT_FAILED' && !isDeviceResolution(error)) {
             const failed = failure(error);
             return { ...failed, content: [...failed.content, { type: 'text', text: STEP_APPLIED_NOTE }] };
           }

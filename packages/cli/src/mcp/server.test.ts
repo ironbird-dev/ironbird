@@ -293,6 +293,12 @@ describe('image tools', () => {
     expect(result.content).toHaveLength(2);
     expect(result.content[1]?.type).toBe('text');
     expect(result.content[1]?.text).toMatch(/already applied.*Do not retry.*ironbird_state/);
+    // A device that could not be resolved fails before the dispatch, so nothing was applied and there is no warning.
+    const resolving = await connect({ step: new IronbirdError('SCREENSHOT_FAILED', 'resolveDevice timed out after 30000 ms', { tool: 'resolveDevice', stderr: 'timed out after 30000 ms' }) });
+    const unresolved = await resolving.call('ironbird_step', { command: 'cart.addItem', target: 'ios' });
+    expect(unresolved.isError).toBe(true);
+    expect(unresolved.content).toHaveLength(1);
+    expect(json(unresolved)).toMatchObject({ error: { code: 'SCREENSHOT_FAILED', details: { tool: 'resolveDevice' } } });
     // Any other step failure stays a single error block.
     const other = await connect({ step: new IronbirdError('UNKNOWN_COMMAND', 'Unknown command x') });
     expect((await other.call('ironbird_step', { command: 'x' })).content).toHaveLength(1);
