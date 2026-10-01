@@ -33,8 +33,8 @@ export interface HandlerContext {
   /** Called once per path whose value was replaced by a placeholder (see serializeState). */
   warn: (path: string, valueKind: string) => void;
   /**
-   * Restarts the app's JavaScript; `startBridge` passes `DevSettings.reload` when the runtime has
-   * it. Without it the bridge neither declares `reload` nor answers it.
+   * Restarts the app's JavaScript; `startBridge` passes the app's `reload` option, or
+   * `DevSettings.reload` when the runtime has it. Without either the bridge neither declares `reload` nor answers it.
    */
   reload?: () => void;
 }

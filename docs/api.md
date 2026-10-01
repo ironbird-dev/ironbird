@@ -373,6 +373,7 @@ interface BridgeOptions {
   settle?: { frames?: number; timeoutMs?: number };             // defaults 2 and 5000
   reconnect?: { initialDelayMs?: number; maxDelayMs?: number }; // defaults 500 and 5000
   allowInNonDevBuilds?: boolean;                                // default false
+  reload?: () => void | Promise<void>;                          // default DevSettings.reload, when it exists
   logger?: (level: 'debug' | 'info' | 'warn' | 'error', message: string) => void;
 }
 
@@ -392,7 +393,7 @@ Behavior:
 - Every incoming payload is validated against the app's own registry before dispatch; malformed frames are dropped and logged.
 - Recorded events are forwarded as they happen; state revisions are coalesced to one notification per 100 ms window; serialization warnings are sent once per path per connection.
 - `clockAdvance`, `clockNow`, and `reset` answer `UNSUPPORTED`, and the bridge never declares the `clock` or `reset` capability.
-- When `DevSettings.reload` from `react-native` is a function, as in dev builds, the bridge declares the `reload` capability and answers a `reload` request with `{}`, then calls `DevSettings.reload()` on the next tick of its clock, so the reply leaves before the JavaScript context goes away. The app restarts from the bundler and the bridge reconnects as it does after any reload; `ironbird reload` waits for that and keeps the same target id.
+- The bridge declares the `reload` capability when the `reload` option is given or `DevSettings.reload` from `react-native` is a function, and answers a `reload` request with `{}`, then calls the option (or `DevSettings.reload()` when there is no option) on the next tick of its clock, so the reply leaves before the JavaScript context goes away. A throw or a rejection from the option is logged as a warning and otherwise ignored, since the reply has already been sent. The app restarts from the bundler and the bridge reconnects as it does after any reload; `ironbird reload` waits for that and keeps the same target id. An app running in Expo Go must pass `reload: () => reloadAppAsync()`, with `reloadAppAsync` from `expo`: under Expo Go 57, `DevSettings.reload` restarts the JavaScript without Expo Go's native modules, so the app fails to boot and never reconnects.
 - iOS Simulator reaches the daemon at `localhost`. Android emulators need `adb reverse tcp:4568 tcp:4568`, which `ironbird serve` runs automatically when `adb` is available. Physical devices use the host's LAN address, and the daemon must be started with `--host` and a token.
 
 Wiring, using the layout from [architecture.md §5](architecture.md#5-integrating-an-app). The tracker and recorder are created in `instance.ts`, which only the app loads, with `enabled: __DEV__` so release builds carry neither:

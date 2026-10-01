@@ -161,4 +161,67 @@ describe('startBridge', () => {
       delete settings.reload;
     }
   });
+  it('uses the reload option over DevSettings.reload, and declares reload with only the option', async () => {
+    const settings = DevSettings as { reload?: (reason?: string) => void };
+    const calls: string[] = [];
+    // With DevSettings.reload present, the app's option still wins.
+    settings.reload = () => {
+      calls.push('devSettings');
+    };
+    try {
+      fixture = await daemon();
+      handle = startBridge({
+        target: counterTarget(),
+        url: fixture.url,
+        clock: createRealClock(),
+        logger: () => {},
+        reload: () => {
+          calls.push('option');
+        },
+      });
+      await fixture.until(() => fixture!.frames.length >= 1);
+      const socket = fixture.sockets[0]!;
+      socket.send(JSON.stringify({ type: 'welcome', protocol: 1, targetId: 'ios' }));
+      await fixture.until(() => handle!.connected);
+      socket.send(JSON.stringify({ type: 'request', id: 'r-1', op: 'reload' }));
+      await fixture.until(() => fixture!.frames.length >= 2 && calls.length === 1);
+      expect(fixture.frames[1]).toEqual({ type: 'response', id: 'r-1', ok: true, result: {} });
+      expect(calls).toEqual(['option']);
+    } finally {
+      delete settings.reload;
+    }
+
+    // With no DevSettings.reload at all, the option alone is enough to declare the capability.
+    handle.stop();
+    await fixture.close();
+    fixture = await daemon();
+    handle = startBridge({ target: counterTarget(), url: fixture.url, clock: createRealClock(), logger: () => {}, reload: async () => {} });
+    await fixture.until(() => fixture!.frames.length >= 1);
+    expect(fixture.frames[0]).toMatchObject({ type: 'hello', capabilities: ['settle', 'events', 'reload'] });
+  });
+
+  it('logs a rejected or throwing reload option after the reply instead of failing', async () => {
+    for (const reload of [() => Promise.reject(new Error('no runtime')), () => { throw new Error('threw'); }]) {
+      const logs: string[] = [];
+      fixture = await daemon();
+      handle = startBridge({
+        target: counterTarget(),
+        url: fixture.url,
+        clock: createRealClock(),
+        logger: (level, message) => logs.push(`${level}: ${message}`),
+        reload,
+      });
+      await fixture.until(() => fixture!.frames.length >= 1);
+      const socket = fixture.sockets[0]!;
+      socket.send(JSON.stringify({ type: 'welcome', protocol: 1, targetId: 'ios' }));
+      await fixture.until(() => handle!.connected);
+      socket.send(JSON.stringify({ type: 'request', id: 'r-1', op: 'reload' }));
+      await fixture.until(() => logs.some((line) => line.startsWith('warn: reload failed')));
+      expect(fixture.frames[1]).toEqual({ type: 'response', id: 'r-1', ok: true, result: {} });
+      expect(handle.connected).toBe(true);
+      handle.stop();
+      await fixture.close();
+      fixture = undefined;
+    }
+  });
 });

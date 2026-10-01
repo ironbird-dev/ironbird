@@ -37,6 +37,14 @@ export interface BridgeOptions {
   /** Default false: outside dev builds startBridge logs once and returns an inert handle. */
   allowInNonDevBuilds?: boolean;
   logger?: Logger;
+  /**
+   * How to restart the app's JavaScript, for the `reload` operation. Default `DevSettings.reload`
+   * when React Native has it. The bridge declares `reload` only when this or `DevSettings.reload`
+   * exists. A rejection is logged and otherwise ignored, since the reply has already been sent.
+   * An Expo Go app passes `reloadAppAsync` from `expo`: `DevSettings.reload` leaves Expo Go without
+   * its native modules, so the app never comes back.
+   */
+  reload?: () => void | Promise<void>;
 }
 
 export interface BridgeHandle {
@@ -56,6 +64,18 @@ const defaultLogger: Logger = (level, message) => {
   else if (level === 'warn') console.warn(`ironbird: ${message}`);
   else console.log(`ironbird: ${message}`);
 };
+
+/** The app's own reload as the handlers call it: synchronous, with a throw or a rejection logged because nobody is left to tell. */
+function appReload(reload: () => void | Promise<void>, logger: Logger): () => void {
+  const failed = (error: unknown): void => logger('warn', `reload failed: ${error instanceof Error ? error.message : String(error)}`);
+  return () => {
+    try {
+      void Promise.resolve(reload()).catch(failed);
+    } catch (error) {
+      failed(error);
+    }
+  };
+}
 
 const INERT: BridgeHandle = { connected: false, targetId: null, stop: () => {} };
 
@@ -77,7 +97,7 @@ export function startBridge(options: BridgeOptions): BridgeHandle {
   const app = { id: options.appId ?? 'app', platform, ...(options.appName === undefined ? {} : { name: options.appName }) };
   const settleDefaults = { frames: options.settle?.frames ?? 2, timeoutMs: options.settle?.timeoutMs ?? 5_000 };
   const warned = new Set<string>();
-  const reload = devSettingsReload();
+  const reload = options.reload ? appReload(options.reload, logger) : devSettingsReload();
 
   // `handlers` and `hello` close over `connection` before it exists: `openConnection`'s `onRequest`
   // needs `handlers`, and `handlers` needs `connection` for `targetId`/`send`, so one of the two
