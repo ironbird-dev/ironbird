@@ -270,6 +270,33 @@ describe('fake', () => {
   });
 });
 
+describe('reload', () => {
+  it('prints the target and rev, and passes --timeout in milliseconds', async () => {
+    const h = harness({ reload: (params: Record<string, unknown>) => ({ rev: params['timeoutMs'] === undefined ? 0 : 4 }) });
+    expect(await h.run(['reload'])).toBe(0);
+    expect(h.calls[0]).toEqual({ op: 'reload', target: undefined, params: {} });
+    expect(h.out()).toEqual({ target: 'headless', rev: 0 });
+    h.stdout.length = 0;
+    expect(await h.run(['reload', '--timeout', '90s', '--target', 'ios'])).toBe(0);
+    expect(h.calls[1]).toEqual({ op: 'reload', target: 'ios', params: { timeoutMs: 90_000 } });
+    expect(h.out()).toEqual({ target: 'ios', rev: 4 });
+    expect(await h.run(['reload', '--timeout', 'soon'])).toBe(2);
+    expect(h.calls).toHaveLength(2);
+  });
+
+  it.each([
+    ['HEADLESS_LOAD_FAILED', 2],
+    ['AMBIGUOUS_TARGET', 2],
+    ['TARGET_DISCONNECTED', 1],
+    ['UNSUPPORTED', 1],
+    ['NO_TARGET', 5],
+  ] as const)('exits by the error table when reload fails with %s', async (code, exit) => {
+    const h = harness({ reload: new IronbirdError(code, `reload failed with ${code}`) });
+    expect(await h.run(['reload'])).toBe(exit);
+    expect(h.out()).toEqual({ error: { code, message: `reload failed with ${code}` } });
+  });
+});
+
 describe('verify-bundle', () => {
   it('exits 0 for clean output, 1 listing files that carry the marker, and 2 for a missing path', async () => {
     const temp = await mkdtemp(path.join(tmpdir(), 'ironbird-verify-cli-'));

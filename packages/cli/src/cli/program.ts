@@ -276,6 +276,16 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
   program.command('reset').description('Recreate the headless app with a fresh clock, recorder, and fakes').action(wrap(async (ctx) => ({ value: withTarget(await ctx.client.call('reset', {}, ctx.target)) })));
 
   program
+    .command('reload')
+    .description("Load the app's current code from a fresh start: re-bundle the headless entry, or reload a connected app from the bundler")
+    .option('--timeout <duration>', 'connected apps: how long to wait for the app to reconnect (default 60s)')
+    .action(
+      wrap(async (ctx, opts: { timeout?: string }) => ({
+        value: withTarget(await ctx.client.call('reload', opts.timeout === undefined ? {} : { timeoutMs: parseDuration(opts.timeout) }, ctx.target)),
+      })),
+    );
+
+  program
     .command('screenshot')
     .description('Capture the connected app through simctl or adb')
     .option('--device <id>', 'simulator udid or adb serial; default from config devices, else the only booted one')

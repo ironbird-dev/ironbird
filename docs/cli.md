@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-09-25 |
+| Last updated | 2026-09-29 |
 | Related | [protocol.md](protocol.md) · [api.md](api.md) |
 
 The `ironbird` binary ships in `@ironbird/cli` and requires Node 22 or newer. The unscoped `ironbird` package exposes the same binary, so `npx ironbird <command>` works without a local install. Every command except `serve`, `doctor`, `verify-bundle`, and `mcp` talks to a running daemon.
@@ -72,7 +72,7 @@ Errors print to stdout as JSON too, so agents parse one stream:
 
 In a TTY, the same data is printed in a readable form.
 
-The CLI prints the daemon's `result` object, adding `target` to results that don't already carry it, such as `state` and `reset`. Errors are the daemon's `error` object under an `error` key, without the `ok` envelope described in [protocol.md](protocol.md#21-rpc).
+The CLI prints the daemon's `result` object, adding `target` to results that don't already carry it, such as `state`, `reset`, and `reload`. Errors are the daemon's `error` object under an `error` key, without the `ok` envelope described in [protocol.md](protocol.md#21-rpc).
 
 `scenario run` prints one scenario result per file. The type is exported from `@ironbird/core` so other packages can share it:
 
@@ -99,7 +99,7 @@ interface ScenarioResult {
 ironbird serve [--port 4567] [--bridge-port 4568] [--host 127.0.0.1] [--no-headless] [--token <token>]
 ```
 
-Runs the daemon in the foreground. Loads the headless entry unless `--no-headless` is passed, accepts bridge connections, and runs `adb reverse tcp:<bridgePort> tcp:<bridgePort>` for each connected Android device when `adb` is on the path, logging and continuing when it is not. Binding a non-loopback `--host` requires a token; if none is given, one is generated and printed. On start it prints one line, `{ url, bridgeUrl, targets, defaultTarget, bridgePort }`, and writes `.ironbird/daemon.json` so later invocations find the daemon without loading the config; the file is removed on shutdown (only by the invocation that wrote it, so a `serve` that fails to bind leaves a running daemon's file alone). `daemon.json` records `bridgeUrl` and `artifactsPath`, the daemon's resolved artifacts directory, alongside `url`; client commands that write files, such as `scenario run`, use `artifactsPath`, so a non-default `artifactsDir` in the config works without the client loading it. With `--daemon <url>`, or with no `daemon.json`, they write under `.ironbird` in the working directory. `--port` and `--bridge-port` must differ (a fixed value for both is rejected as `INVALID_CONFIG` before either socket binds); pass `0` for either to let the OS pick, since two zeros never collide. Requests that carry an `Origin` header, or a `Host` that is neither loopback nor the daemon's bind address, are refused with 403, so a page in a local browser can't drive the daemon.
+Runs the daemon in the foreground. Loads the headless entry unless `--no-headless` is passed, accepts bridge connections, and runs `adb reverse tcp:<bridgePort> tcp:<bridgePort>` for each connected Android device when `adb` is on the path, logging and continuing when it is not. Binding a non-loopback `--host` requires a token; if none is given, one is generated and printed. On start it prints one line, `{ url, bridgeUrl, targets, defaultTarget, bridgePort }`, and writes `.ironbird/daemon.json` so later invocations find the daemon without loading the config; the file is removed on shutdown (only by the invocation that wrote it, so a `serve` that fails to bind leaves a running daemon's file alone). `daemon.json` records `bridgeUrl` and `artifactsPath`, the daemon's resolved artifacts directory, alongside `url`; client commands that write files, such as `scenario run`, use `artifactsPath`, so a non-default `artifactsDir` in the config works without the client loading it. With `--daemon <url>`, or with no `daemon.json`, they write under `.ironbird` in the working directory. `--port` and `--bridge-port` must differ (a fixed value for both is rejected as `INVALID_CONFIG` before either socket binds); pass `0` for either to let the OS pick, since two zeros never collide. Requests that carry an `Origin` header, or a `Host` that is neither loopback nor the daemon's bind address, are refused with 403, so a page in a local browser can't drive the daemon. `ironbird.config.ts` is read once, at start: restart `serve` after changing it. `reload` loads the headless entry again, never the config.
 
 ### status
 
@@ -215,7 +215,28 @@ Headless only; remote targets return `UNSUPPORTED`. `advance` prints a step resu
 ironbird reset
 ```
 
-Headless only. Disposes the headless app, recreates it with a fresh context, and prints `{ target, rev, path, value }`. Event sequence numbers restart at 1 after a reset, so call `events` without `--since` once before paging again.
+Headless only. Disposes the headless app, recreates it with a fresh context, and prints `{ target, rev, path, value }`. Event sequence numbers restart at 1 after a reset, so call `events` without `--since` once before paging again. A reset re-runs the code the daemon already loaded; after editing app code, use `reload`. After a failed `reload`, `reset` fails with the same `HEADLESS_LOAD_FAILED` until a `reload` succeeds.
+
+### reload
+
+```text
+ironbird reload [--timeout <duration>]
+```
+
+Loads the app's current code from a fresh start and prints `{ target, rev }`. Commands in flight on the target fail with `TARGET_DISCONNECTED`, and event sequence numbers restart, as after `reset`.
+
+On the headless target, it re-bundles the headless entry and boots it with a fresh clock, event log, and fakes; `ironbird.config.ts` is not read again. A bundling, import, or boot error fails with `HEADLESS_LOAD_FAILED`, exit 2, and the old code does not come back: every later command on the headless target, `reset` included, fails with that error until a `reload` succeeds. Node keeps every module it evaluates for the daemon's life, so a daemon reloaded hundreds of times grows accordingly; restarting `serve` clears it.
+
+On a connected app, it calls `DevSettings.reload()`, which dev builds have, waits for the app to reconnect, and prints the reconnected target, which keeps the same id. `--timeout` bounds that wait (default `60s`); when it runs out, the command fails with `TARGET_DISCONNECTED`, exit 1. With another build of the same app connected on the same platform, the daemon can't tell which reconnection is the reloaded one, so it fails with `AMBIGUOUS_TARGET`, exit 2, before reloading anything. A target that doesn't declare the `reload` capability fails with `UNSUPPORTED`, exit 1, and no daemon or no such target exits 5.
+
+```sh
+ironbird reload
+ironbird reload --target ios --timeout 90s
+```
+
+```json
+{ "target": "ios", "rev": 3 }
+```
 
 ### screenshot
 
@@ -245,7 +266,7 @@ The first operation of every run is `describe`, and the target id in its reply p
 
 Output is one `ScenarioResult` per file (see [Output shapes](#output-shapes)), as JSON lines when stdout is not a TTY or `--json` is passed, and otherwise as a `PASS` or `FAIL` line per scenario followed by the failed step with its `expected` and `actual` values or its error, and any artifacts that could not be written. The exit code is 2 if any file is invalid, the `describe` error's own code as above, 4 if any scenario failed, and 0 otherwise. `--bail` stops after the first failed scenario.
 
-Each file starts from a fresh app: right after `describe`, on a target that declares the `reset` capability (headless), the runner resets it before the first step, so files don't share state and a directory run does not depend on file order. On a remote app, which has no `reset`, the scenario runs against the app's current state; reload the app first for a fresh start.
+Each file starts from a fresh app: right after `describe`, on a target that declares the `reset` capability (headless), the runner resets it before the first step, so files don't share state and a directory run does not depend on file order. On a remote app, which has no `reset`, the scenario runs against the app's current state; run `ironbird reload --target <id>` first for a fresh start.
 
 ```sh
 ironbird scenario run ironbird/scenarios
