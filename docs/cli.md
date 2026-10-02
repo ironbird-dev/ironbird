@@ -339,6 +339,22 @@ Runs an MCP server for coding agents over stdio until stdin closes. `ironbird ag
 
 The server needs no daemon to start. Each tool call finds the daemon the way other commands do: `--daemon`, then the nearest `.ironbird/daemon.json` walking up from the working directory, then `http://127.0.0.1:4567`, with `--token` or `IRONBIRD_TOKEN` for the token. So the server can start before `ironbird serve`, and a daemon restart needs no MCP restart. While no daemon answers, every tool fails with `NO_TARGET`, whose message says to run `ironbird serve`. Nothing but MCP messages is written to stdout; diagnostics go to stderr.
 
+### agent setup
+
+```text
+ironbird agent setup [--skills-dir <dir>]
+```
+
+Sets up coding agents in the project, the working directory, without a daemon: it copies the ironbird skill that ships with this CLI into `<skills-dir>/ironbird/` (default `.claude/skills`), replacing the files it owns and leaving any other files in that folder alone, and adds or replaces only the `mcpServers.ironbird` entry in `.mcp.json`, creating the file if needed:
+
+```json
+{ "mcpServers": { "ironbird": { "command": "npx", "args": ["ironbird", "mcp"] } } }
+```
+
+Other servers and keys are kept, and the file is written with two-space indentation and a trailing newline; when the entry is already identical, the file is left untouched. Running it again after an upgrade brings the skill up to date with the installed CLI. For Codex and other agents that read Agent Skills, pass their skills folder as `--skills-dir`; a relative path resolves against the working directory. See [agents.md](agents.md).
+
+Prints `{ skill: { dir, files }, mcp: { file, updated } }`: `dir` and `file` are absolute, `files` are the skill's files relative to `dir`, and `updated` is false when the entry was already identical. If `.mcp.json` exists but is not a JSON object, or its `mcpServers` is not an object, it fails with `INVALID_CONFIG`, details `{ file, issues }`, exit 2, and writes nothing, including the skill. A skill file or `.mcp.json` that can't be written fails with `INTERNAL`, details `{ file, message }`, exit 1; the skill is written before `.mcp.json`, so a skill folder that can't be written leaves `.mcp.json` untouched.
+
 ## Scenario files
 
 `ironbird/scenarios/` is the conventional location for scenario files, the config's `scenarios` key; `scenario run` does not read it implicitly, so you pass it (or an individual file) as the command's path argument. The example app's gate scenario, which reproduces the planted race:

@@ -1,5 +1,5 @@
 import { IronbirdError } from '@ironbird/core';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -438,5 +438,43 @@ describe('mcp', () => {
     expect(await h.run(['mcp'])).toBe(1);
     expect(h.stdout).toEqual([]);
     expect(h.stderr.join('')).toContain('ironbird mcp: stdin is not readable');
+  });
+});
+
+describe('agent setup', () => {
+  let dir: string;
+  const packaged = path.resolve(__dirname, '../../skills/ironbird');
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-agent-cli-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('installs the packaged skill and registers the server without a daemon', async () => {
+    const h = harness({}, { cwd: dir });
+    expect(await h.run(['agent', 'setup'])).toBe(0);
+    expect(h.calls).toEqual([]);
+    expect(h.out()).toEqual({
+      skill: { dir: path.join(dir, '.claude/skills/ironbird'), files: ['SKILL.md', 'references/scenarios.md'] },
+      mcp: { file: path.join(dir, '.mcp.json'), updated: true },
+    });
+    expect(await readFile(path.join(dir, '.claude/skills/ironbird/SKILL.md'), 'utf8')).toBe(await readFile(path.join(packaged, 'SKILL.md'), 'utf8'));
+    expect(JSON.parse(await readFile(path.join(dir, '.mcp.json'), 'utf8'))).toEqual({ mcpServers: { ironbird: { command: 'npx', args: ['ironbird', 'mcp'] } } });
+  });
+
+  it('takes --skills-dir', async () => {
+    const h = harness({}, { cwd: dir });
+    expect(await h.run(['agent', 'setup', '--skills-dir', '.agents/skills'])).toBe(0);
+    expect(h.out()).toMatchObject({ skill: { dir: path.join(dir, '.agents/skills/ironbird') } });
+  });
+
+  it('exits 2 with INVALID_CONFIG and writes nothing when .mcp.json is not an object', async () => {
+    await writeFile(path.join(dir, '.mcp.json'), '[]');
+    const h = harness({}, { cwd: dir });
+    expect(await h.run(['agent', 'setup'])).toBe(2);
+    expect(h.out()).toMatchObject({ error: { code: 'INVALID_CONFIG', details: { file: path.join(dir, '.mcp.json') } } });
+    await expect(stat(path.join(dir, '.claude'))).rejects.toThrow();
   });
 });

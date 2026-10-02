@@ -10,6 +10,7 @@ import { parseJsonOrString, parsePayload } from './values';
 import { formatScenarioResult } from '../scenario/format';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { findMarker } from '../verify-bundle';
 
 export interface ProgramIo {
@@ -386,6 +387,28 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
         // Never stdout: it belongs to the MCP client.
         io.stderr(`ironbird mcp: ${messageOf(error)}\n`);
         exitCode = 1;
+      }
+    });
+
+  const agent = program.command('agent').description('Set up coding agents');
+  agent
+    .command('setup')
+    .description('Install the ironbird skill and register the MCP server in .mcp.json; needs no daemon')
+    .option('--skills-dir <dir>', 'the folder your agent reads Agent Skills from', '.claude/skills')
+    .action(async (opts: { skillsDir: string }, command: Command) => {
+      const globals = command.optsWithGlobals<GlobalOptions>();
+      const output = createOutput({ json: Boolean(globals.json) || !io.isTTY, write: io.stdout });
+      try {
+        const { agentSetup, findPackageRoot } = await import('../agent/setup');
+        // The skill ships next to `dist/` in the installed package; this module runs from a chunk
+        // in `dist/` there, and from `src/cli/` in this repository's tests.
+        const packageRoot = await findPackageRoot(path.dirname(fileURLToPath(import.meta.url)));
+        output.result(await agentSetup({ cwd: io.cwd, skillsDir: opts.skillsDir, packageRoot }));
+        exitCode = 0;
+      } catch (error) {
+        const shape = toErrorShape(error);
+        output.error(shape);
+        exitCode = exitCodeForError(shape.code);
       }
     });
 

@@ -37,3 +37,5 @@ export { runScenario } from './scenario/run';
 export type { RunScenarioOptions } from './scenario/run';
 export { createMcpServer } from './mcp/server';
 export type { McpServerOptions } from './mcp/server';
+export { agentSetup } from './agent/setup';
+export type { AgentSetupOptions, AgentSetupResult } from './agent/setup';
