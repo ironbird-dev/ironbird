@@ -14,7 +14,7 @@ The model is passed as the alias `sonnet` (`MODEL` in `lib/paths.mjs`). Claude C
 - Ports 4567, 4568, and 8081 free: no `ironbird serve` and no Metro running, including the repository's own.
 - No `AGENTS.md` or `CLAUDE.md` in `~/.ironbird-eval` or any folder above it. Claude Code's built-in agents-md plugin would load it into every session. `prepare.mjs` checks this.
 
-The example's device bridge passes Expo's `reloadAppAsync` as its `reload`, because React Native's `DevSettings.reload` leaves Expo Go without its native modules and the app never reconnects. That is what makes `ironbird reload` work on the device, for the agent and for the grader.
+The example's device bridge passes Expo's `reloadAppAsync` as its `reload`, because React Native's `DevSettings.reload` leaves Expo Go without its native modules and the app never reconnects. That is what makes `ironbird reload` work on the device, for the agent and for the grader. The app also routes `DevSettings.reload` itself to `reloadAppAsync` (`src/ironbird/dev-reload.ts`): Fast Refresh falls back to it for a full reload when the agent edits a module with no component above it, such as the app's logic, and without the routing the first such edit left the app dead and the `ios` target gone for the rest of the session (pilot 1).
 
 Metro runs with `EXPO_NO_TYPESCRIPT_SETUP=1`. Otherwise Expo would add `extends: expo/tsconfig.base` to the copy's standalone `tsconfig.json` on start, and every session would begin with a change the agent did not make.
 
