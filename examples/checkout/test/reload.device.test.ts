@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { connectedAt, createCli, spawnServe, waitForTarget, type DaemonProcess } from './device-helpers';
 
-// Spec §8, device row (M3): `ironbird reload` restarts the example on the iPhone 17 through
-// DevSettings.reload(), and the app comes back on the same target id with fresh state. Preconditions:
+// Spec §8, device row (M3): `ironbird reload` restarts the example on the iPhone 17 through Expo's
+// reloadAppAsync, which src/ironbird/device.ts passes as startBridge's `reload` option, and the app
+// comes back on the same target id with fresh state. Preconditions:
 // see device-helpers.ts, with Metro started WITHOUT --ios (`pnpm --filter @ironbird-examples/checkout
 // start`) and the app opened on the iPhone 17 with `xcrun simctl openurl $IRONBIRD_SIM_UDID
 // exp://127.0.0.1:8081`, after `pnpm build` so the bridge declares `reload`.
