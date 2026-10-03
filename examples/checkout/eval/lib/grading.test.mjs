@@ -22,7 +22,7 @@ const FILE = `${ROOT}/ironbird/scenarios/zero-total.yaml`;
 const SCENARIO = Buffer.from('name: Zero total\nsteps: []\n');
 const bug = { cart: { items: [] }, payment: { status: 'succeeded' }, order: { status: 'completed', totalCents: 0, paymentSucceeded: true } };
 const good = { cart: { items: [] }, payment: { status: 'succeeded' }, order: { status: 'completed', orderId: 'ord_1', totalCents: 4_500, paymentSucceeded: true } };
-const initial = { cart: { items: [], subtotalCents: 0 }, payment: { status: 'idle' }, order: { status: 'none', totalCents: 0, paymentSucceeded: false } };
+const initial = { cart: { items: [], subtotalCents: 0 }, payment: { status: 'idle' }, order: { status: 'none', totalCents: 0, paymentSucceeded: false }, reader: { connected: true }, ui: { motion: 'full' } };
 
 const orderStep = { index: 9, step: { expect: 'order.totalCents', equals: 4_500 }, expected: { equals: 4_500 }, actual: 0 };
 const failing = summarizeRun({ exitCode: 4, result: { passed: false, target: 'headless', failedStep: orderStep, artifacts: '/a' }, state: bug });
@@ -43,7 +43,7 @@ describe('states', () => {
     expect(isBugState({ order: { status: 'confirmed', totalCents: 0 } })).toBe(false);
     expect(isBugState(undefined)).toBe(false);
     expect(isInitialState(initial)).toBe(true);
-    expect(isInitialState({ ...initial, reader: { connected: true }, ui: { motion: 'reduced' } })).toBe(true);
+    expect(isInitialState({ ...initial, ui: { motion: 'reduced' } })).toBe(true);
     expect(isInitialState({ cart: { items: [{ sku: 'cut-45' }] }, order: { status: 'none' } })).toBe(false);
     expect(isInitialState({ cart: { items: [] }, order: { status: 'completed' } })).toBe(false);
   });
@@ -57,6 +57,16 @@ describe('states', () => {
     expect(isInitialState({ ...initial, order: { ...initial.order, paymentSucceeded: true } })).toBe(false);
     expect(isInitialState({ ...initial, order: { ...initial.order, orderId: 'ord_1' } })).toBe(false);
     expect(isInitialState({ ...initial, reader: { connected: false } })).toBe(false);
+  });
+
+  it('rejects a partial state: nothing missing is treated as its initial value', () => {
+    const { reader: _reader, ...noReader } = initial;
+    expect(isInitialState(noReader)).toBe(false);
+    expect(isInitialState({ ...initial, reader: {} })).toBe(false);
+    expect(isInitialState({ ...initial, cart: { items: [] } })).toBe(false);
+    expect(isInitialState({ ...initial, order: { status: 'none', paymentSucceeded: false } })).toBe(false);
+    expect(isInitialState({ ...initial, order: { status: 'none', totalCents: 0 } })).toBe(false);
+    expect(isInitialState({ ...initial, payment: {} })).toBe(false);
   });
 
   it('only takes an ios target that connected at or after a moment', () => {

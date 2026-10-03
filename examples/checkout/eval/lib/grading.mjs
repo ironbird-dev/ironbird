@@ -9,18 +9,19 @@ export function isBugState(state) {
 }
 
 /**
- * The app's state right after a fresh start (`initialState` in src/core/checkout.ts): an empty cart
- * with a zero subtotal, an idle payment with no method, token, payment id, or error, no order, and a
- * connected reader. `ui` is a user preference and is not compared; neither is a reader that the
- * state omits.
+ * The app's state right after a fresh start (`initialState` in src/core/checkout.ts, which the app's
+ * snapshot always carries in full): an empty cart with a subtotal of exactly 0, an idle payment with
+ * no method, token, payment id, or error, an order with status `none`, no order id, a total of exactly
+ * 0 and `paymentSucceeded` false, and a connected reader. Every field must be present with its initial
+ * value; nothing is defaulted. `ui` is a user preference and is not compared.
  */
 export function isInitialState(state) {
   if (state === null || typeof state !== 'object') return false;
   const { cart, payment, order, reader } = state;
-  const cartEmpty = Array.isArray(cart?.items) && cart.items.length === 0 && (cart.subtotalCents ?? 0) === 0;
+  const cartEmpty = Array.isArray(cart?.items) && cart.items.length === 0 && cart.subtotalCents === 0;
   const paymentIdle = payment?.status === 'idle' && ['method', 'token', 'paymentId', 'error'].every((key) => payment[key] === undefined);
-  const noOrder = order?.status === 'none' && order.orderId === undefined && (order.totalCents ?? 0) === 0 && (order.paymentSucceeded ?? false) === false;
-  return cartEmpty && paymentIdle && noOrder && (reader === undefined || reader.connected === true);
+  const noOrder = order?.status === 'none' && order.orderId === undefined && order.totalCents === 0 && order.paymentSucceeded === false;
+  return cartEmpty && paymentIdle && noOrder && reader?.connected === true;
 }
 
 /** The `ios` target from a `status` listing, only if it connected at or after `after` (ms since the epoch). */
