@@ -71,12 +71,19 @@ export async function startServe(project, { env = process.env, logFile, ephemera
 }
 
 /**
+ * Metro's environment: Expo's TypeScript setup off, because it would rewrite the copy's standalone
+ * tsconfig.json (adding `extends: expo/tsconfig.base`) and every session would start with a change
+ * the agent did not make.
+ */
+export const metroEnv = (env) => ({ ...env, EXPO_NO_TYPESCRIPT_SETUP: '1' });
+
+/**
  * Starts Metro with a cleared cache (never `--ios`, which picks its own simulator) and resolves once
  * it answers /status and every process listening on its port is in the group the harness started,
  * with `project` as its working directory. On any failure the group is reaped before the error.
  */
 export async function startMetro(project, { env = process.env, logFile, timeoutMs = 180_000 }) {
-  const proc = await startLogged('npx', ['expo', 'start', '--clear', '--port', String(METRO_PORT)], { cwd: project, env, logFile });
+  const proc = await startLogged('npx', ['expo', 'start', '--clear', '--port', String(METRO_PORT)], { cwd: project, env: metroEnv(env), logFile });
   try {
     await waitFor(
       async () => {

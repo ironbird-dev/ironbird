@@ -16,6 +16,8 @@ The model is passed as the alias `sonnet` (`MODEL` in `lib/paths.mjs`). Claude C
 
 The example's device bridge passes Expo's `reloadAppAsync` as its `reload`, because React Native's `DevSettings.reload` leaves Expo Go without its native modules and the app never reconnects. That is what makes `ironbird reload` work on the device, for the agent and for the grader.
 
+Metro runs with `EXPO_NO_TYPESCRIPT_SETUP=1`. Otherwise Expo would add `extends: expo/tsconfig.base` to the copy's standalone `tsconfig.json` on start, and every session would begin with a change the agent did not make.
+
 ## Commands
 
 All of them run from the repository root.
