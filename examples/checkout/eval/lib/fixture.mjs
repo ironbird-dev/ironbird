@@ -48,10 +48,16 @@ export const HINT_ALLOWED = [
   },
   {
     file: /skills\/ironbird\//,
-    text: /delayed, duplicated, reordered, and missing/i,
+    text: /answers that arrive late, twice, out of order, or never/,
     reason: "the skill's generic list of orderings the outside world produces (M3 design §6.1); it names nothing in this app",
   },
   { file: /(^|\/)dist\//, text: /Promise\.race\(/, reason: "JavaScript's Promise.race in ironbird's own library code" },
+  { file: /(^|\/)dist\//, text: /Losing the race below leaves `sent` pending/, reason: "a comment in ironbird's own daemon code about its Promise.race on a send; library code cannot name the app" },
+  {
+    file: /(^|\/)dist\//,
+    text: /to deliver, delay, duplicate, or drop what it sends/,
+    reason: "the MCP ironbird_fake tool's generic description of what any fake control can do; it names no fake, control, or state path of this app",
+  },
   { file: /(^|\/)dist\//, text: /win the race to the wire/, reason: "a comment in ironbird's own transport code about socket message order; library code cannot name the app" },
   { file: /(^|\/)dist\//, text: /would reorder the circular wiring/, reason: "a comment in ironbird's own code about module initialization order" },
 ];

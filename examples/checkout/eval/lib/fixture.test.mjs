@@ -65,6 +65,18 @@ describe('the hint scan', () => {
     expect(twice.map((hit) => isAllowedHint(hit))).toEqual([true, false]);
   });
 
+  it("allows the skill's and the CLI's generic wording, and only where it ships", () => {
+    const skillLine = 'Use fake controls to try the orderings a real network can produce: answers that arrive late, twice, out of order, or never.';
+    const [skill] = hintsInText(skillLine, '.claude/skills/ironbird/SKILL.md');
+    expect(isAllowedHint(skill)).toBe(true);
+    expect(isAllowedHint({ ...skill, file: 'src/core/checkout.ts' })).toBe(false);
+    const daemon = hintsInText('      // Losing the race below leaves `sent` pending; a rejection it settles with later is handled.', 'node_modules/@ironbird/cli/dist/serve-X.js.map');
+    expect(daemon.map((hit) => isAllowedHint(hit))).toEqual([true]);
+    const fake = hintsInText("'Run a control on a fake, to deliver, delay, duplicate, or drop what it sends, then settle.'", 'vendor/ironbird-cli-0.0.3.tgz/package/dist/stdio-X.js');
+    expect(fake.map((hit) => isAllowedHint(hit))).toEqual([true]);
+    expect(isAllowedHint({ ...fake[0], file: 'README.md' })).toBe(false);
+  });
+
   it('judges each occurrence on a long line by its own surroundings', () => {
     const line = `${'x'.repeat(10)}await Promise.race([a, b]);${'y'.repeat(300)}completes with a zero total${'z'.repeat(10)}`;
     const hits = hintsInText(line, 'node_modules/@ironbird/core/dist/index.js.map');
