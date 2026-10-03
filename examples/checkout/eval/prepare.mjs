@@ -15,11 +15,11 @@ import { claudeVersion, captureBaselineInit } from './lib/claude.mjs';
 import { sessionEnv } from './lib/claude-args.mjs';
 import { sandboxProfile } from './lib/sandbox.mjs';
 import { copyExample, findHints, transformFixture } from './lib/fixture.mjs';
-import { conditionFailure, summarizeRun } from './lib/grading.mjs';
+import { cleanPass, conditionFailure, mismatches, summarizeRun } from './lib/grading.mjs';
 import { ironbird, runScenarioFile, startServe } from './lib/ironbird.mjs';
 import { baselineFromInit, checkBaseline } from './lib/isolation.mjs';
 import { FIXTURE_PINS, GITIGNORE, NPM_INSTALL_FLAGS, pickTarballs, standaloneManifest, standaloneTsconfig, VITEST_CONFIG } from './lib/manifest.mjs';
-import { DUPLICATE_SCENARIO, exampleDir, layout, MODEL, RACE_SCENARIO, repoRoot } from './lib/paths.mjs';
+import { DUPLICATE_SCENARIO, exampleDir, HELD_BACK, layout, MODEL, RACE_SCENARIO, repoRoot } from './lib/paths.mjs';
 import { clone, must, readJson, run, writeJson } from './lib/proc.mjs';
 import { ancestorInstructionFiles, isInside } from './lib/tree.mjs';
 
@@ -153,7 +153,13 @@ async function checkTemplate() {
       if (!conditionFailure(summarizeRun(race))) throw new Error(`The held-back race scenario does not fail with the bug state on the fixture: ${JSON.stringify(race.result ?? race.error)}`);
       checks.raceFailsHeadless = { failedStep: race.result.failedStep, order: race.state.order };
       const duplicate = await runScenarioFile(dir, DUPLICATE_SCENARIO, 'headless');
-      checks.duplicateOnFixture = duplicate.result?.passed ?? null;
+      // The duplicate scenario passes on the fixture: a clean pass with the final values its `expect` steps assert.
+      const duplicateRun = summarizeRun(duplicate);
+      const duplicateExpected = HELD_BACK.find((entry) => entry.file === DUPLICATE_SCENARIO).expected;
+      if (!cleanPass(duplicateRun) || mismatches(duplicateRun, duplicateExpected).length > 0) {
+        throw new Error(`The held-back duplicate scenario does not pass cleanly on the fixture: ${JSON.stringify(duplicate.result ?? duplicate.error)} ${mismatches(duplicateRun, duplicateExpected).join(', ')}`);
+      }
+      checks.duplicateOnFixture = true;
     } finally {
       await serve.stop();
     }

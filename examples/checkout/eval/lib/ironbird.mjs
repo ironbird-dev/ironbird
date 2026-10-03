@@ -72,7 +72,7 @@ export async function startServe(project, { env = process.env, logFile, ephemera
 
 /**
  * Starts Metro with a cleared cache (never `--ios`, which picks its own simulator) and resolves once
- * it answers /status and the process listening on its port is in the group the harness started,
+ * it answers /status and every process listening on its port is in the group the harness started,
  * with `project` as its working directory. On any failure the group is reaped before the error.
  */
 export async function startMetro(project, { env = process.env, logFile, timeoutMs = 180_000 }) {
@@ -81,7 +81,7 @@ export async function startMetro(project, { env = process.env, logFile, timeoutM
     await waitFor(
       async () => {
         try {
-          const response = await fetch(`http://127.0.0.1:${METRO_PORT}/status`);
+          const response = await fetch(`http://127.0.0.1:${METRO_PORT}/status`, { signal: AbortSignal.timeout(5_000) });
           return (await response.text()).includes('packager-status:running');
         } catch {
           return false;
@@ -93,8 +93,10 @@ export async function startMetro(project, { env = process.env, logFile, timeoutM
     const foreign = owners.filter((owner) => owner.pgid !== proc.pgid);
     if (owners.length === 0 || foreign.length > 0) throw new Error(`port ${METRO_PORT} is not served by the Metro this harness started: ${JSON.stringify(owners)}`);
     const expected = await realpath(project);
-    const cwd = await processCwd(owners[0].pid);
-    if (cwd !== expected) throw new Error(`Metro on port ${METRO_PORT} runs in ${cwd}, not ${expected}`);
+    for (const pid of new Set(owners.map((owner) => owner.pid))) {
+      const cwd = await processCwd(pid);
+      if (cwd !== expected) throw new Error(`Metro on port ${METRO_PORT} (pid ${pid}) runs in ${cwd}, not ${expected}`);
+    }
     return proc;
   } catch (error) {
     await proc.stop();

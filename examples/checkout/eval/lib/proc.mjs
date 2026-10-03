@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { lsofCwd, parsePgid, splitOwners } from './probes.mjs';
+import { once } from 'node:events';
+import { lsofCwd, lsofPids, parsePgid, splitOwners } from './probes.mjs';
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -48,9 +49,11 @@ export async function reapGroup(pgid, { graceMs = 10_000, killMs = 5_000 } = {})
   return gone(killMs);
 }
 
-/** Signals a child's whole process group, falling back to the child alone. */
+/**
+ * Signals a child's whole process group (its pgid is its pid), whether or not the child itself has
+ * exited: descendants left in the group are signalled too. Falls back to the child alone.
+ */
 export function killGroup(child, signal = 'SIGTERM') {
-  if (child.exitCode !== null || child.signalCode !== null) return;
   try {
     process.kill(-child.pid, signal);
   } catch {
@@ -74,7 +77,17 @@ export function run(command, args, { cwd, env = process.env, input = '', timeout
     child.stderr.setEncoding('utf8').on('data', (chunk) => {
       stderr += chunk;
     });
-    const timer = timeoutMs === undefined ? undefined : setTimeout(() => killGroup(child, 'SIGKILL'), timeoutMs);
+    // On timeout the whole group is reaped (bounded), even when the direct child already exited, and
+    // the output pipes are then closed, so a descendant that escaped the group cannot hold run() open.
+    const timer =
+      timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            void reapGroup(child.pid, { graceMs: 1_000, killMs: 2_000 }).finally(() => {
+              child.stdout.destroy();
+              child.stderr.destroy();
+            });
+          }, timeoutMs);
     child.on('error', (error) => {
       clearTimeout(timer);
       reject(error);
@@ -101,9 +114,23 @@ export async function must(command, args, options = {}) {
 export async function startLogged(command, args, { cwd, env = process.env, logFile }) {
   await mkdir(path.dirname(logFile), { recursive: true });
   const log = createWriteStream(logFile, { flags: 'a' });
+  await once(log, 'open');
+  const closeLog = async () => {
+    if (log.closed) return;
+    log.end();
+    await once(log, 'close');
+  };
   const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+  try {
+    await Promise.race([once(child, 'spawn'), once(child, 'error').then(([error]) => Promise.reject(error))]);
+  } catch (error) {
+    await closeLog();
+    throw new Error(`could not start ${command}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  }
+  child.on('error', (error) => log.write(`[harness] ${command}: ${error.message}\n`));
   child.stdout.pipe(log, { end: false });
   child.stderr.pipe(log, { end: false });
+  const outputDone = Promise.all([once(child.stdout, 'close'), once(child.stderr, 'close')]);
   const exited = new Promise((resolve) => {
     child.once('exit', (code, signal) => resolve({ code, signal }));
   });
@@ -113,31 +140,52 @@ export async function startLogged(command, args, { cwd, env = process.env, logFi
     exited,
     async stop() {
       const reaped = await reapGroup(child.pid);
-      log.end();
+      // Flush what the group wrote before closing the log; a pipe an escaped descendant holds is closed after a bound.
+      const bound = sleep(2_000).then(() => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+      });
+      await Promise.race([outputDone, bound]);
+      await closeLog();
       return reaped;
     },
   };
 }
 
-/** Polls `check` until it returns something truthy, and returns that. Throws after `timeoutMs`, naming `what`. */
+/**
+ * Polls `check` until it returns something truthy, and returns that. Throws after `timeoutMs`,
+ * naming `what`. Each probe is bounded by the time left too, so a probe that never answers cannot
+ * stretch the wait (probes that hold a resource should also bound themselves, as a fetch with an
+ * AbortSignal does).
+ */
 export async function waitFor(check, { timeoutMs, intervalMs = 500, what }) {
-  const started = Date.now();
+  const until = Date.now() + timeoutMs;
+  const expired = Symbol('expired');
+  const timedOut = () => new Error(`Timed out after ${timeoutMs} ms waiting for ${what}`);
   for (;;) {
-    const value = await check();
+    const probe = Promise.resolve().then(check);
+    probe.catch(() => {});
+    let timer;
+    const deadline = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(expired), Math.max(0, until - Date.now()));
+    });
+    let value;
+    try {
+      value = await Promise.race([probe, deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (value === expired) throw timedOut();
     if (value) return value;
-    if (Date.now() - started > timeoutMs) throw new Error(`Timed out after ${timeoutMs} ms waiting for ${what}`);
-    await sleep(intervalMs);
+    const left = until - Date.now();
+    if (left <= 0) throw timedOut();
+    await sleep(Math.min(intervalMs, left));
   }
 }
 
-/** Pids listening on a local TCP port, from lsof. */
+/** Pids listening on a local TCP port, from lsof. Throws when lsof itself fails, rather than reporting no listener. */
 export async function listeners(port) {
-  const { stdout } = await run('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t']);
-  return stdout
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map(Number);
+  return lsofPids(await run('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { timeoutMs: 15_000 }), `port ${port}`);
 }
 
 /** A process's group, from ps. */

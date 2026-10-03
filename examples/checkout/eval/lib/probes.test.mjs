@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deadlineBudget, expoGoRunning, lsofCwd, parsePgid, splitOwners } from './probes.mjs';
+import { deadlineBudget, expoGoRunning, lsofCwd, lsofPids, parsePgid, splitOwners } from './probes.mjs';
 
 describe('probes', () => {
   it('sees Expo Go only when its launchd job has a pid', () => {
@@ -24,6 +24,14 @@ describe('probes', () => {
     expect(deadlineBudget(10_000, 2_000, 60_000)).toBe(8_000);
     expect(deadlineBudget(10_000, 2_000, 1_000)).toBe(1_000);
     expect(deadlineBudget(10_000, 12_000, 1_000)).toBe(0);
+  });
+
+  it('tells lsof finding no listener apart from a failed lsof', () => {
+    expect(lsofPids({ code: 0, stdout: '8123\n8124\n', stderr: '' }, 'port 8081')).toEqual([8123, 8124]);
+    expect(lsofPids({ code: 1, stdout: '', stderr: '' }, 'port 8081')).toEqual([]);
+    expect(() => lsofPids({ code: 1, stdout: '', stderr: 'lsof: unknown service x for tcp\n' }, 'port 8081')).toThrow('lsof failed for port 8081 (exit 1): lsof: unknown service');
+    expect(() => lsofPids({ code: 128, stdout: '', stderr: '' }, 'port 8081')).toThrow('lsof failed for port 8081 (exit 128)');
+    expect(() => lsofPids({ code: 0, stdout: 'p8123\n', stderr: '' }, 'port 8081')).toThrow('other than a pid');
   });
 
   it('never counts a listener from a group the harness did not start as its own', () => {

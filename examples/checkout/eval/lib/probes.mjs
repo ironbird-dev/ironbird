@@ -36,3 +36,21 @@ export function splitOwners(listeners, ownedGroups) {
     unknown: listeners.filter((listener) => !owned.has(listener.pgid)),
   };
 }
+
+/**
+ * Pids from `lsof -t` (one per line). lsof exits 1 with no output when nothing matches; any other
+ * failure (a nonzero exit with a message, or output that is not a pid) is a failed probe and throws,
+ * so a broken probe is never read as "nothing listens".
+ */
+export function lsofPids({ code, stdout, stderr }, what) {
+  if (code === 1 && stdout.trim() === '' && stderr.trim() === '') return [];
+  if (code !== 0) throw new Error(`lsof failed for ${what} (exit ${code}): ${stderr.trim() || stdout.trim()}`);
+  return stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      if (!/^\d+$/.test(line)) throw new Error(`lsof printed something other than a pid for ${what}: ${JSON.stringify(line)}`);
+      return Number(line);
+    });
+}
