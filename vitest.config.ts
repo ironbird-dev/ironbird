@@ -13,7 +13,7 @@ export default defineConfig({
         resolve: { alias },
         test: {
           name: 'unit',
-          include: ['packages/*/src/**/*.test.ts', 'examples/*/src/**/*.test.ts', 'packages/*/test/**/*.test.ts'],
+          include: ['packages/*/src/**/*.test.ts', 'examples/*/src/**/*.test.ts', 'packages/*/test/**/*.test.ts', 'examples/*/eval/**/*.test.mjs'],
           exclude: [
             '**/*.device.test.ts',
             '**/node_modules/**',
