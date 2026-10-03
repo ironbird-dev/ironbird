@@ -65,12 +65,17 @@ export function killGroup(child, signal = 'SIGTERM') {
   }
 }
 
-/** Runs a command to completion. Resolves with its exit code and output; never rejects on a non-zero exit. */
+/**
+ * Runs a command to completion. Resolves with its exit code and output; never rejects on a non-zero
+ * exit. A run that hit `timeoutMs` always reports failure: `timedOut: true` and `code` 124, whatever
+ * the child exited with after it was signalled (a child that traps SIGTERM may exit 0).
+ */
 export function run(command, args, { cwd, env = process.env, input = '', timeoutMs } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
     child.stdout.setEncoding('utf8').on('data', (chunk) => {
       stdout += chunk;
     });
@@ -83,6 +88,7 @@ export function run(command, args, { cwd, env = process.env, input = '', timeout
       timeoutMs === undefined
         ? undefined
         : setTimeout(() => {
+            timedOut = true;
             void reapGroup(child.pid, { graceMs: 1_000, killMs: 2_000 }).finally(() => {
               child.stdout.destroy();
               child.stderr.destroy();
@@ -94,15 +100,16 @@ export function run(command, args, { cwd, env = process.env, input = '', timeout
     });
     child.on('close', (code, signal) => {
       clearTimeout(timer);
-      resolve({ code: code ?? 128, signal, stdout, stderr });
+      resolve({ code: timedOut ? 124 : (code ?? 128), signal, stdout, stderr, timedOut });
     });
     child.stdin.end(input);
   });
 }
 
-/** Runs a command and throws with its output when it exits non-zero. */
+/** Runs a command and throws with its output when it exits non-zero or times out. */
 export async function must(command, args, options = {}) {
   const result = await run(command, args, options);
+  if (result.timedOut) throw new Error(`${command} ${args.join(' ')} timed out after ${options.timeoutMs} ms\n${result.stdout.slice(-2_000)}\n${result.stderr.slice(-2_000)}`);
   if (result.code !== 0) throw new Error(`${command} ${args.join(' ')} exited ${result.code}\n${result.stdout.slice(-2_000)}\n${result.stderr.slice(-2_000)}`);
   return result;
 }

@@ -9,12 +9,12 @@ const PROJECT = '/Users/dev/.ironbird-eval/sessions/1/project';
 
 describe('claudeArgs', () => {
   const settings = { permissions: { deny: ['Read(//Users/dev/apps/ironbird/**)'] } };
-  const args = claudeArgs({ projectDir: PROJECT, settings, budgetUsd: 10, model: 'claude-sonnet-5-5' });
+  const args = claudeArgs({ projectDir: PROJECT, settings, budgetUsd: 10, model: 'sonnet' });
 
   it('passes the spec flags with their values', () => {
     const value = (flag) => args[args.indexOf(flag) + 1];
     expect(args[0]).toBe('-p');
-    expect(value('--model')).toBe('claude-sonnet-5-5');
+    expect(value('--model')).toBe('sonnet');
     expect(value('--setting-sources')).toBe('project');
     expect(args).toContain('--strict-mcp-config');
     expect(value('--mcp-config')).toBe(`${PROJECT}/.mcp.json`);
@@ -48,7 +48,7 @@ describe('claudeArgs', () => {
 describe('the smoke probe', () => {
   it('appends allow rules that reach the repository and the eval home after the session rules', () => {
     const extraAllow = probeAllow({ repo: '/Users/dev/apps/ironbird', home: '/Users/dev/.ironbird-eval' });
-    const args = claudeArgs({ projectDir: PROJECT, settings: { permissions: { deny: [] } }, budgetUsd: 2, model: 'claude-sonnet-5-5', extraAllow });
+    const args = claudeArgs({ projectDir: PROJECT, settings: { permissions: { deny: [] } }, budgetUsd: 2, model: 'sonnet', extraAllow });
     expect(args.slice(-3)).toEqual(['Bash(head *)', 'Read(//Users/dev/apps/ironbird/**)', 'Read(//Users/dev/.ironbird-eval/**)']);
     expect(fillPaths('head -3 {{repo}}/AGENTS.md; {{template}}/x', { repo: '/r', fixture: '/t' })).toBe('head -3 /r/AGENTS.md; /t/x');
   });

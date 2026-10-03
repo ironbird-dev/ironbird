@@ -21,7 +21,16 @@ export const HELD_BACK = [
   { file: DUPLICATE_SCENARIO, expected: { 'order.status': 'completed', 'order.totalCents': 4_500, 'payment.status': 'succeeded' } },
 ];
 
-export const MODEL = 'claude-sonnet-5-5';
+/**
+ * The `--model` value: the `sonnet` alias (D8). On Claude Code 2.1.283 it resolves to
+ * `claude-sonnet-5`; a full id such as `claude-sonnet-5-5` is rejected there as an unrecognized model.
+ */
+export const MODEL = 'sonnet';
+/**
+ * What the init event's `model` must match for the baseline and every session. The exact id the
+ * alias resolved to is recorded in prepare.json and in each session record.
+ */
+export const MODEL_PATTERN = /^claude-sonnet-/;
 export const BUDGET_USD = 10;
 /** The whole session, from its start to the end of teardown: startup, claude, copying the runs, and stopping everything. */
 export const SESSION_LIMIT_MS = 45 * 60_000;

@@ -19,7 +19,7 @@ import { cleanPass, conditionFailure, mismatches, summarizeRun } from './lib/gra
 import { ironbird, runScenarioFile, startServe } from './lib/ironbird.mjs';
 import { baselineFromInit, checkBaseline } from './lib/isolation.mjs';
 import { FIXTURE_PINS, GITIGNORE, NPM_INSTALL_FLAGS, pickTarballs, standaloneManifest, standaloneTsconfig, VITEST_CONFIG } from './lib/manifest.mjs';
-import { DUPLICATE_SCENARIO, exampleDir, HELD_BACK, layout, MODEL, RACE_SCENARIO, repoRoot } from './lib/paths.mjs';
+import { DUPLICATE_SCENARIO, exampleDir, HELD_BACK, layout, MODEL_PATTERN, RACE_SCENARIO, repoRoot } from './lib/paths.mjs';
 import { clone, must, readJson, run, writeJson } from './lib/proc.mjs';
 import { ancestorInstructionFiles, isInside } from './lib/tree.mjs';
 
@@ -193,7 +193,7 @@ async function recordBaseline() {
     stderrFile: path.join(L.home, 'baseline-stderr.log'),
   });
   const baseline = baselineFromInit(init, version);
-  const problems = checkBaseline(baseline, MODEL);
+  const problems = checkBaseline(baseline, MODEL_PATTERN);
   if (problems.length > 0) throw new Error(`The baseline is unusable:\n  ${problems.join('\n  ')}`);
   await writeJson(L.baselineFile, baseline);
   return baseline;
@@ -206,7 +206,7 @@ async function main() {
   const built = await buildTemplate();
   const checks = await checkTemplate();
   const baseline = options['skip-baseline'] ? null : await recordBaseline();
-  const record = { preparedAt: new Date().toISOString(), repo: { head, dirty }, node: process.versions.node, ...built, checks, baseline: baseline ? { claudeVersion: baseline.claudeVersion, skills: baseline.skills } : null };
+  const record = { preparedAt: new Date().toISOString(), repo: { head, dirty }, node: process.versions.node, ...built, checks, baseline: baseline ? { claudeVersion: baseline.claudeVersion, model: baseline.model, skills: baseline.skills } : null };
   await writeJson(L.prepareFile, record);
   process.stdout.write(`${JSON.stringify({ template: L.template, preparedAt: record.preparedAt, tarballs: Object.keys(built.tarballs), checks: Object.keys(checks), baseline: record.baseline })}\n`);
 }

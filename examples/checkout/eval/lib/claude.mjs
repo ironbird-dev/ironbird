@@ -55,7 +55,8 @@ export function startClaude({ cwd, args, env, prompt, transcriptFile, stderrFile
 
 /**
  * The init event of a session with no project skill and no MCP server: the baseline for the D9
- * check. Claude is stopped as soon as the event arrives, before it answers.
+ * check. Claude is stopped as soon as the event arrives. The request goes out alongside the init
+ * event, so the one-word answer may still complete first (about a cent, well inside the 0.5 USD cap).
  */
 export async function captureBaselineInit({ cwd, env, transcriptFile, stderrFile, profile }) {
   const args = ['-p', '--model', MODEL, '--setting-sources', 'project', '--strict-mcp-config', '--tools', 'Read', '--permission-prompts', 'none', '--max-budget-usd', '0.5', '--output-format', 'stream-json', '--verbose', '--no-session-persistence'];

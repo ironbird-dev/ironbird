@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { groupAlive, run, startLogged, waitFor } from './proc.mjs';
+import { groupAlive, must, run, startLogged, waitFor } from './proc.mjs';
 
 const alive = (pid) => {
   try {
@@ -31,6 +31,14 @@ describe('process helpers', () => {
     expect(Date.now() - started).toBeLessThan(8_000);
     expect(Number.isInteger(sleeper) && sleeper > 0).toBe(true);
     expect(alive(sleeper)).toBe(false);
+  }, 15_000);
+
+  it('reports a timed-out run as failed even when the child exits 0 on SIGTERM', async () => {
+    const script = 'trap "exit 0" TERM; sleep 30 & wait';
+    const result = await run('/bin/sh', ['-c', script], { timeoutMs: 200 });
+    expect(result).toMatchObject({ timedOut: true, code: 124 });
+    await expect(must('/bin/sh', ['-c', script], { timeoutMs: 200 })).rejects.toThrow(/timed out after 200 ms/);
+    expect(await run('/bin/sh', ['-c', 'exit 0'], { timeoutMs: 5_000 })).toMatchObject({ timedOut: false, code: 0 });
   }, 15_000);
 
   it('rejects, without an unhandled error, when a logged process cannot start', async () => {

@@ -18,14 +18,25 @@ export function baselineFromInit(init, claudeVersion) {
   };
 }
 
-/** Problems that make a baseline unusable: it must load no MCP server, no ironbird skill, and only built-in plugins, on the pinned model. */
+/** `model` is a pattern (MODEL_PATTERN in lib/paths.mjs), never a bare id: the `--model` alias resolves to an id the CLI picks. */
+function assertPattern(model) {
+  if (!(model instanceof RegExp)) throw new TypeError(`expected the model as a RegExp such as MODEL_PATTERN, got ${JSON.stringify(model)}`);
+}
+
+const runsOn = (id, model) => typeof id === 'string' && model.test(id);
+
+/**
+ * Problems that make a baseline unusable: it must load no MCP server, no ironbird skill, and only
+ * built-in plugins, on a model whose id matches `model` (MODEL_PATTERN).
+ */
 export function checkBaseline(baseline, model) {
+  assertPattern(model);
   const problems = [];
   if (baseline.mcpServers.length > 0) problems.push(`the baseline session loaded MCP servers: ${baseline.mcpServers.join(', ')}`);
   if (baseline.skills.includes('ironbird')) problems.push('the baseline session loaded an ironbird skill');
   if (baseline.skills.length === 0) problems.push('the baseline session reported no skills; the init event format may have changed');
   for (const plugin of baseline.plugins) if (!isBuiltIn(plugin)) problems.push(`the baseline session loaded a plugin that is not built in: ${JSON.stringify(plugin)}`);
-  if (baseline.model !== model) problems.push(`the baseline session ran on ${baseline.model}, not ${model}`);
+  if (!runsOn(baseline.model, model)) problems.push(`the baseline session ran on ${baseline.model}, not a model matching ${model}`);
   return problems;
 }
 
@@ -36,9 +47,11 @@ function isBuiltIn(plugin) {
 
 /**
  * Checks a session's init event. `memoryEntries` lists the auto-memory folder the event reports
- * (empty when the folder is absent or empty). Returns every problem, not only the first.
+ * (empty when the folder is absent or empty); `model` is the pattern the event's model id must match
+ * (MODEL_PATTERN). Returns every problem, not only the first.
  */
 export function checkIsolation(init, baseline, { memoryEntries, model }) {
+  assertPattern(model);
   if (!init) return { valid: false, problems: ['the stream has no init event'] };
   const problems = [];
 
@@ -56,7 +69,7 @@ export function checkIsolation(init, baseline, { memoryEntries, model }) {
   for (const plugin of Array.isArray(init.plugins) ? init.plugins : []) if (!isBuiltIn(plugin)) problems.push(`plugin ${JSON.stringify(plugin)} is not built in`);
 
   if (memoryEntries.length > 0) problems.push(`the auto-memory folder ${init.memory_paths?.auto} is not empty: ${memoryEntries.join(', ')}`);
-  if (init.model !== model) problems.push(`the session runs on ${init.model}, not ${model}`);
+  if (!runsOn(init.model, model)) problems.push(`the session runs on ${init.model}, not a model matching ${model}`);
 
   return { valid: problems.length === 0, problems };
 }

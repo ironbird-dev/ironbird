@@ -6,7 +6,7 @@ const ROOT = '/Users/dev/.ironbird-eval/sessions/1/project';
 const HOME = '/Users/dev';
 
 const line = (event) => JSON.stringify(event);
-const init = { type: 'system', subtype: 'init', cwd: ROOT, model: 'claude-sonnet-5-5', mcp_servers: [{ name: 'ironbird', status: 'connected' }], skills: ['ironbird'], plugins: [] };
+const init = { type: 'system', subtype: 'init', cwd: ROOT, model: 'claude-sonnet-5', mcp_servers: [{ name: 'ironbird', status: 'connected' }], skills: ['ironbird'], plugins: [] };
 const use = (id, name, input) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] }, parent_tool_use_id: null });
 const done = (id, content, isError = false) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content, is_error: isError }] } });
 const say = (text) => ({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
@@ -27,7 +27,7 @@ describe('parseTranscript', () => {
         { type: 'result', subtype: 'success', result: 'Fixed it.', total_cost_usd: 1.25, permission_denials: [{ tool_name: 'Read' }] },
       ),
     );
-    expect(parsed.init?.model).toBe('claude-sonnet-5-5');
+    expect(parsed.init?.model).toBe('claude-sonnet-5');
     expect(parsed.calls.map((call) => [call.name, call.index, call.resultIndex, call.isError])).toEqual([
       ['Edit', 1, 2, false],
       ['mcp__ironbird__ironbird_run_scenario', 3, 4, false],
