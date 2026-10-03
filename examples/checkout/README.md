@@ -44,6 +44,10 @@ On a remote target, `scenario run` does not reset between files, so the scenario
 
 Each run writes its result, events, final state, and fake calls under `.ironbird/runs/`.
 
+## Agent eval
+
+`eval/` holds the M3 agent eval: it copies this app with the race always on to `~/.ironbird-eval/`, runs scripted `claude -p` sessions against the copy, and grades them. It runs by hand on macOS, never in CI; see [eval/README.md](eval/README.md).
+
 ## Monorepo note
 
 Metro resolves through pnpm's isolated node_modules with no extra configuration (Expo SDK 57).
