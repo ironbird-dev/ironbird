@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { groupAlive, must, run, startLogged, waitFor } from './proc.mjs';
+import { groupAlive, must, run, startLogged, stopGroups, waitFor } from './proc.mjs';
 
 const alive = (pid) => {
   try {
@@ -67,5 +67,55 @@ describe('process helpers', () => {
   it('returns the first truthy probe value', async () => {
     let calls = 0;
     expect(await waitFor(async () => (++calls >= 2 ? 'ready' : undefined), { timeoutMs: 2_000, intervalMs: 10, what: 'x' })).toBe('ready');
+  });
+});
+
+describe('stopGroups', () => {
+  const proc = (pgid, stop) => ({ pgid, stop });
+
+  it('stops every group even when one stop throws, and reports the error', async () => {
+    const stopped = [];
+    const result = await stopGroups(
+      [
+        { name: 'metro', proc: proc(11, async () => Promise.reject(new Error('log close failed'))) },
+        { name: 'daemon', proc: proc(12, async () => stopped.push(12) && true) },
+      ],
+      { alive: () => false, reap: async () => true },
+    );
+    expect(stopped).toEqual([12]);
+    expect(result).toEqual({
+      stopped: [
+        { name: 'metro', pgid: 11, reaped: null },
+        { name: 'daemon', pgid: 12, reaped: true },
+      ],
+      errors: ['metro (pgid 11): stop failed: log close failed'],
+      aliveGroups: [],
+    });
+  });
+
+  it('reaps a group again when its stop left it alive, and reports any group that survives', async () => {
+    const living = new Set([21, 22]);
+    const reaped = [];
+    const result = await stopGroups(
+      [
+        { name: 'metro', proc: proc(21, async () => false) },
+        { name: 'daemon', proc: proc(22, async () => false) },
+      ],
+      {
+        alive: (pgid) => living.has(pgid),
+        reap: async (pgid) => {
+          reaped.push(pgid);
+          if (pgid === 21) living.delete(pgid);
+          return !living.has(pgid);
+        },
+      },
+    );
+    expect(reaped).toEqual([21, 22]);
+    expect(result.aliveGroups).toEqual([{ name: 'daemon', pgid: 22 }]);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('skips entries that never started', async () => {
+    expect(await stopGroups([{ name: 'metro', proc: undefined }], { alive: () => true, reap: async () => false })).toEqual({ stopped: [], errors: [], aliveGroups: [] });
   });
 });

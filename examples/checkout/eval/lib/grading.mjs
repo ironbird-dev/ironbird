@@ -24,9 +24,9 @@ export function isInitialState(state) {
   return cartEmpty && paymentIdle && noOrder && reader?.connected === true;
 }
 
-/** The `ios` target from a `status` listing, only if it connected at or after `after` (ms since the epoch). */
-export function freshIosTarget(targets, after) {
-  return (Array.isArray(targets) ? targets : []).find((target) => target?.id === 'ios' && target.platform === 'ios' && typeof target.connectedAt === 'number' && target.connectedAt >= after);
+/** The ios-platform target `id` (default `ios`) from a `status` listing, only if it connected at or after `after` (ms since the epoch). */
+export function freshIosTarget(targets, after, id = 'ios') {
+  return (Array.isArray(targets) ? targets : []).find((target) => target?.id === id && target.platform === 'ios' && typeof target.connectedAt === 'number' && target.connectedAt >= after);
 }
 
 /**
@@ -152,18 +152,20 @@ export function fixedCheck({ heldBack, remaining, npmTestExit }) {
 }
 
 /**
- * Check 3: after the grader's own reload, the app came back as a fresh `ios` target in its initial
- * state, and the reproducing scenario is a clean pass on `ios` without the bug state.
+ * Check 3: after the grader's own reload, the app came back as a fresh connection of the target the
+ * reload returned (`reloadTarget`), in its initial state, and the reproducing scenario is a clean
+ * pass on that target without the bug state.
  */
 export function iosVerdict({ reloadTarget, freshTarget, initialState, run }) {
   const problems = [];
-  if (reloadTarget !== 'ios') problems.push(`reload returned target ${reloadTarget}`);
-  if (!freshTarget) problems.push('no fresh ios connection after the reload');
+  const reloaded = typeof reloadTarget === 'string' && reloadTarget !== '';
+  if (!reloaded) problems.push('the reload returned no target');
+  if (!freshTarget || freshTarget.id !== reloadTarget) problems.push(reloaded ? `no fresh ${reloadTarget} connection after the reload` : 'no fresh connection after the reload');
   if (!isInitialState(initialState)) problems.push(`the reloaded app was not in its initial state: ${JSON.stringify(initialState?.order ?? initialState)}`);
   if (!run) problems.push('the scenario did not run');
   else {
     if (!cleanPass(run)) problems.push(`the scenario is not a clean pass (exit ${run.exitCode}, passed ${run.passed})`);
-    if (run.target !== 'ios') problems.push(`the scenario ran on ${run.target}`);
+    if (run.target !== reloadTarget) problems.push(`the scenario ran on ${run.target}, not ${reloadTarget}`);
     if (run.bugState) problems.push('the final state is the bug state');
   }
   return { pass: problems.length === 0, problems };

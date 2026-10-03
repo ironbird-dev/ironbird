@@ -16,7 +16,7 @@ import { sessionEnv } from './lib/claude-args.mjs';
 import { chooseReproducing, decide, evaluateAgentRuns, fixedCheck, freshIosTarget, iosVerdict, reproduces, summarizeRun } from './lib/grading.mjs';
 import { assertBooted, ironbird, openExpoGo, readState, runScenarioFile, startMetro, startServe, terminateExpoGo, waitForIos } from './lib/ironbird.mjs';
 import { BRIDGE_PORT, DAEMON_PORT, gradeLayout, HELD_BACK, layout, METRO_PORT, sessionId, sessionLayout, simUdid } from './lib/paths.mjs';
-import { assertPortsFree, clone, readJson, reapPorts, run, writeJson } from './lib/proc.mjs';
+import { assertPortsFree, clone, readJson, reapPorts, run, stopGroups, writeJson } from './lib/proc.mjs';
 import { addedScenarios, scenarioFiles } from './lib/tree.mjs';
 import { deniedCalls, finalReport, lastEdit, outOfFolderPaths, parseTranscript, untrackedWrites } from './lib/transcript.mjs';
 
@@ -28,6 +28,19 @@ const G = gradeLayout(L.home, id);
 
 function step(message) {
   process.stderr.write(`grade ${id}: ${message}\n`);
+}
+
+const errorText = (error) => (error instanceof Error ? error.message : String(error));
+
+/** What teardown left behind, recorded in grade.json; anything here makes the grader exit non-zero. */
+const teardown = { stopped: [], errors: [], aliveGroups: [] };
+
+/** Stops the groups with `stopGroups` and records the outcome in `teardown`. */
+async function stopAll(groups) {
+  const result = await stopGroups(groups);
+  teardown.stopped.push(...result.stopped);
+  teardown.errors.push(...result.errors);
+  teardown.aliveGroups.push(...result.aliveGroups);
 }
 
 /** The agent's run folders: each one's result.json, the bytes of its scenario copy, and its screenshots. */
@@ -49,7 +62,7 @@ async function headlessRuns(candidates, templateScenarios, env) {
   try {
     for (const candidate of candidates) candidate.template = summarizeRun(await runScenarioFile(G.template, path.join(G.session, candidate.file), 'headless', { env }));
   } finally {
-    await serveTemplate.stop();
+    await stopAll([{ name: 'daemon (template)', proc: serveTemplate }]);
   }
   const serveSession = await startServe(G.session, { env, logFile: path.join(G.logs, 'serve-session.log'), ephemeral: true });
   try {
@@ -60,45 +73,59 @@ async function headlessRuns(candidates, templateScenarios, env) {
     for (const file of templateScenarios) remaining.push({ ...summarizeRun(await runScenarioFile(G.session, path.join(G.template, file), 'headless', { env })), file });
     return { heldBack, remaining };
   } finally {
-    await serveSession.stop();
+    await stopAll([{ name: 'daemon (session)', proc: serveSession }]);
   }
 }
 
 /**
- * Check 3: a fresh app on the session's code, then the grader's own `ironbird reload`, a fresh ios
- * connection after it in the initial state, and the reproducing scenario run on ios.
+ * Check 3: a fresh app on the session's code, then the grader's own `ironbird reload`, a fresh
+ * connection of the target the reload returned, after it and in the initial state, and the
+ * reproducing scenario run on that target. Any setup error fails the check rather than the grade;
+ * every group it started is stopped and the ports are reaped either way.
  */
 async function iosCheck(repro, env, udid) {
   const ports = [DAEMON_PORT, BRIDGE_PORT, METRO_PORT];
-  await assertPortsFree(ports);
-  await assertBooted(udid);
-  await terminateExpoGo(udid);
-  let serve;
-  let metro;
+  const started = [];
   try {
-    serve = await startServe(G.session, { env, logFile: path.join(G.logs, 'serve-ios.log') });
-    metro = await startMetro(G.session, { env, logFile: path.join(G.logs, 'metro.log') });
+    await assertPortsFree(ports);
+    await assertBooted(udid);
+    await terminateExpoGo(udid);
+    const serve = await startServe(G.session, { env, logFile: path.join(G.logs, 'serve-ios.log') });
+    started.push({ name: 'daemon (ios)', proc: serve });
+    const metro = await startMetro(G.session, { env, logFile: path.join(G.logs, 'metro.log') });
+    started.push({ name: 'metro', proc: metro });
     await openExpoGo(udid);
     const first = await waitForIos(G.session, { after: serve.launchedAt, env });
     const reloadStartedAt = Date.now();
-    const reload = await ironbird(G.session, ['reload', '--target', 'ios', '--timeout', '90s'], { env, timeoutMs: 120_000 });
-    const freshTarget = await waitForIos(G.session, { after: reloadStartedAt, env, timeoutMs: 90_000 }).catch(() => undefined);
-    const initialState = await readState(G.session, 'ios', { env });
-    const scenarioRun = freshTarget && reload.code === 0 ? summarizeRun(await runScenarioFile(G.session, path.join(G.session, repro.file), 'ios', { env })) : undefined;
-    const verdict = iosVerdict({ reloadTarget: reload.lines[0]?.target, freshTarget: freshIosTarget(freshTarget ? [freshTarget] : [], reloadStartedAt), initialState, run: scenarioRun });
+    const reload = await ironbird(G.session, ['reload', '--target', first.id, '--timeout', '90s'], { env, timeoutMs: 120_000 });
+    const returned = reload.code === 0 ? reload.lines[0]?.target : undefined;
+    const reloadTarget = typeof returned === 'string' && returned !== '' ? returned : undefined;
+    const freshTarget = reloadTarget ? await waitForIos(G.session, { after: reloadStartedAt, id: reloadTarget, env, timeoutMs: 90_000 }).catch(() => undefined) : undefined;
+    const initialState = freshTarget ? await readState(G.session, reloadTarget, { env }) : undefined;
+    const scenarioRun = freshTarget ? summarizeRun(await runScenarioFile(G.session, path.join(G.session, repro.file), reloadTarget, { env })) : undefined;
+    const verdict = iosVerdict({ reloadTarget, freshTarget: freshIosTarget(freshTarget ? [freshTarget] : [], reloadStartedAt, reloadTarget), initialState, run: scenarioRun });
     return {
       ...verdict,
       scenario: repro.file,
       firstConnectedAt: first.connectedAt,
       reload: reload.lines[0] ?? { exitCode: reload.code, stderr: reload.stderr.slice(-500) },
+      reloadTarget: reloadTarget ?? null,
       reloadedConnectedAt: freshTarget?.connectedAt ?? null,
       initialOrder: initialState?.order ?? null,
       run: scenarioRun ?? null,
     };
+  } catch (error) {
+    step(`iOS check failed: ${errorText(error)}`);
+    return { pass: false, error: errorText(error), scenario: repro.file };
   } finally {
-    await metro?.stop();
-    await serve?.stop();
-    await reapPorts(ports, [metro?.pgid, serve?.pgid].filter((pgid) => pgid !== undefined));
+    await stopAll([...started].reverse());
+    if (started.length > 0) {
+      try {
+        await reapPorts(ports, started.map(({ proc }) => proc.pgid));
+      } catch (error) {
+        teardown.errors.push(`ports: ${errorText(error)}`);
+      }
+    }
   }
 }
 
@@ -165,18 +192,24 @@ async function main() {
     numTurns: parsed.result?.num_turns ?? null,
     resultSubtype: parsed.result?.subtype ?? null,
     timedOut: session.timedOut ?? false,
+    teardown,
     transcript: S.transcript,
     finalReport: G.report,
   };
   await writeFile(G.report, `${report}\n`);
   await writeFile(G.claims, claimsTable(id, claimCandidates(report), success));
   await writeJson(G.grade, grade);
+  const teardownFailed = teardown.errors.length > 0 || teardown.aliveGroups.length > 0;
+  if (teardownFailed) {
+    step(`teardown failed: ${[...teardown.errors, ...teardown.aliveGroups.map((group) => `${group.name} (pgid ${group.pgid}) is still alive`)].join('; ')}`);
+    process.exitCode = 1;
+  }
   process.stdout.write(
     `${JSON.stringify({ session: id, valid: session.valid, success, checks: Object.fromEntries(Object.entries(checks).map(([name, check]) => [name, check.pass])), costUsd: grade.costUsd, deniedToolCalls: grade.deniedToolCalls, outOfFolderPaths: grade.outOfFolderPaths.length })}\n`,
   );
 }
 
 main().catch((error) => {
-  process.stderr.write(`grade failed: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`grade failed: ${errorText(error)}\n`);
   process.exitCode = 1;
 });

@@ -79,6 +79,12 @@ describe('states', () => {
     expect(freshIosTarget([{ id: 'ios-2', platform: 'ios', connectedAt: 5_000 }], 1_000)).toBeUndefined();
     expect(freshIosTarget(undefined, 0)).toBeUndefined();
   });
+
+  it('takes the target id to look for, still only on the ios platform', () => {
+    expect(freshIosTarget([{ id: 'ios-2', platform: 'ios', connectedAt: 5_000 }], 1_000, 'ios-2')).toMatchObject({ id: 'ios-2' });
+    expect(freshIosTarget([{ id: 'ios', platform: 'ios', connectedAt: 5_000 }], 1_000, 'ios-2')).toBeUndefined();
+    expect(freshIosTarget([{ id: 'ios-2', platform: 'android', connectedAt: 5_000 }], 1_000, 'ios-2')).toBeUndefined();
+  });
 });
 
 describe('clean passes', () => {
@@ -154,6 +160,21 @@ describe('check 3: iOS verdict', () => {
       'no fresh ios connection after the reload',
       'the reloaded app was not in its initial state: {"status":"completed","orderId":"ord_1","totalCents":4500,"paymentSucceeded":true}',
       'the final state is the bug state',
+    ]);
+  });
+
+  it('judges every later step against the target the reload returned, whatever its id', () => {
+    const onIos2 = { ...iosRun, target: 'ios-2' };
+    expect(iosVerdict({ reloadTarget: 'ios-2', freshTarget: { id: 'ios-2' }, initialState: initial, run: onIos2 })).toEqual({ pass: true, problems: [] });
+    expect(iosVerdict({ reloadTarget: 'ios-2', freshTarget: { id: 'ios' }, initialState: initial, run: iosRun }).problems).toEqual([
+      'no fresh ios-2 connection after the reload',
+      'the scenario ran on ios, not ios-2',
+    ]);
+    expect(iosVerdict({ reloadTarget: undefined, freshTarget: undefined, initialState: undefined, run: undefined }).problems).toEqual([
+      'the reload returned no target',
+      'no fresh connection after the reload',
+      'the reloaded app was not in its initial state: undefined',
+      'the scenario did not run',
     ]);
   });
 });

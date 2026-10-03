@@ -130,14 +130,14 @@ export async function openExpoGo(udid, { timeoutMs = 30_000 } = {}) {
   await must('xcrun', ['simctl', 'openurl', udid, METRO_URL], { timeoutMs });
 }
 
-/** Waits for target `ios` registered at or after `after` (ms since the epoch), polling `status`. */
-export async function waitForIos(project, { after, env = process.env, timeoutMs = DEVICE_TIMEOUT_MS }) {
+/** Waits for ios-platform target `id` (default `ios`) registered at or after `after` (ms since the epoch), polling `status`. */
+export async function waitForIos(project, { after, id = 'ios', env = process.env, timeoutMs = DEVICE_TIMEOUT_MS }) {
   return waitFor(
     async () => {
       const status = await ironbird(project, ['status'], { env, timeoutMs: 15_000 });
-      return freshIosTarget(status.lines[0]?.targets, after);
+      return freshIosTarget(status.lines[0]?.targets, after, id);
     },
-    { timeoutMs, intervalMs: 1_000, what: 'a fresh ios target' },
+    { timeoutMs, intervalMs: 1_000, what: `a fresh ${id} target` },
   );
 }
 

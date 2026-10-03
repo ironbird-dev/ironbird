@@ -160,6 +160,29 @@ export async function startLogged(command, args, { cwd, env = process.env, logFi
 }
 
 /**
+ * Stops every started group in order, `{ name, proc }` with `proc` from `startLogged` (or undefined
+ * when it never started): a stop that throws is reported and the rest still run. Any group still
+ * alive afterwards (a stop that returned false, or threw) gets one more bounded reap; the groups
+ * that survive even that are returned in `aliveGroups`. `alive` and `reap` are injectable for tests.
+ */
+export async function stopGroups(groups, { alive = groupAlive, reap = (pgid) => reapGroup(pgid, { graceMs: 2_000, killMs: 2_000 }) } = {}) {
+  const started = groups.filter((group) => group.proc !== undefined);
+  const stopped = [];
+  const errors = [];
+  for (const { name, proc } of started) {
+    try {
+      stopped.push({ name, pgid: proc.pgid, reaped: await proc.stop() });
+    } catch (error) {
+      stopped.push({ name, pgid: proc.pgid, reaped: null });
+      errors.push(`${name} (pgid ${proc.pgid}): stop failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  for (const { proc } of started) if (alive(proc.pgid)) await reap(proc.pgid);
+  const aliveGroups = started.filter(({ proc }) => alive(proc.pgid)).map(({ name, proc }) => ({ name, pgid: proc.pgid }));
+  return { stopped, errors, aliveGroups };
+}
+
+/**
  * Polls `check` until it returns something truthy, and returns that. Throws after `timeoutMs`,
  * naming `what`. Each probe is bounded by the time left too, so a probe that never answers cannot
  * stretch the wait (probes that hold a resource should also bound themselves, as a fetch with an
