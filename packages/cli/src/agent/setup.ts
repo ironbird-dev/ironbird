@@ -50,11 +50,11 @@ async function readMcpConfig(file: string): Promise<Record<string, unknown> | un
   return parsed;
 }
 
-/** Every file under `root`, relative to it with `/` separators, in name order. */
+/** Every file under `root`, relative to it with `/` separators, in no particular order. */
 async function listFiles(root: string, prefix = ''): Promise<string[]> {
   const entries = await readdir(prefix === '' ? root : path.join(root, ...prefix.split('/')), { withFileTypes: true });
   const files: string[] = [];
-  for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+  for (const entry of entries) {
     const relative = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
     if (entry.isDirectory()) files.push(...(await listFiles(root, relative)));
     else if (entry.isFile()) files.push(relative);
@@ -87,7 +87,8 @@ export async function agentSetup(options: AgentSetupOptions): Promise<AgentSetup
   const source = path.join(options.packageRoot, 'skills', 'ironbird');
   let files: string[];
   try {
-    files = await listFiles(source);
+    // Sorted on the whole relative path: sorting each folder's entries before recursing would put `references/x.md` before `references.md`.
+    files = (await listFiles(source)).sort();
   } catch (error) {
     throw new IronbirdError('INTERNAL', `The ironbird skill is missing from ${source}; reinstall @ironbird/cli`, { file: source, message: messageOf(error) });
   }

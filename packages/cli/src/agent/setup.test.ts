@@ -38,6 +38,20 @@ describe('agentSetup', () => {
     expect(await read('.mcp.json')).toBe(`${JSON.stringify({ mcpServers: { ironbird: ENTRY } }, null, 2)}\n`);
   });
 
+  it('lists files sorted by full relative path, so a folder does not jump ahead of a similarly named file', async () => {
+    await mkdir(path.join(pkg, 'skills/ironbird/references/deep'), { recursive: true });
+    await writeFile(path.join(pkg, 'skills/ironbird/references/x.md'), 'x');
+    await writeFile(path.join(pkg, 'skills/ironbird/references/deep/y.md'), 'y');
+    await writeFile(path.join(pkg, 'skills/ironbird/references.md'), 'r');
+    expect((await agentSetup({ cwd: project, packageRoot: pkg })).skill.files).toEqual([
+      'SKILL.md',
+      'references.md',
+      'references/deep/y.md',
+      'references/scenarios.md',
+      'references/x.md',
+    ]);
+  });
+
   it('keeps other servers and keys, replaces only the ironbird entry, and leaves files it does not own alone', async () => {
     await writeFile(path.join(project, '.mcp.json'), JSON.stringify({ mcpServers: { other: { command: 'other-mcp' }, ironbird: { command: 'node', args: ['old.js'] } }, extra: true }));
     await mkdir(path.join(project, '.claude/skills/ironbird'), { recursive: true });
