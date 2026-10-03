@@ -3,7 +3,7 @@ import path from 'node:path';
 
 /** The spec's tools plus Glob and Grep, which are read-only and, like Read, confined to the session folder by the rules below. */
 export const SESSION_TOOLS = 'Bash,Read,Edit,Write,Skill,Glob,Grep';
-export const ALLOWED_BASH = ['npx ironbird *', 'npm test*', 'npx vitest *', 'git status*', 'git diff*', 'git log*'];
+export const ALLOWED_BASH = ['npx ironbird *', 'npm test*', 'npm run typecheck*', 'npx vitest *', 'git status*', 'git diff*', 'git log*'];
 
 /** A permission-rule path for an absolute path: Claude Code spells absolute paths with a leading `//`. */
 export const rulePath = (absolute) => `/${absolute}`;

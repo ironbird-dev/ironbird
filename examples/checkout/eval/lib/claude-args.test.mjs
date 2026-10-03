@@ -34,6 +34,7 @@ describe('claudeArgs', () => {
       'mcp__ironbird',
       'Bash(npx ironbird *)',
       'Bash(npm test*)',
+      'Bash(npm run typecheck*)',
       'Bash(npx vitest *)',
       'Bash(git status*)',
       'Bash(git diff*)',
