@@ -52,9 +52,9 @@ A step result's `settle` says whether work is still pending. On headless, `idle:
 
 Write a YAML scenario under `ironbird/scenarios/` that replays the steps that showed the bug and ends in an `expect` of the correct behavior. The format is in [references/scenarios.md](references/scenarios.md).
 
-Run it before changing any app code: `ironbird_run_scenario` with `path` set to the file, or `npx ironbird scenario run <file>`. It must fail at the `expect` you wrote, with the wrong value in `failedStep.actual`. A scenario that passes before the fix does not reproduce the bug: go back to step 2.
+Write it from the first draft so the same file runs on a device too: leave out a top-level `target` (choose the target when you run it), mark `clock` steps `optional: true`, because devices have no clock control, and `screenshot` steps `optional: true`, because headless has no screen. Every later edit to the file voids the runs made before it.
 
-Write it so the same file runs on a device too: mark `clock` steps `optional: true`, because devices have no clock control, and `screenshot` steps `optional: true`, because headless has no screen.
+Run it before your first edit to app code: `ironbird_run_scenario` with `path` set to the file, or `npx ironbird scenario run <file>`. It must fail at the `expect` you wrote, with the wrong value in `failedStep.actual`. A scenario that passes before the fix does not reproduce the bug: go back to step 2. If you already changed app code, undo that edit with your edit tools, run the scenario to see it fail, then make the edit again; don't reach for version control to compare.
 
 ### 4. Fix
 
@@ -68,14 +68,18 @@ Run the scenario until it passes. Then run the whole folder (`path` set to `iron
 
 Reload the device target so it runs the fixed code from a fresh start: `ironbird_reload` with `target` set to it, such as `ios`, or `npx ironbird reload --target ios`. It returns `{ target, rev }`: use that `target` id from then on.
 
-Run the same scenario with `target` set to that id. A device app has no `reset`, so the run starts from the state the reload left. Then capture the end state with `ironbird_screenshot`, or `npx ironbird screenshot --target <id>`, and look at it. `ironbird_step` (`npx ironbird step <command> '<json>'`) sends one command on a device and returns a screenshot with the result.
+Run the same scenario with `target` set to that id. A device app has no `reset`, so the run starts from the state the reload left. If a device run fails partway, reload the target before the next run, or the leftover state carries over.
+
+After the passing run, capture the end state with `ironbird_screenshot`, or `npx ironbird screenshot --target <id>`, and look at it. This is required even when the scenario only checks state: a device check without a screenshot is not complete. `ironbird_step` (`npx ironbird step <command> '<json>'`) sends one command on a device and returns a screenshot with the result.
 
 If `ironbird_step` fails with `SCREENSHOT_FAILED` and a second text block says the command was already applied, the command ran and only the capture failed. Don't retry the step: read the result with `ironbird_state`, and take the screenshot separately.
 
+If you changed any file during the device check, the scenario included, the earlier headless runs no longer count: run the final file on headless again, and on the device again after a reload. The finish that leaves valid evidence is: last edit, headless run, device reload and run, screenshot.
+
 ### 6. Report with evidence
 
-- Never write "verified", "fixed", or "passes" without quoting the run that shows it: `passed: true`, its `target`, and its `artifacts` path.
-- A run counts only if it used the final scenario file, came after your last code edit, and came after a reload of that target.
+- Never write "verified", "fixed", or "passes" without quoting the run that shows it: `passed: true`, its `target`, and its full `artifacts` path exactly as returned, not shortened.
+- A run counts only if it used the final scenario file, came after your last edit to any file (app code, tests, or the scenario), and came after a reload of that target. Quote one such run per target you claim.
 - Name every target you checked. If a check could not run, for example because no device was connected, report it as not done and say why. Never report it as passed.
 - Name the scenario file and the assertion it makes, what the bug was, and what you changed.
 

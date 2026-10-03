@@ -26,7 +26,7 @@ The names above are made up. Take real command, fake, and control names and payl
 
 ## Top level
 
-`name` (required), `description`, `target` (the tool's `target` or `--target` overrides it), and a non-empty `steps` list. Unknown keys are errors, so a typo fails before anything runs.
+`name` (required), `description`, `target` (the tool's `target` or `--target` overrides it), and a non-empty `steps` list. Leave `target` out of a file you will run on more than one target, and pass the target when you run it. Unknown keys are errors, so a typo fails before anything runs.
 
 ## Steps
 
