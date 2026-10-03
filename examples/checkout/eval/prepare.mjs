@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Builds the eval's session template at ~/.ironbird-eval/template/ (M3 design §7.1), checks it, and
-// records the bundled-skills baseline for the D9 isolation check.
+// records a baseline: the init event of one session in an empty folder. The baseline is a record and
+// a check of the setup (no MCP server, built-in plugins only, a Sonnet model); sessions are not
+// compared with its skill list, which varies between runs (lib/isolation.mjs).
 //
 //   node examples/checkout/eval/prepare.mjs [--skip-build] [--skip-baseline]
 //

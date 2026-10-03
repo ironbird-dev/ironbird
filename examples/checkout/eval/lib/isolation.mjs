@@ -1,7 +1,15 @@
 // The D9 isolation check (M3 design §7.2 step 4), read from a session's own init event: only
 // Claude Code's bundled skills and built-in plugins, the ironbird skill, and the ironbird MCP
-// server may be loaded, and the auto-memory folder must be empty. The bundled skills are recorded
-// once by `prepare` from a session in an empty folder (the baseline).
+// server may be loaded, and the auto-memory folder must be empty.
+//
+// Claude Code's bundled set varies between runs (a `plugin-authoring` built-in appears in some and
+// not others), so sessions are not compared with a fixed list. A skill is a leak when its name is a
+// folder in ~/.claude/skills (read at run time) or carries a plugin namespace (`plugin:skill`); a
+// plugin is a leak unless its source ends with `@builtin`. `prepare` still records one session's
+// init event in an empty folder (the baseline), as a record and as a check of the setup.
+import { readdir } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 const nameOf = (item) => (typeof item === 'string' ? item : typeof item?.name === 'string' ? item.name : undefined);
 const names = (list) => (Array.isArray(list) ? list.map(nameOf).filter((name) => name !== undefined) : []);
@@ -45,13 +53,30 @@ function isBuiltIn(plugin) {
   return typeof source === 'string' && source.endsWith('@builtin');
 }
 
+/** The user's own skills: the names of the folders (or folder links) in `dir`, sorted. A missing folder has none. */
+export async function userSkillNames(dir = path.join(os.homedir(), '.claude', 'skills')) {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+  return entries
+    .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+    .map((entry) => entry.name)
+    .sort();
+}
+
 /**
  * Checks a session's init event. `memoryEntries` lists the auto-memory folder the event reports
  * (empty when the folder is absent or empty); `model` is the pattern the event's model id must match
- * (MODEL_PATTERN). Returns every problem, not only the first.
+ * (MODEL_PATTERN); `userSkills` are the user's skill names (userSkillNames). Returns every
+ * problem, not only the first.
  */
-export function checkIsolation(init, baseline, { memoryEntries, model }) {
+export function checkIsolation(init, { memoryEntries, model, userSkills }) {
   assertPattern(model);
+  if (!Array.isArray(userSkills)) throw new TypeError(`expected userSkills as an array of names, got ${JSON.stringify(userSkills)}`);
   if (!init) return { valid: false, problems: ['the stream has no init event'] };
   const problems = [];
 
@@ -61,9 +86,12 @@ export function checkIsolation(init, baseline, { memoryEntries, model }) {
   if (!ironbird) problems.push('the ironbird MCP server is not loaded');
   else if (typeof ironbird !== 'object' || ironbird.status !== 'connected') problems.push(`the ironbird MCP server is ${ironbird.status ?? 'not reported as connected'}`);
 
-  const allowed = new Set([...baseline.skills, 'ironbird']);
+  const user = new Set(userSkills);
   const skills = names(init.skills);
-  for (const skill of skills) if (!allowed.has(skill)) problems.push(`skill ${skill} is loaded`);
+  for (const skill of skills) {
+    if (skill.includes(':')) problems.push(`skill ${skill} is loaded from a plugin`);
+    else if (user.has(skill)) problems.push(`skill ${skill} is loaded, and the user skills folder has a skill of that name`);
+  }
   if (!skills.includes('ironbird')) problems.push('the ironbird skill is not loaded');
 
   for (const plugin of Array.isArray(init.plugins) ? init.plugins : []) if (!isBuiltIn(plugin)) problems.push(`plugin ${JSON.stringify(plugin)} is not built in`);
