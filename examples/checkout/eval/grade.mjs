@@ -83,10 +83,11 @@ async function headlessRuns(candidates, templateScenarios, env) {
  * reproducing scenario run on that target. Any setup error fails the check rather than the grade;
  * every group it started is stopped and the ports are reaped either way.
  */
-async function iosCheck(repro, env, udid) {
+async function iosCheck(repro, env) {
   const ports = [DAEMON_PORT, BRIDGE_PORT, METRO_PORT];
   const started = [];
   try {
+    const udid = simUdid();
     await assertPortsFree(ports);
     await assertBooted(udid);
     await terminateExpoGo(udid);
@@ -131,8 +132,8 @@ async function iosCheck(repro, env, udid) {
 
 async function main() {
   const session = await readJson(S.record);
-  const udid = options['skip-ios'] ? undefined : simUdid();
-  const env = sessionEnv(process.env, { udid: udid ?? process.env.IRONBIRD_SIM_UDID ?? '' });
+  // The udid is looked up inside the iOS check, so a missing IRONBIRD_SIM_UDID fails that check, not the grade.
+  const env = sessionEnv(process.env, { udid: process.env.IRONBIRD_SIM_UDID ?? '' });
 
   step(`copying the session and the template into ${G.dir}`);
   await rm(G.dir, { recursive: true, force: true });
@@ -172,7 +173,7 @@ async function main() {
   else if (!repro) checks.iosByGrader = { pass: false, reason: 'no reproducing scenario' };
   else {
     step(`iOS check with ${repro.file}`);
-    checks.iosByGrader = await iosCheck(repro, env, udid);
+    checks.iosByGrader = await iosCheck(repro, env);
   }
 
   const report = finalReport(parsed);
