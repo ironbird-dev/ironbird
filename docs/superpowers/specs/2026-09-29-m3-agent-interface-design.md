@@ -16,7 +16,7 @@ The exit criteria and how each is measured:
 
 | Criterion (roadmap) | Measured by |
 |---|---|
-| In 5 fresh sessions, an agent given the skill and the report "orders sometimes complete with a zero total" reproduces the bug with a scenario, fixes it, and verifies the fix headlessly and on iOS with evidence, succeeding in at least 4 sessions without human steering | Five scripted `claude -p` sessions on Sonnet 5.5 against a fixture copy of the example with the race always on, each graded automatically on four checks (§7) |
+| In 5 fresh sessions, an agent given the skill and the report "orders sometimes complete with a zero total" reproduces the bug with a scenario, fixes it, and verifies the fix headlessly and on iOS with evidence, succeeding in at least 4 sessions without human steering | Five scripted `claude -p` sessions on Sonnet (the `sonnet` alias, D8) against a fixture copy of the example with the race always on, each graded automatically on four checks (§7) |
 | Every "verified" claim from those sessions is spot-checked, and the false-claim rate is recorded as a baseline | Every verification claim in each session's final report is checked against the grading results and the artifacts on disk; the rate is recorded in `docs/evals/m3-agent-interface.md` (§7.5) |
 
 Out of scope: `watch` (M5), per-command MCP tools (P2), a `reload` scenario step, reloading remote targets inside `scenario run`, MCP over HTTP, Android in the eval, and image resizing for screenshots.
