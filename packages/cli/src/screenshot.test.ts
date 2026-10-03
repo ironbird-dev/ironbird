@@ -1,5 +1,5 @@
 import { isIronbirdError } from '@ironbird/core';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -50,5 +50,20 @@ describe('captureScreenshot', () => {
     const error = await captureScreenshot({ device: { platform: 'ios', id: 'AAAA-1' }, outPath: path.join(temp, 'x.png'), exec }).catch((caught: unknown) => caught);
     expect(isIronbirdError(error) && error.code).toBe('SCREENSHOT_FAILED');
     expect(isIronbirdError(error) && error.details).toEqual({ tool: 'simctl', stderr: 'No devices are booted.' });
+  });
+
+  it('reports an output directory it cannot create as SCREENSHOT_FAILED without running the tool', async () => {
+    temp = await mkdtemp(path.join(tmpdir(), 'ironbird-shot-'));
+    // A file where the output directory should be, so creating that directory fails.
+    await writeFile(path.join(temp, 'blocked'), 'not a directory');
+    const calls: string[] = [];
+    const exec: Exec = async (file, args) => {
+      calls.push([file, ...args].join(' '));
+      return { stdout: Buffer.alloc(0), stderr: '' };
+    };
+    const error = await captureScreenshot({ device: { platform: 'android', id: 'emulator-5554' }, outPath: path.join(temp, 'blocked', 'shot.png'), exec }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(error) && error.code).toBe('SCREENSHOT_FAILED');
+    expect(isIronbirdError(error) && error.details).toEqual({ tool: 'adb', stderr: expect.stringMatching(/blocked/) });
+    expect(calls).toEqual([]);
   });
 });

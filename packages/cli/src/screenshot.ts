@@ -18,8 +18,10 @@ export async function captureScreenshot(options: { device: DeviceRef; outPath: s
   const exec = options.exec ?? systemExec;
   const { device, outPath } = options;
   const tool = device.platform === 'ios' ? 'simctl' : 'adb';
-  await mkdir(path.dirname(outPath), { recursive: true });
+  // Creating the output directory is part of the capture: a failure there must reach the caller
+  // as SCREENSHOT_FAILED too, so `step` can still say its dispatch already applied.
   try {
+    await mkdir(path.dirname(outPath), { recursive: true });
     if (device.platform === 'ios') {
       await exec('xcrun', ['simctl', 'io', device.id, 'screenshot', outPath]);
     } else {

@@ -10,7 +10,9 @@ import { counterDefinition } from '../test/helpers/counter-app';
 import { isLoopbackHost, startDaemon, type Daemon } from './daemon';
 import type { DaemonTarget } from './daemon-target';
 import { readDaemonInfo, removeDaemonInfo, writeDaemonInfo } from './daemon-info';
+import type { Exec } from './devices';
 import { createHeadlessTarget, type HeadlessTarget } from './headless-target';
+import { captureScreenshot } from './screenshot';
 
 let daemon: Daemon | undefined;
 let target: HeadlessTarget | undefined;
@@ -424,6 +426,27 @@ describe('startDaemon', () => {
     expect(Date.now() - startedAt).toBeLessThan(5_000);
   });
 
+  it('bounds a headless reload or reset by the boot timeout of the target, not the shorter request timeout', async () => {
+    const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+    let boots = 0;
+    // Every boot after the first, and every load, takes longer than the 50 ms request timeout but
+    // well within the 1 s boot timeout.
+    const slow = defineHeadless(async () => {
+      boots += 1;
+      if (boots > 1) await delay(150);
+      const app = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({ boots }) });
+      return { target: app };
+    });
+    const loadDefinition = async (): Promise<typeof slow> => {
+      await delay(150);
+      return slow;
+    };
+    target = await createHeadlessTarget({ definition: slow, loadDefinition, appId: 'a', settleTimeoutMs: 100, bootTimeoutMs: 1_000, env: {}, log: () => {} });
+    daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: 'headless', requestTimeoutMs: 50, log: () => {} });
+    expect((await rpc(daemon, { op: 'reload' })).json).toEqual({ ok: true, target: 'headless', result: { rev: 0 } });
+    expect((await rpc(daemon, { op: 'reset' })).json).toMatchObject({ ok: true, target: 'headless', result: { rev: 0, value: { boots: 3 } } });
+  });
+
   it('close() is idempotent', async () => {
     const d = await boot();
     await d.close();
@@ -608,6 +631,19 @@ describe('screenshot and step', () => {
       expect((result.json['error'] as { details: Record<string, unknown> }).details).not.toHaveProperty('applied');
       expect(remote.calls).toEqual([]);
     }
+  });
+
+  it('marks a capture that cannot create its output directory after the dispatch as applied', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    // A file where the screenshots directory should be, so the real capture fails before any tool runs.
+    await writeFile(path.join(artifacts, 'screenshots'), 'not a directory');
+    const remote = fakeRemote('ios');
+    const exec: Exec = async () => ({ stdout: Buffer.alloc(0), stderr: '' });
+    const d = await boot({ extra: { targets: [remote], artifactsPath: artifacts, capture: { resolveDevice: capture.resolveDevice, capture: (options) => captureScreenshot({ ...options, exec }) } } });
+    const stepped = await rpc(d, { op: 'step', params: { name: 'cart.addItem' } });
+    expect(stepped.status).toBe(200);
+    expect(stepped.json).toMatchObject({ ok: false, error: { code: 'SCREENSHOT_FAILED', details: { tool: 'simctl', applied: true } } });
+    expect(remote.calls).toHaveLength(1);
   });
 
   it('bounds the screenshot capture like every other target operation, instead of hanging forever', async () => {
