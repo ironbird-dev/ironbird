@@ -53,6 +53,18 @@ describe('the hint scan', () => {
     expect(isAllowedHint(completed)).toBe(false);
   });
 
+  it('allows only the occurrence an entry covers, not a neighbor on the same or the next line', () => {
+    const file = 'src/core/checkout.ts';
+    const initial = "  order: { status: 'none', totalCents: 0, paymentSucceeded: false },";
+    const hits = hintsInText(`${initial}\n  order: { status: 'completed', totalCents: 0 },`, file);
+    expect(hits.map((hit) => [hit.line, isAllowedHint(hit)])).toEqual([
+      [1, true],
+      [2, false],
+    ]);
+    const twice = hintsInText(`${initial} // totalCents: 0`, file);
+    expect(twice.map((hit) => isAllowedHint(hit))).toEqual([true, false]);
+  });
+
   it('judges each occurrence on a long line by its own surroundings', () => {
     const line = `${'x'.repeat(10)}await Promise.race([a, b]);${'y'.repeat(300)}completes with a zero total${'z'.repeat(10)}`;
     const hits = hintsInText(line, 'node_modules/@ironbird/core/dist/index.js.map');

@@ -368,23 +368,38 @@ export async function transformFixture(dir) {
 const TEXT_FILE = /\.(ts|tsx|cts|mts|js|mjs|cjs|map|json|md|ya?ml|txt)$/i;
 const EXCERPT = 80;
 
-/** Every occurrence of a HINT_TERMS term in `text`, as `{ file, line, term, excerpt }`; `excerpt` is the text around the occurrence. */
+/**
+ * Every occurrence of a HINT_TERMS term in `text`, as `{ file, line, term, excerpt, lineText, start, end }`.
+ * `excerpt` is the text around the occurrence, for reporting; `lineText` is the whole line and
+ * `start`/`end` the occurrence's span within it, which is what isAllowedHint judges.
+ */
 export function hintsInText(text, file) {
   const hits = [];
   text.split('\n').forEach((line, index) => {
     for (const term of HINT_TERMS) {
       for (const match of line.matchAll(new RegExp(term.source, 'gi'))) {
         const excerpt = line.slice(Math.max(0, match.index - EXCERPT), match.index + match[0].length + EXCERPT);
-        hits.push({ file, line: index + 1, term: term.source, excerpt: excerpt.trim() });
+        hits.push({ file, line: index + 1, term: term.source, excerpt: excerpt.trim(), lineText: line, start: match.index, end: match.index + match[0].length });
       }
     }
   });
   return hits;
 }
 
-/** Whether a hit matches an entry of HINT_ALLOWED. */
+/**
+ * Whether a hit is explained by an entry of HINT_ALLOWED: the entry's `file` matches the hit's path
+ * and a match of its `text` on the hit's line covers the occurrence itself. Text merely near the
+ * occurrence does not count, so a second occurrence beside an allowed one is still reported.
+ */
 export function isAllowedHint(hit, allowed = HINT_ALLOWED) {
-  return allowed.some((entry) => entry.file.test(hit.file) && entry.text.test(hit.excerpt));
+  return allowed.some((entry) => {
+    if (!entry.file.test(hit.file)) return false;
+    const flags = entry.text.flags.includes('g') ? entry.text.flags : `${entry.text.flags}g`;
+    for (const match of hit.lineText.matchAll(new RegExp(entry.text.source, flags))) {
+      if (match.index <= hit.start && hit.end <= match.index + match[0].length) return true;
+    }
+    return false;
+  });
 }
 
 /** Folder names the fixture scan skips: dependencies and git, which prepare scans separately where sessions can see them. */
