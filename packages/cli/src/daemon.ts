@@ -445,7 +445,14 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
         sendJson(res, 200, { ok: true, target: reloaded.target, result: { rev: reloaded.rev } });
         return;
       }
-      const bound = requestBoundFor(requestTimeoutMs, params);
+      // A target that bounds its own `reset` and `reload` (the headless boot timeout) gets at least
+      // that bound plus the usual margin, so a transition the target would still let finish is
+      // never reported as timed out. Clamped like the remote reload's bound above.
+      const lifecycleMs = op === 'reset' || op === 'reload' ? target.lifecycleTimeoutMs : undefined;
+      const bound = Math.min(
+        MAX_TIMER_MS,
+        Math.max(requestBoundFor(requestTimeoutMs, params), lifecycleMs === undefined ? 0 : requestBoundFor(requestTimeoutMs, { timeoutMs: lifecycleMs })),
+      );
       const result = await withRequestTimeout(target.id, op, bound, target.run(op, params));
       sendJson(res, 200, { ok: true, target: target.id, result });
     } catch (error) {

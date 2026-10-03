@@ -885,6 +885,30 @@ describe('createHeadlessTarget', () => {
     expect(await t.run('describe', {}).catch((caught: unknown) => caught)).toBe(failure);
   });
 
+  it('bounds the load and boot of a reload by one deadline, so a slow load leaves the boot only what remains', async () => {
+    const log: string[] = [];
+    const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+    const versionApp = (version: number, bootMs: number): HeadlessDefinition =>
+      defineHeadless(async () => {
+        await delay(bootMs);
+        log.push(`boot v${version}`);
+        const app = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({ version }) });
+        return { target: app, dispose: () => void log.push(`dispose v${version}`) };
+      });
+    // Each phase alone fits the 300 ms boot timeout; together they don't.
+    const loadDefinition = async (): Promise<HeadlessDefinition> => {
+      await delay(200);
+      return versionApp(2, 200);
+    };
+    target = await createHeadlessTarget({ definition: versionApp(1, 0), loadDefinition, appId: 'a', settleTimeoutMs: 100, bootTimeoutMs: 300, env: {}, log: () => {} });
+    const failure = await target.run('reload', {}).catch((caught: unknown) => caught);
+    expect(failure).toMatchObject({ code: 'HEADLESS_LOAD_FAILED', message: 'Headless app failed to reload: load and boot timed out after 300 ms', details: { entry: 'a', message: 'load and boot timed out after 300 ms' } });
+    // Let the abandoned boot finish: its app must never become the live session.
+    await delay(250);
+    expect(await target.run('getState', {}).catch((caught: unknown) => caught)).toBe(failure);
+    expect(target.info().rev).toBe(0);
+  });
+
   it('dispose during a load that never resolves still completes', async () => {
     const r = reloadable();
     const t = await r.boot({ bootTimeoutMs: 50 });

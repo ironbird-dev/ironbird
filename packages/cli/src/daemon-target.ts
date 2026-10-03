@@ -6,6 +6,13 @@ import type { RecordedEvent, TargetInfo } from '@ironbird/core';
  */
 export interface DaemonTarget {
   readonly id: string;
+  /**
+   * The longest the target itself lets one `reset` or `reload` run before failing it, when it
+   * bounds them (the headless target's boot timeout). The daemon's request bound for those
+   * operations is at least this plus five seconds, so it never reports a transition as timed out
+   * that then succeeds.
+   */
+  readonly lifecycleTimeoutMs?: number;
   info(): TargetInfo;
   run(op: string, params: Record<string, unknown>): Promise<unknown>;
   onEvent(listener: (event: RecordedEvent) => void): () => void;

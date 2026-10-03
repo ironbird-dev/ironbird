@@ -488,7 +488,7 @@ export default defineConfig({
   bridge: { port: 4568 },
   clock: { start: '2026-01-01T00:00:00.000Z' },
   settle: { timeoutMs: 5000 },                // headless settle; remote settle is set in startBridge
-  boot: { timeoutMs: 30000 },                 // how long the headless factory may take before HEADLESS_LOAD_FAILED
+  boot: { timeoutMs: 30000 },                 // how long the headless factory, or a reload's load and factory together, may take before HEADLESS_LOAD_FAILED
   scenarios: 'ironbird/scenarios',
   artifactsDir: '.ironbird',
   devices: { ios: 'booted' },                 // simctl device, or adb serial under `android`

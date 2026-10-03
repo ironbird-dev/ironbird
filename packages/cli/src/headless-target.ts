@@ -39,9 +39,11 @@ export interface HeadlessTargetOptions {
   env: Record<string, string | undefined>;
   log?: (line: string) => void;
   /**
-   * Wall-clock bound on one `definition.create` call, and separately on one `loadDefinition` call
-   * during a reload (default 30 s each). Without it a factory or a load that never resolves wedges
-   * the target for good: `run` waits on the stuck transition, and `dispose` awaits it too.
+   * Wall-clock bound on booting the app (default 30 s): one `definition.create` call at start and
+   * on `reset`, and a reload's `loadDefinition` call and the `create` after it together, under one
+   * deadline. Without it a factory or a load that never resolves wedges the target for good: `run`
+   * waits on the stuck transition, and `dispose` awaits it too. The target reports it as
+   * `lifecycleTimeoutMs`, so the daemon's request bound never cuts a transition short.
    */
   bootTimeoutMs?: number;
   /**
@@ -97,12 +99,14 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
   const entry = options.entryPath ?? options.appId;
 
   // A factory or a load that hangs must fail its transition rather than the whole target, so each
-  // races a timer. The abandoned work keeps running on its own; nothing else ever reads its result,
-  // so a late result can never be installed.
-  const withinBootTimeout = async <T>(work: Promise<T>, timedOut: () => Error): Promise<T> => {
+  // races a timer that fires at `deadline` (a `Date.now()` value). A reload's load and boot share
+  // one deadline, so the transition as a whole never outlasts `bootTimeoutMs`. The abandoned work
+  // keeps running on its own; nothing else ever reads its result, so a late result can never be
+  // installed.
+  const beforeDeadline = async <T>(work: Promise<T>, deadline: number, timedOut: () => Error): Promise<T> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(timedOut()), bootTimeoutMs);
+      timer = setTimeout(() => reject(timedOut()), Math.max(0, deadline - Date.now()));
     });
     timeout.catch(() => undefined);
     try {
@@ -112,17 +116,20 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     }
   };
 
-  const createApp = async (source: HeadlessDefinition, context: Parameters<HeadlessDefinition['create']>[0]): Promise<HeadlessApp> =>
-    withinBootTimeout(
-      source.create(context),
-      () => new IronbirdError('HEADLESS_LOAD_FAILED', `Headless app failed to start: the factory did not resolve within ${bootTimeoutMs} ms`, { entry, message: `boot timed out after ${bootTimeoutMs} ms` }),
+  // `afterLoad` marks the boot that follows a reload's load: the factory then had only what the load
+  // left of the deadline, so the timeout names both (`reloadFailure` wraps it as HEADLESS_LOAD_FAILED).
+  const createApp = async (source: HeadlessDefinition, context: Parameters<HeadlessDefinition['create']>[0], deadline: number, afterLoad: boolean): Promise<HeadlessApp> =>
+    beforeDeadline(source.create(context), deadline, () =>
+      afterLoad
+        ? new Error(`load and boot timed out after ${bootTimeoutMs} ms`)
+        : new IronbirdError('HEADLESS_LOAD_FAILED', `Headless app failed to start: the factory did not resolve within ${bootTimeoutMs} ms`, { entry, message: `boot timed out after ${bootTimeoutMs} ms` }),
     );
 
-  const boot = async (source: HeadlessDefinition): Promise<Session> => {
+  const boot = async (source: HeadlessDefinition, deadline = Date.now() + bootTimeoutMs, afterLoad = false): Promise<Session> => {
     const clock = createManualClock({ now: options.clockStart ? Date.parse(options.clockStart) : 0 });
     const recorder = createEventRecorder({ clock });
     const tracker = createTracker({ clock });
-    const app = await createApp(source, { clock, recorder, tracker, env: options.env });
+    const app = await createApp(source, { clock, recorder, tracker, env: options.env }, deadline, afterLoad);
     const offEvents = recorder.subscribe((event) => eventListeners.forEach((listener) => listener(event)));
     const offState = app.target.subscribe(() => stateListeners.forEach((listener) => listener(app.target.revision())));
     return { clock, recorder, tracker, app, unsubscribe: () => (offEvents(), offState()) };
@@ -243,9 +250,9 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
 
   // `reloadFailure` turns the timeout into HEADLESS_LOAD_FAILED "Headless app failed to reload:
   // load timed out after <n> ms", like any other failed load.
-  const loadAgain = async (): Promise<HeadlessDefinition> => {
+  const loadAgain = async (deadline: number): Promise<HeadlessDefinition> => {
     if (!options.loadDefinition) throw new IronbirdError('UNSUPPORTED', "The headless target doesn't support reload", { op: 'reload', target: 'headless' });
-    return withinBootTimeout(options.loadDefinition(), () => new Error(`load timed out after ${bootTimeoutMs} ms`));
+    return beforeDeadline(options.loadDefinition(), deadline, () => new Error(`load timed out after ${bootTimeoutMs} ms`));
   };
 
   // One lifecycle transition, shared by `reset` and `reload` (spec §4.1). Everything up to the
@@ -265,8 +272,11 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     let next: Session;
     try {
       if (previous) await disposeSession(previous);
-      loaded = kind === 'reload' ? await loadAgain() : (kept as HeadlessDefinition);
-      next = await boot(loaded);
+      // One deadline for the load and the boot together, so the daemon, which bounds the request
+      // at `lifecycleTimeoutMs` plus a margin, never gives up on a transition that then succeeds.
+      const deadline = Date.now() + bootTimeoutMs;
+      loaded = kind === 'reload' ? await loadAgain(deadline) : (kept as HeadlessDefinition);
+      next = await boot(loaded, deadline, kind === 'reload');
     } catch (error) {
       // Kept as the boot error so every later operation reports why the target is unusable. After
       // a failed reset a later reset may retry the same code, and the error keeps its own code as
@@ -389,6 +399,7 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
 
   return {
     id: 'headless',
+    lifecycleTimeoutMs: bootTimeoutMs,
     info: () => ({ id: 'headless', platform: 'headless', appId: options.appId, connectedAt, rev: session ? session.app.target.revision() : 0 }),
     async run(op, params) {
       const handler = ops[op];
