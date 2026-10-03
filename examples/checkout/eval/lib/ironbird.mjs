@@ -117,15 +117,17 @@ export async function expoGoIsRunning(udid) {
   return expoGoRunning(stdout);
 }
 
-/** Terminates Expo Go on the simulator (not running is fine) and waits, bounded, until it is really gone. */
+/** Terminates Expo Go on the simulator (not running is fine) and waits until it is really gone, the whole step bounded by `timeoutMs`. */
 export async function terminateExpoGo(udid, { timeoutMs = 15_000 } = {}) {
-  await run('xcrun', ['simctl', 'terminate', udid, EXPO_GO]);
-  await waitFor(async () => !(await expoGoIsRunning(udid)), { timeoutMs, what: `Expo Go to stop on ${udid}` });
+  const until = Date.now() + timeoutMs;
+  const terminate = await run('xcrun', ['simctl', 'terminate', udid, EXPO_GO], { timeoutMs });
+  if (terminate.timedOut) throw new Error(`xcrun simctl terminate timed out after ${timeoutMs} ms`);
+  await waitFor(async () => !(await expoGoIsRunning(udid)), { timeoutMs: Math.max(0, until - Date.now()), what: `Expo Go to stop on ${udid}` });
 }
 
-/** Opens the app from this Metro in Expo Go on the simulator. */
-export async function openExpoGo(udid) {
-  await must('xcrun', ['simctl', 'openurl', udid, METRO_URL]);
+/** Opens the app from this Metro in Expo Go on the simulator, bounded by `timeoutMs`. */
+export async function openExpoGo(udid, { timeoutMs = 30_000 } = {}) {
+  await must('xcrun', ['simctl', 'openurl', udid, METRO_URL], { timeoutMs });
 }
 
 /** Waits for target `ios` registered at or after `after` (ms since the epoch), polling `status`. */
@@ -139,9 +141,10 @@ export async function waitForIos(project, { after, env = process.env, timeoutMs 
   );
 }
 
-/** The root state of a target. */
-export async function readState(project, target, { env = process.env } = {}) {
-  const out = await ironbird(project, ['state', '--target', target], { env, timeoutMs: 30_000 });
+/** The root state of a target, bounded by `timeoutMs`; a timed-out read throws rather than reporting no state. */
+export async function readState(project, target, { env = process.env, timeoutMs = 30_000 } = {}) {
+  const out = await ironbird(project, ['state', '--target', target], { env, timeoutMs });
+  if (out.timedOut) throw new Error(`ironbird state --target ${target} timed out after ${timeoutMs} ms`);
   return out.lines[0]?.value;
 }
 

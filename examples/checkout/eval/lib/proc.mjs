@@ -238,8 +238,8 @@ export async function reapPorts(ports, ownedGroups, { boundMs = 15_000 } = {}) {
   }
 }
 
-/** An APFS clone of a folder (`cp -c -R`): instant, and `node_modules` comes along. `to` must not exist. */
-export async function clone(from, to) {
+/** An APFS clone of a folder (`cp -c -R`): instant, and `node_modules` comes along. `to` must not exist. `timeoutMs` bounds the copy. */
+export async function clone(from, to, { timeoutMs } = {}) {
   await mkdir(path.dirname(to), { recursive: true });
-  await must('cp', ['-c', '-R', from, to]);
+  await must('cp', ['-c', '-R', from, to], { timeoutMs });
 }

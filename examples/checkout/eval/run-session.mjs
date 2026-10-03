@@ -18,8 +18,9 @@ import { assertBooted, openExpoGo, readState, startMetro, startServe, terminateE
 import { checkIsolation, userSkillNames } from './lib/isolation.mjs';
 import { BRIDGE_PORT, BUDGET_USD, DAEMON_PORT, DEVICE_TIMEOUT_MS, evalDir, layout, METRO_PORT, MODEL, MODEL_PATTERN, repoRoot, SESSION_LIMIT_MS, sessionId, sessionLayout, simUdid, TEARDOWN_RESERVE_MS } from './lib/paths.mjs';
 import { deadlineBudget } from './lib/probes.mjs';
-import { assertPortsFree, clone, must, readJson, reapPorts, run, writeJson } from './lib/proc.mjs';
+import { assertPortsFree, clone, groupAlive, must, readJson, reapGroup, reapPorts, run, writeJson } from './lib/proc.mjs';
 import { sandboxProfile } from './lib/sandbox.mjs';
+import { sessionVerdict } from './lib/session.mjs';
 import { deniedCalls, outOfFolderPaths, parseTranscript, untrackedWrites } from './lib/transcript.mjs';
 
 const { values: options, positionals } = parseArgs({
@@ -79,10 +80,25 @@ async function harnessRevision() {
   return { head, dirty };
 }
 
+/**
+ * Runs claude in the sandbox until it exits, the isolation check fails, the operator interrupts, or
+ * the deadline less the teardown reserve arrives. Every stop is bounded: if claude's stream still has
+ * not closed a few seconds after its group was reaped, the harness stops waiting for it (the group
+ * check after teardown then names the group if it is still alive).
+ */
 async function runAgent({ args, env, prompt, profile, userSkills, record, deadline }) {
   let isolation;
   let checking;
   let timedOut = false;
+  let giveUp;
+  const gaveUp = new Promise((resolve) => {
+    giveUp = resolve;
+  });
+  const stop = async (graceMs) => {
+    await session.stop(graceMs);
+    await new Promise((resolve) => setTimeout(resolve, 5_000).unref());
+    giveUp({ code: null, signal: null, unresponsive: true });
+  };
   const session = startClaude({
     cwd: S.project,
     args,
@@ -99,7 +115,7 @@ async function runAgent({ args, env, prompt, profile, userSkills, record, deadli
         isolation = checkIsolation(event, { memoryEntries: memory, model: MODEL_PATTERN, userSkills });
         if (!isolation.valid) {
           step(`isolation check failed, stopping: ${isolation.problems.join('; ')}`);
-          await session.stop(2_000);
+          void stop(2_000);
         }
       })();
     },
@@ -107,7 +123,7 @@ async function runAgent({ args, env, prompt, profile, userSkills, record, deadli
   record.claudeGroup = session.pgid;
   const stopOnSignal = () => {
     record.invalidReasons.push('interrupted by the operator');
-    void session.stop(2_000);
+    void stop(2_000);
   };
   process.once('SIGINT', stopOnSignal);
   process.once('SIGTERM', stopOnSignal);
@@ -115,20 +131,21 @@ async function runAgent({ args, env, prompt, profile, userSkills, record, deadli
     () => {
       timedOut = true;
       step('session deadline reached, stopping claude');
-      void session.stop();
+      void stop(10_000);
     },
     Math.max(0, deadline - TEARDOWN_RESERVE_MS - Date.now()),
   );
-  const exit = await session.done;
+  const exit = await Promise.race([session.done, gaveUp]);
   clearTimeout(limit);
   process.off('SIGINT', stopOnSignal);
   process.off('SIGTERM', stopOnSignal);
-  await session.stop(2_000);
+  const reaped = await session.stop(2_000);
   await checking;
   isolation ??= checkIsolation(undefined, { memoryEntries: [], model: MODEL_PATTERN, userSkills });
-  if (!isolation.valid) record.invalidReasons.push(...isolation.problems.map((problem) => `isolation: ${problem}`));
-  return { exit, timedOut, isolation };
+  return { exit, timedOut, isolation, reaped };
 }
+
+const errorText = (error) => (error instanceof Error ? error.message : String(error));
 
 async function main() {
   S = sessionLayout(L.home, sessionId(id));
@@ -166,10 +183,8 @@ async function main() {
   const deadline = startedAt + SESSION_LIMIT_MS;
   const left = (wantedMs) => deadlineBudget(deadline - TEARDOWN_RESERVE_MS, Date.now(), wantedMs);
 
-  step(`cloning the template into ${S.project}`);
+  // The session folder exists from here on, so every outcome below ends in a session.json.
   await mkdir(S.logs, { recursive: true });
-  await clone(L.template, S.project);
-  await writeJson(S.settings, settings);
   const prepared = await readJson(L.prepareFile).catch(() => null);
   const record = {
     session: id,
@@ -191,31 +206,39 @@ async function main() {
     invalidReasons: [],
   };
   const env = sessionEnv(process.env, { udid });
+  const reaped = { claude: null, metro: null, daemon: null };
   let serve;
   let metro;
   try {
+    step(`cloning the template into ${S.project}`);
+    await clone(L.template, S.project, { timeoutMs: left(120_000) });
+    await writeJson(S.settings, settings);
     step('fresh device: stopping Expo Go, starting the daemon and Metro, opening the app');
-    await terminateExpoGo(udid);
+    await terminateExpoGo(udid, { timeoutMs: left(15_000) });
     serve = await startServe(S.project, { env, logFile: path.join(S.logs, 'serve.log'), timeoutMs: left(60_000) });
     metro = await startMetro(S.project, { env, logFile: path.join(S.logs, 'metro.log'), timeoutMs: left(180_000) });
-    await openExpoGo(udid);
+    await openExpoGo(udid, { timeoutMs: left(30_000) });
     try {
       const target = await waitForIos(S.project, { after: serve.launchedAt, env, timeoutMs: left(DEVICE_TIMEOUT_MS) });
-      const initial = await readState(S.project, 'ios', { env });
+      const initial = await readState(S.project, 'ios', { env, timeoutMs: left(30_000) });
       if (!isInitialState(initial)) throw new Error(`the app did not start with an empty cart and no order: ${JSON.stringify(initial)}`);
       record.device = { target, initialState: initial };
     } catch (error) {
-      record.invalidReasons.push(`device: ${error instanceof Error ? error.message : String(error)}`);
+      record.invalidReasons.push(`device: ${errorText(error)}`);
     }
     if (record.device) {
       if (left(1) === 0) record.invalidReasons.push('deadline: startup used the whole session');
       else {
         step('starting claude in the sandbox');
-        Object.assign(record, await runAgent({ args, env, prompt, profile, userSkills, record, deadline }));
+        const agent = await runAgent({ args, env, prompt, profile, userSkills, record, deadline });
+        record.exit = agent.exit;
+        record.timedOut = agent.timedOut;
+        record.isolation = agent.isolation;
+        reaped.claude = agent.reaped;
       }
     }
   } catch (error) {
-    record.invalidReasons.push(`startup: ${error instanceof Error ? error.message : String(error)}`);
+    record.invalidReasons.push(`startup: ${errorText(error)}`);
   } finally {
     step('copying .ironbird/runs to agent-runs, then stopping Metro and the daemon');
     const runs = path.join(S.project, '.ironbird', 'runs');
@@ -224,15 +247,28 @@ async function main() {
       if (await exists(runs)) await cp(runs, S.agentRuns, { recursive: true });
       else await mkdir(S.agentRuns, { recursive: true });
     } catch (error) {
-      record.invalidReasons.push(`copy: ${error instanceof Error ? error.message : String(error)}`);
+      record.invalidReasons.push(`copy: ${errorText(error)}`);
     }
-    record.reaped = { metro: (await metro?.stop()) ?? null, serve: (await serve?.stop()) ?? null };
-    const owned = [metro?.pgid, serve?.pgid, record.claudeGroup].filter((pgid) => pgid !== undefined);
+    reaped.metro = (await metro?.stop()) ?? null;
+    reaped.daemon = (await serve?.stop()) ?? null;
+    record.reaped = reaped;
+    const owned = [
+      { name: 'claude', pgid: record.claudeGroup },
+      { name: 'metro', pgid: metro?.pgid },
+      { name: 'daemon', pgid: serve?.pgid },
+    ].filter((group) => group.pgid !== undefined);
     try {
-      await reapPorts(PORTS, owned, { boundMs: Math.max(5_000, deadline - Date.now()) });
+      await reapPorts(
+        PORTS,
+        owned.map((group) => group.pgid),
+        { boundMs: Math.max(5_000, deadline - Date.now()) },
+      );
     } catch (error) {
-      record.invalidReasons.push(`teardown: ${error instanceof Error ? error.message : String(error)}`);
+      record.invalidReasons.push(`teardown: ${errorText(error)}`);
     }
+    // Every group the harness started must be gone, not only the ones holding a port: one more bounded reap, then check.
+    for (const group of owned) if (groupAlive(group.pgid)) await reapGroup(group.pgid, { graceMs: 2_000, killMs: 2_000 });
+    const aliveGroups = owned.filter((group) => groupAlive(group.pgid));
 
     if (await exists(S.transcript)) {
       const parsed = parseTranscript(await readFile(S.transcript, 'utf8'));
@@ -246,9 +282,13 @@ async function main() {
       if (record.outOfFolderPaths.length > 0) record.invalidReasons.push(`outside-folder access: ${record.outOfFolderPaths.map((hit) => `${hit.tool} ${hit.path}`).join('; ')}`);
       if (record.untrackedWrites.length > 0) record.invalidReasons.push(`file writes outside the edit tools: ${record.untrackedWrites.map((write) => write.command).join('; ')}`);
     }
-    record.finishedAt = new Date().toISOString();
-    record.overran = Date.now() > deadline;
-    record.valid = record.invalidReasons.length === 0 && record.isolation?.valid === true;
+    const finishedAt = Date.now();
+    const verdict = sessionVerdict({ reasons: record.invalidReasons, isolation: record.isolation, deadline, finishedAt, aliveGroups });
+    record.finishedAt = new Date(finishedAt).toISOString();
+    record.overran = finishedAt > deadline;
+    record.aliveGroups = aliveGroups;
+    record.invalidReasons = verdict.invalidReasons;
+    record.valid = verdict.valid;
     await writeJson(S.record, record);
     process.stdout.write(
       `${JSON.stringify({ session: id, label: record.label, valid: record.valid, invalidReasons: record.invalidReasons, timedOut: record.timedOut ?? false, overran: record.overran, model: record.resolvedModel, result: record.result ?? null, deniedToolCalls: record.deniedToolCalls ?? null, outOfFolderPaths: record.outOfFolderPaths?.length ?? null })}\n`,
