@@ -252,7 +252,7 @@ Captures the connected app: `xcrun simctl io <device> screenshot` for a simulato
 ironbird step <command> [payload] [--device <udid|serial>] [--path <path>] [--no-settle] [--settle-timeout <duration>]
 ```
 
-Remote targets only. Sends, settles, and captures a screenshot, then prints a step result plus `screenshot` and `settledBeforeCapture`. The screenshot is captured even when settling times out, so the agent can see what went wrong, and the CLI still exits 3. With `--no-settle` the capture happens right after the dispatch. The printed result is the step result with two extra fields: `screenshot: { path, device, capturedAt }` and `settledBeforeCapture`, true only when settling reached idle before the capture.
+Remote targets only. Sends, settles, and captures a screenshot, then prints a step result plus `screenshot` and `settledBeforeCapture`. The screenshot is captured even when settling times out, so the agent can see what went wrong, and the CLI still exits 3. With `--no-settle` the capture happens right after the dispatch. The printed result is the step result with two extra fields: `screenshot: { path, device, capturedAt }` and `settledBeforeCapture`, true only when settling reached idle before the capture. If the capture fails after the dispatch applied, the step fails with `SCREENSHOT_FAILED` and `details.applied: true`: the command already ran, so do not retry it; read the result with `ironbird state`. Without `applied`, nothing was applied.
 
 ### scenario run
 

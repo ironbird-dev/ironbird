@@ -62,7 +62,7 @@ The skill is in the Agent Skills format, so any agent that reads that format can
 npx ironbird agent setup --skills-dir <your agent's skills folder>
 ```
 
-For an agent that keeps MCP servers in its own configuration, register a stdio server that runs `npx ironbird mcp` in the project root, adding `--daemon <url>` if the daemon can't be found from there. An agent without MCP can follow the same skill through its CLI column: every tool has a CLI command that prints the same JSON.
+For an agent that keeps MCP servers in its own configuration, register a stdio server that runs `npx ironbird mcp` in the project root, adding `--daemon <url>` if the daemon can't be found from there. An agent without MCP can follow the same skill through its CLI column: every tool has a CLI command whose output carries the same result fields.
 
 ## Troubleshooting
 

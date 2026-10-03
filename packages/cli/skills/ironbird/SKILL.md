@@ -10,7 +10,7 @@ ironbird drives a React Native app through the commands the app declares. A daem
 - `headless` runs the app's logic in Node, with a manual clock and fakes standing in for the outside world. It is fast and deterministic, and it is where most of the work happens.
 - A connected app, such as `ios` or `android`, is the real app on a simulator or device, with a real clock. It needs Metro and the app running.
 
-Use the `ironbird_*` MCP tools when you have them, and the CLI (`npx ironbird <command>`) otherwise. Every step below names both, and both return the same JSON. MCP durations are milliseconds; the CLI also takes `ms`, `s`, and `m` suffixes.
+Use the `ironbird_*` MCP tools when you have them, and the CLI (`npx ironbird <command>`) otherwise. Every step below names both, and both carry the same result fields. MCP durations are milliseconds; the CLI also takes `ms`, `s`, and `m` suffixes.
 
 You act only through declared commands and fake controls. There is no way to run arbitrary code in the app; don't look for one.
 

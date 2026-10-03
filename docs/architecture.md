@@ -253,6 +253,7 @@ When `--target` is omitted, operations use `defaultTarget` from config, which is
 | One app per daemon session in v0 | Here: config, scenarios, and the headless entry are per app; several apps per session is P2 |
 | Read-only operations bypass the per-target queue | Here: a `wait` must not block the operation that satisfies it, and reads don't affect ordering |
 | `@ironbird/core` may ship in release bundles; the bridge never does | Here: app code needs core's `Clock`; the tracker and recorder are inert outside dev builds, and the marker lives only in `@ironbird/react-native` |
+| A `reload` operation loads the app's current code from a fresh start on both target kinds, and a failed headless reload leaves the target unusable until a reload succeeds | Here: the daemon bundles the headless entry once and `reset` re-runs that bundle, so without `reload` an agent's check after a fix silently runs the old code; an agent must never verify against code it already replaced (M3 design D4, D5) |
 
 ## 13. What we'd revisit as it grows
 
