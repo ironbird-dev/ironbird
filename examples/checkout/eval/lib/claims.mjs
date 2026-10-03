@@ -4,10 +4,14 @@
 
 const CLAIM = /\b(verif\w*|fix\w*|reproduc\w*|pass\w*)\b/i;
 
-/** Candidate claim sentences, in report order. Code blocks are dropped: they quote evidence, they don't claim it. */
+/**
+ * Candidate claim sentences, in report order. Code blocks are dropped: they quote evidence, they don't
+ * claim it. Bold markers are dropped first, so `1. **label**: Passed.` stays one sentence.
+ */
 export function claimCandidates(text) {
   return text
     .replace(/```[\s\S]*?```/g, '\n')
+    .replace(/\*\*/g, '')
     .split(/\n+|(?<=[.!?])\s+(?=[A-Z`*_(\d])/)
     .map((sentence) => sentence.replace(/^[\s>*#\-|]+|[\s|]+$/g, '').replace(/^\d+[.)]\s+/, '').trim())
     .filter((sentence) => sentence.length > 0 && CLAIM.test(sentence));

@@ -25,6 +25,11 @@ describe('claimCandidates', () => {
     ]);
   });
 
+  it('keeps a numbered item whose label is bold whole, without stray markers', () => {
+    const report = '1. **ironbird_status**: Passed. Two targets.\n2. **npm test**: Passed.\n3. Steps 1–4 **passed** with `__DEV__` on.';
+    expect(claimCandidates(report)).toEqual(['ironbird_status: Passed.', 'npm test: Passed.', 'Steps 1–4 passed with `__DEV__` on.']);
+  });
+
   it('returns nothing for a report without claims', () => {
     expect(claimCandidates('I ran out of budget before finishing.')).toEqual([]);
   });
