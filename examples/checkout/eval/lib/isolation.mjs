@@ -46,7 +46,7 @@ export function checkIsolation(init, baseline, { memoryEntries, model }) {
   for (const name of names(servers)) if (name !== 'ironbird') problems.push(`MCP server ${name} is loaded`);
   const ironbird = servers.find((server) => nameOf(server) === 'ironbird');
   if (!ironbird) problems.push('the ironbird MCP server is not loaded');
-  else if (typeof ironbird === 'object' && ironbird.status !== undefined && ironbird.status !== 'connected') problems.push(`the ironbird MCP server is ${ironbird.status}`);
+  else if (typeof ironbird !== 'object' || ironbird.status !== 'connected') problems.push(`the ironbird MCP server is ${ironbird.status ?? 'not reported as connected'}`);
 
   const allowed = new Set([...baseline.skills, 'ironbird']);
   const skills = names(init.skills);

@@ -37,8 +37,8 @@ describe('checkIsolation', () => {
     expect(checkIsolation(sessionInit(), baseline, { memoryEntries: [], model: MODEL })).toEqual({ valid: true, problems: [] });
   });
 
-  it('accepts skills and servers reported as objects with a name', () => {
-    const init = sessionInit({ skills: [{ name: 'verify' }, { name: 'ironbird' }], mcp_servers: ['ironbird'] });
+  it('accepts skills reported as objects with a name', () => {
+    const init = sessionInit({ skills: [{ name: 'verify' }, { name: 'ironbird' }], mcp_servers: [{ name: 'ironbird', status: 'connected' }] });
     expect(checkIsolation(init, baseline, { memoryEntries: [], model: MODEL }).valid).toBe(true);
   });
 
@@ -67,6 +67,18 @@ describe('checkIsolation', () => {
     ]);
     expect(checkIsolation(sessionInit({ mcp_servers: [{ name: 'ironbird', status: 'failed' }] }), baseline, { memoryEntries: [], model: MODEL }).problems).toEqual([
       'the ironbird MCP server is failed',
+    ]);
+  });
+
+  it('requires the ironbird server to be reported as connected: a bare name or a missing status is a problem', () => {
+    expect(checkIsolation(sessionInit({ mcp_servers: ['ironbird'] }), baseline, { memoryEntries: [], model: MODEL }).problems).toEqual([
+      'the ironbird MCP server is not reported as connected',
+    ]);
+    expect(checkIsolation(sessionInit({ mcp_servers: [{ name: 'ironbird' }] }), baseline, { memoryEntries: [], model: MODEL }).problems).toEqual([
+      'the ironbird MCP server is not reported as connected',
+    ]);
+    expect(checkIsolation(sessionInit({ mcp_servers: [{ name: 'ironbird', status: 'pending' }] }), baseline, { memoryEntries: [], model: MODEL }).problems).toEqual([
+      'the ironbird MCP server is pending',
     ]);
   });
 

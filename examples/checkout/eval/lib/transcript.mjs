@@ -179,7 +179,9 @@ export function untrackedWrites(calls) {
   });
 }
 
-const BASH_PATH = /(?:^|[\s=('"<>])((?:~|\.\.)(?:\/[^\s'";|&<>)]*)?|\/[^\s'";|&<>)]+)/g;
+// Words that name a path: `~`, an absolute path, or a relative path with a `..` segment anywhere in
+// it (`../x`, `./../x`, `src/../../x`). A relative path without `..` stays inside the session.
+const BASH_PATH = /(?:^|[\s=('"<>])(~(?:\/[^\s'";|&<>)]*)?|(?:[\w.~@%+-]+\/)*\.\.(?=\/|[\s'";|&<>)]|$)(?:\/[^\s'";|&<>)]*)?|\/[^\s'";|&<>)]+)/g;
 const IGNORED_OUTSIDE = new Set(['/dev/null', '/dev/stdout', '/dev/stderr']);
 
 function resolvePath(raw, root, home) {

@@ -128,6 +128,25 @@ describe('untrackedWrites', () => {
   });
 });
 
+describe('outOfFolderPaths with relative paths', () => {
+  it('flags relative Bash paths that escape the session folder through .. segments, and not ones that stay inside', () => {
+    const { calls } = parseTranscript(
+      transcript(
+        use('a', 'Bash', { command: 'cat ./../other-project/file' }),
+        use('b', 'Bash', { command: 'cat src/../../../../template/file' }),
+        use('c', 'Bash', { command: 'cat src/../src/x.ts' }),
+        use('d', 'Bash', { command: 'npx ironbird screenshot --out=src/../../shot.png' }),
+        use('e', 'Bash', { command: 'git diff main..feature -- src/core' }),
+      ),
+    );
+    expect(outOfFolderPaths(calls, [ROOT], HOME)).toEqual([
+      { index: 0, tool: 'Bash', path: path.resolve(ROOT, './../other-project/file') },
+      { index: 1, tool: 'Bash', path: path.resolve(ROOT, 'src/../../../../template/file') },
+      { index: 3, tool: 'Bash', path: path.resolve(ROOT, 'src/../../shot.png') },
+    ]);
+  });
+});
+
 describe('outOfFolderPaths', () => {
   it('flags file tools, search folders, absolute Glob patterns, run_scenario paths, and Bash words outside the session folder, and nothing inside it', () => {
     const { calls } = parseTranscript(
