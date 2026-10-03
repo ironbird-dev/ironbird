@@ -244,28 +244,48 @@ export function parseScenario(source: string, file: string): Scenario {
 
 const SCENARIO_FILE = /\.ya?ml$/i;
 
+const MISSING = new Set(['ENOENT', 'ENOTDIR']);
+
+/** A file-system failure other than a missing path, such as EACCES or a sandbox's EPERM, keeps its own message. */
+function unreadable(file: string, error: unknown): IronbirdError {
+  const message = messageOf(error);
+  return new IronbirdError('INVALID_SCENARIO', `Cannot read ${file}: ${message}`, { file, issues: [{ path: [], message }] });
+}
+
+async function readOrThrow<T>(file: string, read: Promise<T>): Promise<T> {
+  try {
+    return await read;
+  } catch (error) {
+    throw unreadable(file, error);
+  }
+}
+
 /**
  * Resolves `paths` against `cwd`, expands each directory to its `*.yaml` and `*.yml` files in
  * name order (no recursion), and parses every file before returning, so an authoring error in
- * any file costs nothing. A missing path or an empty directory is `INVALID_SCENARIO` too.
+ * any file costs nothing. A missing path, a path it may not read, or an empty directory is
+ * `INVALID_SCENARIO` too.
  */
 export async function loadScenarioFiles(paths: string[], cwd: string): Promise<Array<{ file: string; scenario: Scenario }>> {
   const files: string[] = [];
   for (const entry of paths) {
     const resolved = path.resolve(cwd, entry);
-    const info = await stat(resolved).catch(() => undefined);
+    const info = await stat(resolved).catch((error: unknown) => {
+      if (MISSING.has((error as { code?: unknown }).code as string)) return undefined;
+      throw unreadable(resolved, error);
+    });
     if (!info) throw new IronbirdError('INVALID_SCENARIO', `No such file or directory: ${resolved}`, { file: resolved, issues: [{ path: [], message: 'no such file or directory' }] });
     if (!info.isDirectory()) {
       files.push(resolved);
       continue;
     }
-    const names = (await readdir(resolved)).filter((name) => SCENARIO_FILE.test(name)).sort();
+    const names = (await readOrThrow(resolved, readdir(resolved))).filter((name) => SCENARIO_FILE.test(name)).sort();
     if (names.length === 0) {
       throw new IronbirdError('INVALID_SCENARIO', `No scenario files (*.yaml, *.yml) in ${resolved}`, { file: resolved, issues: [{ path: [], message: 'no scenario files (*.yaml, *.yml) in directory' }] });
     }
     files.push(...names.map((name) => path.join(resolved, name)));
   }
   const loaded: Array<{ file: string; scenario: Scenario }> = [];
-  for (const file of files) loaded.push({ file, scenario: parseScenario(await readFile(file, 'utf8'), file) });
+  for (const file of files) loaded.push({ file, scenario: parseScenario(await readOrThrow(file, readFile(file, 'utf8')), file) });
   return loaded;
 }

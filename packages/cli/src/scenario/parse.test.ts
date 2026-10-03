@@ -1,5 +1,5 @@
 import { isIronbirdError } from '@ironbird/core';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -170,6 +170,27 @@ describe('loadScenarioFiles', () => {
     expect(isIronbirdError(missing) && missing.details).toEqual({ file: path.join(dir, 'nope.yaml'), issues: [{ path: [], message: 'no such file or directory' }] });
     const empty = await loadScenarioFiles(['empty'], dir).catch((error: unknown) => error);
     expect(isIronbirdError(empty) && empty.details).toEqual({ file: path.join(dir, 'empty'), issues: [{ path: [], message: 'no scenario files (*.yaml, *.yml) in directory' }] });
+  });
+
+  it('reports a path it may not read with the system error, not as missing', async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-scenarios-'));
+    await mkdir(path.join(dir, 'locked'));
+    await writeFile(path.join(dir, 'locked/a.yaml'), 'name: A\nsteps:\n  - reset: true\n');
+    await writeFile(path.join(dir, 'secret.yaml'), 'name: S\nsteps:\n  - reset: true\n');
+    await chmod(path.join(dir, 'locked'), 0o000);
+    await chmod(path.join(dir, 'secret.yaml'), 0o000);
+    try {
+      const behind = await loadScenarioFiles(['locked/a.yaml'], dir).catch((error: unknown) => error);
+      expect(isIronbirdError(behind) && behind.code).toBe('INVALID_SCENARIO');
+      expect(isIronbirdError(behind) && behind.message).toMatch(/^Cannot read .*locked\/a\.yaml: EACCES: permission denied/);
+      expect(isIronbirdError(behind) && behind.details).toEqual({ file: path.join(dir, 'locked/a.yaml'), issues: [{ path: [], message: expect.stringMatching(/^EACCES: permission denied/) }] });
+      const unreadable = await loadScenarioFiles(['secret.yaml'], dir).catch((error: unknown) => error);
+      expect(isIronbirdError(unreadable) && unreadable.code).toBe('INVALID_SCENARIO');
+      expect(isIronbirdError(unreadable) && unreadable.message).toMatch(/^Cannot read .*secret\.yaml: EACCES: permission denied/);
+    } finally {
+      await chmod(path.join(dir, 'locked'), 0o755);
+      await chmod(path.join(dir, 'secret.yaml'), 0o644);
+    }
   });
 
   it('parses every file before returning, so one invalid file fails the whole load', async () => {
