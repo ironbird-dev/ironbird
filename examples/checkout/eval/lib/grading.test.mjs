@@ -43,8 +43,20 @@ describe('states', () => {
     expect(isBugState({ order: { status: 'confirmed', totalCents: 0 } })).toBe(false);
     expect(isBugState(undefined)).toBe(false);
     expect(isInitialState(initial)).toBe(true);
+    expect(isInitialState({ ...initial, reader: { connected: true }, ui: { motion: 'reduced' } })).toBe(true);
     expect(isInitialState({ cart: { items: [{ sku: 'cut-45' }] }, order: { status: 'none' } })).toBe(false);
     expect(isInitialState({ cart: { items: [] }, order: { status: 'completed' } })).toBe(false);
+  });
+
+  it('is not fooled by a failed payment followed by a cart clear', () => {
+    const afterFailure = { cart: { items: [], subtotalCents: 0 }, payment: { status: 'failed', method: 'card', error: 'Card declined' }, order: { status: 'none', totalCents: 0, paymentSucceeded: false } };
+    expect(isInitialState(afterFailure)).toBe(false);
+    expect(isInitialState({ ...initial, payment: { status: 'idle', token: 't' } })).toBe(false);
+    expect(isInitialState({ ...initial, cart: { items: [], subtotalCents: 900 } })).toBe(false);
+    expect(isInitialState({ ...initial, order: { ...initial.order, totalCents: 4_500 } })).toBe(false);
+    expect(isInitialState({ ...initial, order: { ...initial.order, paymentSucceeded: true } })).toBe(false);
+    expect(isInitialState({ ...initial, order: { ...initial.order, orderId: 'ord_1' } })).toBe(false);
+    expect(isInitialState({ ...initial, reader: { connected: false } })).toBe(false);
   });
 
   it('only takes an ios target that connected at or after a moment', () => {
@@ -196,6 +208,11 @@ describe('choosing the reproducing scenario and deciding', () => {
     ];
     expect(chooseReproducing(candidates)?.file).toBe('c.yaml');
     expect(chooseReproducing(candidates.slice(0, 2))?.file).toBe('b.yaml');
+    const unsorted = [
+      { file: 'z.yaml', qualifies: true, agentEvidence: evidence(false) },
+      { file: 'm.yaml', qualifies: true, agentEvidence: evidence(false) },
+    ];
+    expect(chooseReproducing(unsorted)?.file).toBe('m.yaml');
     expect(chooseReproducing(candidates.slice(0, 1))).toBeUndefined();
   });
 

@@ -8,9 +8,19 @@ export function isBugState(state) {
   return state?.order?.status === 'completed' && state?.order?.totalCents === 0;
 }
 
-/** The app's state right after a fresh start: an empty cart and no order. */
+/**
+ * The app's state right after a fresh start (`initialState` in src/core/checkout.ts): an empty cart
+ * with a zero subtotal, an idle payment with no method, token, payment id, or error, no order, and a
+ * connected reader. `ui` is a user preference and is not compared; neither is a reader that the
+ * state omits.
+ */
 export function isInitialState(state) {
-  return Array.isArray(state?.cart?.items) && state.cart.items.length === 0 && state?.order?.status === 'none';
+  if (state === null || typeof state !== 'object') return false;
+  const { cart, payment, order, reader } = state;
+  const cartEmpty = Array.isArray(cart?.items) && cart.items.length === 0 && (cart.subtotalCents ?? 0) === 0;
+  const paymentIdle = payment?.status === 'idle' && ['method', 'token', 'paymentId', 'error'].every((key) => payment[key] === undefined);
+  const noOrder = order?.status === 'none' && order.orderId === undefined && (order.totalCents ?? 0) === 0 && (order.paymentSucceeded ?? false) === false;
+  return cartEmpty && paymentIdle && noOrder && (reader === undefined || reader.connected === true);
 }
 
 /** The `ios` target from a `status` listing, only if it connected at or after `after` (ms since the epoch). */
@@ -116,10 +126,10 @@ export function evaluateAgentRuns({ runs, ...context }) {
 
 /**
  * The reproducing scenario: among candidates that pass check 1, the first with complete agent
- * evidence, else the first. Undefined when none passes check 1.
+ * evidence, else the first by path. Undefined when none passes check 1.
  */
 export function chooseReproducing(candidates) {
-  const qualifying = candidates.filter((candidate) => candidate.qualifies);
+  const qualifying = candidates.filter((candidate) => candidate.qualifies).sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
   return qualifying.find((candidate) => candidate.agentEvidence?.headless.pass && candidate.agentEvidence?.ios.pass) ?? qualifying[0];
 }
 
