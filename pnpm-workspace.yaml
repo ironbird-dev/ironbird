@@ -7,3 +7,7 @@ allowBuilds:
   unrs-resolver: true
   # jest-haste-map's watch mode only; the prebuilt platform binaries come from optional dependencies.
   '@parcel/watcher': false
+overrides:
+  # @react-native/codegen declares `@babel/core: '*'`, so pnpm would auto-install the newest Babel in
+  # the graph (Babel 8, from StrykerJS), which needs Node >= 22.18. Keep React Native on Babel 7.
+  '@react-native/codegen>@babel/core': ^7.0.0
