@@ -44,6 +44,10 @@ On a remote target, `scenario run` does not reset between files, so the scenario
 
 Each run writes its result, events, final state, and fake calls under `.ironbird/runs/`.
 
+## Model-based tests
+
+`test/race-model.ts` declares the M4 race model: random sequences of `cart.addItem`, `payment.start`, the `api` fake's `setEcho` and `emit`, and clock advances, checked after every step against one invariant, "completed orders have a non-zero total". `test/model.smoke.test.ts` runs in `pnpm test`: the five-step witness that violates the invariant only with the race planted, and one seed measured by the gate. `pnpm gate:m4`, from the repository root, runs the full gate, 10 seeds × 1,000 runs with the race planted and the same without it, and writes its result and counterexample traces under `.ironbird/gate/`; the results are in docs/evals/m4-testing-package.md.
+
 ## Agent eval
 
 `eval/` holds the M3 agent eval: it copies this app with the race always on to `~/.ironbird-eval/`, runs scripted `claude -p` sessions against the copy, and grades them. It runs by hand on macOS, never in CI; see [eval/README.md](eval/README.md).

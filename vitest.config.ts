@@ -41,8 +41,10 @@ export default defineConfig({
         resolve: { alias },
         test: {
           name: 'gate',
-          // The M4 race gate (M4 design §1 and D7): minutes of model runs, so it runs only through
-          // `pnpm gate:m4` and is in neither `pnpm test` nor CI. Its tests pass their own timeouts.
+          // The M4 race gate (M4 design §1 and D7): 10 seeds × 1,000 model runs, planted and unplanted.
+          // It measured about 2 s of Vitest time on Node 26 (11 to 13 s with the build), but it is a
+          // milestone measurement, so it runs only through `pnpm gate:m4` and is in neither
+          // `pnpm test` nor CI. Its tests pass their own timeouts.
           include: ['examples/checkout/test/model.gate.test.ts'],
           exclude: ['**/node_modules/**', '**/dist/**'],
           fileParallelism: false,

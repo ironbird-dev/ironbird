@@ -2,7 +2,709 @@
 
 | Criterion | Result | Evidence |
 |---|---|---|
+| With the planted scenario removed, model-based testing finds the race within 1,000 runs for at least 9 of 10 seeds | met (10/10) | `examples/checkout/test/model.gate.test.ts`, run by `pnpm gate:m4` (2026-10-04): 10/10 seeds found the race with `PLANT_RACE=1`, after 22 to 458 runs (median 111.5); the same configuration without `PLANT_RACE` found nothing in 10 × 1,000 runs. No scenario file is involved. Per-seed results are identical on Node 26.10.0 and 22.14.0. CI re-checks the five-step witness and seed 1 on every commit in `examples/checkout/test/model.smoke.test.ts` (below) |
 | Mutation score ≥ 70% on the clock and tracker | met (96.56%) | `pnpm mutation` on 2026-10-04, twice, with the same detected-versus-survived outcome for all 349 mutants (Killed and Timeout counted as detected): clock.ts 97.16%, tracker.ts 96.15%, from a baseline of 73.93% (details below) |
+
+## Race gate (2026-10-04)
+
+### Configuration
+
+`modelTest` from `@ironbird/testing` against the example's headless definition, configured in `examples/checkout/test/race-model.ts` as in the M4 design §6.4, with the step weights unchanged:
+
+```ts
+steps: [
+  { command: 'cart.addItem', payload: [{ sku: 'cut-45', qty: 1 }, { sku: 'beard-20', qty: 2 }] },
+  { command: 'payment.start', payload: [{ method: 'saved' }, { method: 'card' }] },
+  { fake: 'api', control: 'setEcho', payload: [{ mode: 'manual' }, { mode: 'auto' }] },
+  { fake: 'api', control: 'emit', payload: [{ event: 'payment.succeeded' }, { event: 'order.confirmed' }, { event: 'payment.failed' }] },
+  { clock: { maxMs: 1000 } },
+],
+invariants: { 'completed orders have a non-zero total': (s) => !(s.order.status === 'completed' && s.order.totalCents === 0) },
+maxSteps: 20, numRuns: 1000, seeds 1 to 10
+```
+
+Each run is 1 to 20 steps drawn from the five, equally weighted, applied to a freshly reset target (manual clock, fresh fakes), with the invariant checked after every step. Planted runs pass `env: { PLANT_RACE: '1' }`. Control runs pass `env: {}` while the test process itself has `PLANT_RACE=1` set, so the control also shows the flag cannot leak in. The race needs a clock advance between the saved payment and the success event, because the submission resolves only after 300 ms; the M4 design §6.4 lists the two witnesses.
+
+Machine: Apple M3 Pro, macOS 27.2. fast-check 4.9.0, Vitest 5.0.0.
+
+### Planted (`PLANT_RACE=1`)
+
+| Seed | Found | Runs to failure | Shrunk steps | Wall time, Node 26 | Wall time, Node 22 |
+|---|---|---|---|---|---|
+| 1 | yes | 22 | 4 | 37 ms | 171 ms |
+| 2 | yes | 167 | 5 | 33 ms | 137 ms |
+| 3 | yes | 90 | 4 | 17 ms | 46 ms |
+| 4 | yes | 98 | 4 | 33 ms | 52 ms |
+| 5 | yes | 458 | 4 | 61 ms | 85 ms |
+| 6 | yes | 212 | 4 | 33 ms | 41 ms |
+| 7 | yes | 125 | 4 | 28 ms | 34 ms |
+| 8 | yes | 67 | 4 | 20 ms | 22 ms |
+| 9 | yes | 216 | 4 | 33 ms | 44 ms |
+| 10 | yes | 46 | 4 | 12 ms | 15 ms |
+| **All** | **10/10** | | | **307 ms** | **647 ms** |
+
+"Runs to failure" is `details.runs` from the `INVARIANT_FAILED` error, which `modelTest` takes from fast-check's `RunDetails.numRuns`: the runs made until the property failed, the failing run included, shrinking excluded. A seed that found nothing reports 1,000 and has no shrunk steps. Wall time covers the whole `modelTest` call, shrinking and the replay that names the invariant included.
+
+### Control (no `PLANT_RACE`)
+
+| Seed | Found | Runs | Steps applied | Steps rejected | Wall time, Node 26 | Wall time, Node 22 |
+|---|---|---|---|---|---|---|
+| 1 | no | 1000 | 4,411 | 1,832 | 111 ms | 148 ms |
+| 2 | no | 1000 | 4,381 | 1,776 | 109 ms | 134 ms |
+| 3 | no | 1000 | 4,329 | 1,840 | 104 ms | 924 ms |
+| 4 | no | 1000 | 4,301 | 1,849 | 105 ms | 667 ms |
+| 5 | no | 1000 | 4,219 | 1,875 | 109 ms | 138 ms |
+| 6 | no | 1000 | 4,447 | 1,844 | 111 ms | 128 ms |
+| 7 | no | 1000 | 4,592 | 1,900 | 359 ms | 136 ms |
+| 8 | no | 1000 | 4,454 | 1,847 | 188 ms | 156 ms |
+| 9 | no | 1000 | 4,285 | 1,819 | 105 ms | 891 ms |
+| 10 | no | 1000 | 4,275 | 1,845 | 102 ms | 726 ms |
+| **All** | **0/10** | **10,000** | 43,694 | 18,427 | **1403 ms** | **4048 ms** |
+
+The control finding nothing is what makes the planted result mean something: the invariant is not trivially false. Unplanted, an order completes only after an `order.confirmed` that carries the submitted subtotal, which is never 0. Rejected steps are actions invalid in the current state, such as adding to a locked cart or emitting with no submission; `modelTest` records them and continues (M4 design D5).
+
+### Wall time
+
+`time pnpm gate:m4`, which builds first: 11.2 s on Node 26.10.0 and 13.1 s on Node 22.14.0, of which Vitest itself reported 1.98 s and 5.36 s. Of the Vitest time, planted 307 ms and control 1403 ms on Node 26; planted 647 ms and control 4048 ms on Node 22. The M4 design expected minutes of model runs; the gate takes seconds, because each run drives a manual clock and in-process fakes with no real waiting. Both runs were made with the 1-minute load average near 22 (another job was running on the machine), so the Node 22 control times, which jump from about 130 ms to 700 to 920 ms on four seeds, are likely load noise; a quiet machine would only be faster.
+
+### Result file
+
+`examples/checkout/.ironbird/gate/m4-race-gate.node26.json` from the run above. The Node 22 file has the same per-seed `found`, `runs`, `path`, `steps`, and control step counts, checked field by field; only `measuredAt`, `node`, and the `wallMs` fields differ. The `trace` paths below are as the run wrote them.
+
+```json
+{
+  "measuredAt": "2026-10-04T06:08:57.578Z",
+  "node": "v26.10.0",
+  "machine": "Apple M3 Pro, darwin 27.2.0",
+  "config": {
+    "numRuns": 1000,
+    "maxSteps": 20,
+    "seeds": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "invariant": "completed orders have a non-zero total",
+    "steps": [
+      {
+        "command": "cart.addItem",
+        "payload": [
+          {
+            "sku": "cut-45",
+            "qty": 1
+          },
+          {
+            "sku": "beard-20",
+            "qty": 2
+          }
+        ]
+      },
+      {
+        "command": "payment.start",
+        "payload": [
+          {
+            "method": "saved"
+          },
+          {
+            "method": "card"
+          }
+        ]
+      },
+      {
+        "fake": "api",
+        "control": "setEcho",
+        "payload": [
+          {
+            "mode": "manual"
+          },
+          {
+            "mode": "auto"
+          }
+        ]
+      },
+      {
+        "fake": "api",
+        "control": "emit",
+        "payload": [
+          {
+            "event": "payment.succeeded"
+          },
+          {
+            "event": "order.confirmed"
+          },
+          {
+            "event": "payment.failed"
+          }
+        ]
+      },
+      {
+        "clock": {
+          "maxMs": 1000
+        }
+      }
+    ]
+  },
+  "planted": {
+    "found": 10,
+    "of": 10,
+    "required": 9,
+    "wallMs": 307,
+    "seeds": [
+      {
+        "seed": 1,
+        "found": true,
+        "runs": 22,
+        "wallMs": 37,
+        "invariant": "completed orders have a non-zero total",
+        "path": "21:3:1:6:9:8:12:8:8:11:10:9:8",
+        "steps": [
+          {
+            "send": "cart.addItem",
+            "payload": {
+              "sku": "cut-45",
+              "qty": 1
+            },
+            "rejected": false
+          },
+          {
+            "send": "payment.start",
+            "payload": {
+              "method": "saved"
+            },
+            "rejected": false
+          },
+          {
+            "clock": 300,
+            "rejected": false
+          },
+          {
+            "fake": "api",
+            "control": "emit",
+            "payload": {
+              "event": "payment.succeeded"
+            },
+            "rejected": false
+          }
+        ],
+        "trace": "/Users/sunkibaek/apps/ironbird/examples/checkout/.ironbird/gate/traces/seed-1/2026-10-04T06-08-55-893Z-completed-orders-have-a-non-zero-total.trace.yaml"
+      },
+      {
+        "seed": 2,
+        "found": true,
+        "runs": 167,
+        "wallMs": 33,
+        "invariant": "completed orders have a non-zero total",
+        "path": "166:4:4:3:9:7:7",
+        "steps": [
+          {
+            "send": "cart.addItem",
+            "payload": {
+              "sku": "cut-45",
+              "qty": 1
+            },
+            "rejected": false
+          },
+          {
+            "send": "payment.start",
+            "payload": {
+              "method": "saved"
+            },
+            "rejected": false
+          },
+          {
+            "clock": 103,
+            "rejected": false
+          },
+          {
+            "clock": 197,
+            "rejected": false
+          },
+          {
+            "fake": "api",
+            "control": "emit",
+            "payload": {
+              "event": "payment.succeeded"
+            },
+            "rejected": false
+          }
+        ],
+        "trace": "/Users/sunkibaek/apps/ironbird/examples/checkout/.ironbird/gate/traces/seed-2/2026-10-04T06-08-55-929Z-completed-orders-have-a-non-zero-total.trace.yaml"
+      },
+      {
+        "seed": 3,
+        "found": true,
+        "runs": 90,
+        "wallMs": 17,
+        "invariant": "completed orders have a non-zero total",
+        "path": "89:1:2:6:8:6:7:11",
+        "steps": [
+          {
+            "send": "cart.addItem",
+            "payload": {
+              "sku": "cut-45",
+              "qty": 1
+            },
+            "rejected": false
+          },
+          {
+            "send": "payment.start",
+            "payload": {
+              "method": "saved"
+            },
+            "rejected": false
+          },
+          {
+            "clock": 300,
+            "rejected": false
+          },
+          {
+            "fake": "api",
+            "control": "emit",
+            "payload": {
+              "event": "payment.succeeded"
+            },
+            "rejected": false
+          }
+        ],
+        "trace": "/Users/sunkibaek/apps/ironbird/examples/checkout/.ironbird/gate/traces/seed-3/2026-10-04T06-08-55-946Z-completed-orders-have-a-non-zero-total.trace.yaml"
+      },
+      {
+        "seed": 4,
+        "found": true,
+        "runs": 98,
+        "wallMs": 33,
+        "invariant": "completed orders have a non-zero total",
+        "path": "97:2:1:9:10:11:10:9:9:9:12:12:8",
+        "steps": [
+          {
+            "send": "cart.addItem",
+            "payload": {
+              "sku": "cut-45",
+              "qty": 1
+            },
+            "rejected": false
+          },
+          {
+            "send": "payment.start",
+            "payload": {
+              "method": "saved"
+            },
+            "rejected": false
+          },
+          {
+            "clock": 300,
+            "rejected": false
+          },
+          {
+            "fake": "api",
+            "control": "emit",
+            "payload": {
+              "event": "payment.succeeded"
+            },
+            "rejected": false
+          }
+        ],
+        "trace": "/Users/sunkibaek/apps/ironbird/examples/checkout/.ironbird/gate/traces/seed-4/2026-10-04T06-08-55-980Z-completed-orders-have-a-non-zero-total.trace.yaml"
+      },
+      {
+        "seed": 5,
+        "found": true,
+        "runs": 458,
+        "wallMs": 61,
+        "invariant": "completed orders have a non-zero total",
+        "path": "457:9:7:9:7:10:8:9:8",
+        "steps": [
+          {
+            "send": "cart.addItem",
+            "payload": {
+              "sku": "cut-45",
+              "qty": 1
+            },
+            "rejected": false
+          },
+          {
+            "send": "payment.start",
+            "payload": {
+              "method": "saved"
+            },
+            "rejected": false
+          },
+          {
+            "clock": 300,
+            "rejected": false
+          },
+          {
+            "fake": "api",
+            "control": "emit",
+            "payload": {
+              "event": "payment.succeeded"
+            },
+            "rejected": false
+          }
+        ],
+        "trace": "/Users/sunkibaek/apps/ironbird/examples/checkout/.ironbird/gate/traces/seed-5/2026-10-04T06-08-56-041Z-completed-orders-have-a-non-zero-total.trace.yaml"
+      },
+      {
+        "seed": 6,
+        "found": true,
+        "runs": 212,
+        "wallMs": 33,
+        "invariant": "completed orders have a non-zero total",
+        "path": "211:2:1:3:3:6:5:4:6",
+        "steps": [
+          {
+            "send": "cart.addItem",
+            "payload": {
+              "sku": "cut-45",
+              "qty": 1
+            },
+            "rejected": false
+          },
+          {
+            "send": "payment.start",
+            "payload": {
+              "method": "saved"
+            },
+            "rejected": false
+          },
+          {
+            "clock": 300,
+            "rejected": false
+          },
+          {
+            "fake": "api",
+            "control": "emit",
+            "payload": {
+              "event": "payment.succeeded"
+            },
+            "rejected": false
+          }
+        ],
+        "trace": "/Users/sunkibaek/apps/ironbird/examples/checkout/.ironbird/gate/traces/seed-6/2026-10-04T06-08-56-074Z-completed-orders-have-a-non-zero-total.trace.yaml"
+      },
+      {
+        "seed": 7,
+        "found": true,
+        "runs": 125,
+        "wallMs": 28,
+        "invariant": "completed orders have a non-zero total",
+        "path": "124:2:0:1:5:9:10:8:10:10:10:8",
+        "steps": [
+          {
+            "send": "cart.addItem",
+            "payload": {
+              "sku": "cut-45",
+              "qty": 1
+            },
+            "rejected": false
+          },
+          {
+            "send": "payment.start",
+            "payload": {
+              "method": "saved"
+            },
+            "rejected": false
+          },
+          {
+            "clock": 300,
+            "rejected": false
+          },
+          {
+            "fake": "api",
+            "control": "emit",
+            "payload": {
+              "event": "payment.succeeded"
+            },
+            "rejected": false
+          }
+        ],
+        "trace": "/Users/sunkibaek/apps/ironbird/examples/checkout/.ironbird/gate/traces/seed-7/2026-10-04T06-08-56-102Z-completed-orders-have-a-non-zero-total.trace.yaml"
+      },
+      {
+        "seed": 8,
+        "found": true,
+        "runs": 67,
+        "wallMs": 20,
+        "invariant": "completed orders have a non-zero total",
+        "path": "66:4:5:8:7:6:8:6:6:6:6:6:6:6:6:8",
+        "steps": [
+          {
+            "send": "cart.addItem",
+            "payload": {
+              "sku": "cut-45",
+              "qty": 1
+            },
+            "rejected": false
+          },
+          {
+            "send": "payment.start",
+            "payload": {
+              "method": "saved"
+            },
+            "rejected": false
+          },
+          {
+            "clock": 300,
+            "rejected": false
+          },
+          {
+            "fake": "api",
+            "control": "emit",
+            "payload": {
+              "event": "payment.succeeded"
+            },
+            "rejected": false
+          }
+        ],
+        "trace": "/Users/sunkibaek/apps/ironbird/examples/checkout/.ironbird/gate/traces/seed-8/2026-10-04T06-08-56-122Z-completed-orders-have-a-non-zero-total.trace.yaml"
+      },
+      {
+        "seed": 9,
+        "found": true,
+        "runs": 216,
+        "wallMs": 33,
+        "invariant": "completed orders have a non-zero total",
+        "path": "215:3:3:9:10:9:8:9:8:11:8",
+        "steps": [
+          {
+            "send": "cart.addItem",
+            "payload": {
+              "sku": "cut-45",
+              "qty": 1
+            },
+            "rejected": false
+          },
+          {
+            "send": "payment.start",
+            "payload": {
+              "method": "saved"
+            },
+            "rejected": false
+          },
+          {
+            "clock": 300,
+            "rejected": false
+          },
+          {
+            "fake": "api",
+            "control": "emit",
+            "payload": {
+              "event": "payment.succeeded"
+            },
+            "rejected": false
+          }
+        ],
+        "trace": "/Users/sunkibaek/apps/ironbird/examples/checkout/.ironbird/gate/traces/seed-9/2026-10-04T06-08-56-156Z-completed-orders-have-a-non-zero-total.trace.yaml"
+      },
+      {
+        "seed": 10,
+        "found": true,
+        "runs": 46,
+        "wallMs": 12,
+        "invariant": "completed orders have a non-zero total",
+        "path": "45:2:1:6:6:5:6:5:5:5",
+        "steps": [
+          {
+            "send": "cart.addItem",
+            "payload": {
+              "sku": "cut-45",
+              "qty": 1
+            },
+            "rejected": false
+          },
+          {
+            "send": "payment.start",
+            "payload": {
+              "method": "saved"
+            },
+            "rejected": false
+          },
+          {
+            "clock": 300,
+            "rejected": false
+          },
+          {
+            "fake": "api",
+            "control": "emit",
+            "payload": {
+              "event": "payment.succeeded"
+            },
+            "rejected": false
+          }
+        ],
+        "trace": "/Users/sunkibaek/apps/ironbird/examples/checkout/.ironbird/gate/traces/seed-10/2026-10-04T06-08-56-169Z-completed-orders-have-a-non-zero-total.trace.yaml"
+      }
+    ]
+  },
+  "control": {
+    "found": 0,
+    "of": 10,
+    "wallMs": 1403,
+    "seeds": [
+      {
+        "seed": 1,
+        "found": false,
+        "runs": 1000,
+        "wallMs": 111,
+        "stepsApplied": 4411,
+        "stepsRejected": 1832
+      },
+      {
+        "seed": 2,
+        "found": false,
+        "runs": 1000,
+        "wallMs": 109,
+        "stepsApplied": 4381,
+        "stepsRejected": 1776
+      },
+      {
+        "seed": 3,
+        "found": false,
+        "runs": 1000,
+        "wallMs": 104,
+        "stepsApplied": 4329,
+        "stepsRejected": 1840
+      },
+      {
+        "seed": 4,
+        "found": false,
+        "runs": 1000,
+        "wallMs": 105,
+        "stepsApplied": 4301,
+        "stepsRejected": 1849
+      },
+      {
+        "seed": 5,
+        "found": false,
+        "runs": 1000,
+        "wallMs": 109,
+        "stepsApplied": 4219,
+        "stepsRejected": 1875
+      },
+      {
+        "seed": 6,
+        "found": false,
+        "runs": 1000,
+        "wallMs": 111,
+        "stepsApplied": 4447,
+        "stepsRejected": 1844
+      },
+      {
+        "seed": 7,
+        "found": false,
+        "runs": 1000,
+        "wallMs": 359,
+        "stepsApplied": 4592,
+        "stepsRejected": 1900
+      },
+      {
+        "seed": 8,
+        "found": false,
+        "runs": 1000,
+        "wallMs": 188,
+        "stepsApplied": 4454,
+        "stepsRejected": 1847
+      },
+      {
+        "seed": 9,
+        "found": false,
+        "runs": 1000,
+        "wallMs": 105,
+        "stepsApplied": 4285,
+        "stepsRejected": 1819
+      },
+      {
+        "seed": 10,
+        "found": false,
+        "runs": 1000,
+        "wallMs": 102,
+        "stepsApplied": 4275,
+        "stepsRejected": 1845
+      }
+    ]
+  },
+  "smoke": {
+    "seed": 1,
+    "runs": 22,
+    "steps": [
+      {
+        "send": "cart.addItem",
+        "payload": {
+          "sku": "cut-45",
+          "qty": 1
+        },
+        "rejected": false
+      },
+      {
+        "send": "payment.start",
+        "payload": {
+          "method": "saved"
+        },
+        "rejected": false
+      },
+      {
+        "clock": 300,
+        "rejected": false
+      },
+      {
+        "fake": "api",
+        "control": "emit",
+        "payload": {
+          "event": "payment.succeeded"
+        },
+        "rejected": false
+      }
+    ],
+    "wallMs": 37
+  }
+}
+```
+
+### The CI smoke
+
+`examples/checkout/test/model.smoke.test.ts` runs in `pnpm test` (the `serial` project), so in CI on Node 22 and 26:
+
+- The reliable five-step witness through `createTestTarget`: manual echo, add `cut-45`, start a saved payment, advance 300 ms, emit `payment.succeeded`. With `PLANT_RACE=1` the order is `completed` with total 0 and the invariant fails. Without it, and with `PLANT_RACE=1` set in the shell, the order is still waiting for `order.confirmed` and the invariant holds; the confirmation then completes it at 4,500.
+- A step list with a misspelled control fails with `UNKNOWN_CONTROL` before any run, so a broken configuration can never count as finding the race.
+- `modelTest` with seed 1 and `numRuns: 1000`, the planted seed with the fewest runs to failure (22): it must find the race again (`INVARIANT_FAILED` naming the race invariant), and the trace it writes must reproduce `completed` with total 0 when replayed through the CLI's scenario runner on a fresh planted target, and must not violate the invariant on a clean one. Its test took 40 ms on Node 26 and 550 ms on Node 22.
+
+The run count and the shrunk steps are deliberately not pinned, so a fast-check upgrade that changes them does not fail CI. If the seed stops finding the race, re-run `pnpm gate:m4` and re-pin the seed from the result file's `smoke` entry.
+
+### A counterexample trace
+
+The trace seed 1 wrote under `.ironbird/gate/traces/seed-1/`:
+
+```yaml
+name: "Counterexample: completed orders have a non-zero total"
+description: "modelTest seed 1, path 21:3:1:6:9:8:12:8:8:11:10:9:8. A trace: it reproduces the violating state; add expect steps to make it a regression check."
+steps:
+  - reset: true
+  - send: cart.addItem
+    payload:
+      sku: cut-45
+      qty: 1
+  - send: payment.start
+    payload:
+      method: saved
+  - clock: 300
+  - fake: api
+    control: emit
+    payload:
+      event: payment.succeeded
+```
+
+It is a trace, not a regression scenario: it has no `expect`, so `ironbird scenario run` passes it and leaves the app in the violating state. Adding `- expect: order.totalCents` with `notEquals: 0` as the last step turns it into a check that fails planted and passes clean.
+
+### Step weights
+
+Not used: the uniform configuration met the criterion.
 
 ## Mutation score
 
@@ -51,3 +753,9 @@ These can be observed, but only in another JavaScript engine or with an input no
 | tracker.ts:31:10 | ConditionalExpression | `typeof value === 'object'` → `true` in `isThenable` | It differs only when a port method returns a callable thenable: a function with a `then` method. No port does, and whether such a function should be tracked as a promise (Promises/A+ says it should) is a decision to make deliberately, not to pin by test. |
 
 `pnpm mutation` is not part of CI (D8); rerun it after changing `clock.ts` or `tracker.ts`.
+
+## Follow-ups
+
+- The shrunk counterexamples are 4 steps for nine seeds and 5 for seed 2 (its 300 ms advance shrank to two advances of 103 and 197 ms), no longer than the five-step witness. None needs `setEcho`: the fake's default is auto, which echoes 500 ms after the submission resolves, and a 300 ms advance stays before that.
+- The gate takes seconds, not the minutes the design expected, so it could run in CI; D7 keeps it out of `pnpm test` and CI anyway, with the smoke as the per-commit check. Revisit if the gate is ever wanted per commit.
+- No plan 1 bugs were found by the gate, and the smoke seed needed no re-pin.
