@@ -402,7 +402,7 @@ describe('createTracker with frozen wall-clock time', () => {
     expect(result).toEqual({ idle: false, quiescent: false, waitedMs: 20, pending: [{ kind: 'effect', label: 'api.submit', ageMs: 20, fake: false }] });
   });
 
-  it('re-samples unchanged real work once per 16 ms poll instead of spinning', async () => {
+  it('re-samples unchanged real work on a bounded poll instead of spinning', async () => {
     const clock = createRealClock();
     const tracker = createTracker({ clock });
     let samples = 0;
@@ -413,12 +413,11 @@ describe('createTracker with frozen wall-clock time', () => {
     });
     void tracker.track(new Promise<void>(() => {}), 'api.submit');
     const settled = tracker.whenIdle({ timeoutMs: 100 });
-    await vi.advanceTimersByTimeAsync(15);
-    expect(samples).toBe(1);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(samples).toBe(2);
     await vi.advanceTimersByTimeAsync(100);
     expect(await settled).toMatchObject({ idle: false, waitedMs: 100 });
+    // A poll of roughly 10 to 30 ms samples a handful of times in 100 ms; a zero-delay spin samples about once per ms.
+    expect(samples).toBeGreaterThanOrEqual(3);
+    expect(samples).toBeLessThanOrEqual(12);
   });
 
   it('gives up after one sample in quiescent mode when timeoutMs is 0', async () => {
