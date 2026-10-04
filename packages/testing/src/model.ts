@@ -34,10 +34,11 @@ const DEFAULT_ARTIFACTS = '.ironbird/model';
 
 /**
  * Codes that mean the harness broke rather than the app declining a step: a payload the schema
- * rejects (the generator promised valid ones, D5) or a target failure. They end the run whatever
+ * rejects (the generator promised valid ones, D5), a clock advance that runs away (a timing
+ * problem in the model or app, not a refusal), or a target failure. They end the run whatever
  * `onStepError` says.
  */
-const ALWAYS_FAIL: ReadonlySet<ErrorCode> = new Set(['INVALID_PAYLOAD', 'INTERNAL', 'TARGET_DISCONNECTED', 'HEADLESS_LOAD_FAILED']);
+const ALWAYS_FAIL: ReadonlySet<ErrorCode> = new Set(['INVALID_PAYLOAD', 'CLOCK_RUNAWAY', 'INTERNAL', 'TARGET_DISCONNECTED', 'HEADLESS_LOAD_FAILED']);
 
 /** Thrown inside the property when an invariant fails. fast-check hands back the one from the shrunk run as `errorInstance`. */
 class Violation extends Error {
@@ -71,14 +72,17 @@ function positiveInteger(value: unknown, key: string, fallback: number): number 
 /** Why an invariant counts as violated, or undefined when it returned `true`. */
 function verdict<S>(check: (state: S) => boolean, state: S): string | undefined {
   let result: unknown;
+  let promise: boolean;
   try {
     result = check(state);
+    // Inside the try: reading `then` runs a getter the invariant returned, which may throw too.
+    promise = typeof (result as { then?: unknown } | null | undefined)?.then === 'function';
   } catch (error) {
     return `threw: ${messageOf(error)}`;
   }
   if (result === true) return undefined;
   if (result === false) return 'returned false';
-  if (typeof (result as { then?: unknown } | null | undefined)?.then === 'function') return 'returned a promise; invariants must be synchronous';
+  if (promise) return 'returned a promise; invariants must be synchronous';
   return `returned ${result === null ? 'null' : typeof result}, not a boolean`;
 }
 
@@ -87,17 +91,18 @@ async function failureOf(details: fc.RunDetails<[Action[]]>, artifacts: string |
   const where = { seed: details.seed, path: details.counterexamplePath ?? '', runs: details.numRuns };
   if (error instanceof Violation) {
     let scenarioFile: string | null = null;
-    let unwritten = '';
+    let traceError: string | undefined;
     if (artifacts !== false) {
       try {
         scenarioFile = await writeTrace(artifacts, { invariant: error.invariant, seed: where.seed, path: where.path, steps: error.steps });
       } catch (writeError) {
-        // The violation is the news; a trace that can't be written must not hide it.
-        unwritten = `; the trace could not be written: ${messageOf(writeError)}`;
+        // The violation is the news; a trace that can't be written must not hide it. The message
+        // keeps the §6.4 form without a file, and the write failure goes in the details.
+        traceError = messageOf(writeError);
       }
     }
     const trace = scenarioFile === null ? '' : `; trace: ${scenarioFile}`;
-    return new IronbirdError('INVARIANT_FAILED', `Invariant "${error.invariant}" failed after ${error.steps.length} steps (seed ${where.seed}, path ${where.path})${trace}${unwritten}`, {
+    return new IronbirdError('INVARIANT_FAILED', `Invariant "${error.invariant}" failed after ${error.steps.length} steps (seed ${where.seed}, path ${where.path})${trace}`, {
       invariant: error.invariant,
       message: error.reason,
       seed: where.seed,
@@ -105,6 +110,7 @@ async function failureOf(details: fc.RunDetails<[Action[]]>, artifacts: string |
       runs: where.runs,
       steps: error.steps,
       scenarioFile,
+      ...(traceError === undefined ? {} : { traceError }),
     });
   }
   if (error instanceof StepFailure) {

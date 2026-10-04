@@ -1,11 +1,12 @@
 import { parseScenario, runScenario as runScenarioOnClient } from '@ironbird/cli/runner';
-import { isIronbirdError, type IronbirdError } from '@ironbird/core';
+import { createTarget, defineCommands, defineHeadless, isIronbirdError, type IronbirdError } from '@ironbird/core';
 import * as fc from 'fast-check';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { modelTest, type ModelTestOptions } from './model';
 import { runScenario } from './scenario';
 import type { ModelStep, RecordedStep } from './steps';
@@ -16,6 +17,22 @@ const CAP = 'count stays at or below the cap';
 const SILENT = 'the bell never rings';
 const STEPS: ModelStep[] = ['count.inc', 'count.fail', { fake: 'bell', control: 'strike' }, { clock: { maxMs: 250 } }];
 const INC: RecordedStep = { send: 'count.inc', payload: {}, rejected: false };
+
+// An app whose zero-delay timer reschedules itself forever, so any clock step runs away.
+const runawayApp = defineHeadless(({ clock }) => {
+  const loop = (): void => {
+    clock.setTimeout(loop, 0, 'loop');
+  };
+  loop();
+  return {
+    target: createTarget({
+      commands: defineCommands({ noop: z.object({}).describe('Do nothing') }),
+      dispatch: () => undefined,
+      getState: () => ({}),
+      subscribe: () => () => undefined,
+    }),
+  };
+});
 
 let dir: string;
 
@@ -146,6 +163,15 @@ describe('modelTest', () => {
     }, 'threw: no state'],
     ['returns undefined', () => undefined, 'returned undefined, not a boolean'],
     ['returns a promise', async () => true, 'returned a promise; invariants must be synchronous'],
+    [
+      'returns an object whose then getter throws',
+      () => ({
+        get then(): unknown {
+          throw new Error('no then');
+        },
+      }),
+      'threw: no then',
+    ],
   ])('counts an invariant that %s as violated', async (_label, check, message) => {
     const error = await failure({ headless: counterApp, steps: ['count.inc'], invariants: { odd: check as unknown as (s: CounterState) => boolean }, numRuns: 5, seed: 1, artifacts: false });
     expect(detailsOf(error)).toMatchObject({ invariant: 'odd', message, steps: [INC] });
@@ -156,9 +182,20 @@ describe('modelTest', () => {
     await writeFile(blocker, '');
     const error = await failure({ headless: counterApp, env: { BUG: '1' }, steps: ['count.inc'], invariants: { [CAP]: (s) => s.count <= 2 }, numRuns: 20, seed: 1, artifacts: path.join(blocker, 'model') });
     expect(error.code).toBe('INVARIANT_FAILED');
-    expect(detailsOf(error)['scenarioFile']).toBeNull();
-    expect(error.message).toContain('the trace could not be written');
-    expect(error.message).not.toContain('; trace:');
+    const details = detailsOf(error);
+    expect(details['scenarioFile']).toBeNull();
+    expect(details['traceError']).toEqual(expect.stringContaining('Could not write trace'));
+    expect(Object.keys(details)).toEqual(['invariant', 'message', 'seed', 'path', 'runs', 'steps', 'scenarioFile', 'traceError']);
+    expect(error.message).toBe(`Invariant "${CAP}" failed after 3 steps (seed 1, path ${String(details['path'])})`);
+  });
+
+  it('fails on CLOCK_RUNAWAY whatever onStepError says, because a runaway clock is not the app declining a step', async () => {
+    const error = await failure({ headless: runawayApp, steps: [{ clock: { maxMs: 10 } }], invariants: {}, numRuns: 10, seed: 1, artifacts: false });
+    expect(error.code).toBe('CLOCK_RUNAWAY');
+    const details = detailsOf(error);
+    expect(details).toMatchObject({ labels: ['loop'], seed: 1, runs: expect.any(Number), steps: [{ clock: expect.any(Number), rejected: true }] });
+    expect(typeof details['path']).toBe('string');
+    expect(error.message).toContain('seed 1');
   });
 
   it.each<[string, Partial<ModelTestOptions<CounterState>>, Record<string, unknown>]>([
