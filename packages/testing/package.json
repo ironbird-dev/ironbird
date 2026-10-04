@@ -26,7 +26,8 @@
   "scripts": {
     "build": "tsup && node scripts/verify-build.mjs",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run --project unit"
+    "test": "vitest run --project unit",
+    "test:jest": "jest --config jest.config.cjs"
   },
   "dependencies": {
     "@ironbird/cli": "workspace:*",
@@ -38,6 +39,7 @@
     "zod": "^4.2.0"
   },
   "devDependencies": {
+    "jest": "^30.5.2",
     "zod": "^4.2.0"
   }
 }

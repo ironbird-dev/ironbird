@@ -3,3 +3,7 @@ packages:
   - 'examples/*'
 allowBuilds:
   esbuild: true
+  # Jest 30's resolver; its postinstall only checks for, and if needed fetches, its prebuilt binary.
+  unrs-resolver: true
+  # jest-haste-map's watch mode only; the prebuilt platform binaries come from optional dependencies.
+  '@parcel/watcher': false

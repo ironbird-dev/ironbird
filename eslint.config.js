@@ -108,4 +108,10 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // The Jest smoke is CommonJS on purpose: it requires the built package the way a Jest user does.
+    files: ['packages/testing/jest/**/*.cjs', 'packages/testing/jest.config.cjs'],
+    languageOptions: { sourceType: 'commonjs', globals: { ...globals.node, ...globals.jest } },
+    rules: { '@typescript-eslint/no-require-imports': 'off' },
+  },
 );
