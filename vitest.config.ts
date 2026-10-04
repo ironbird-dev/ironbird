@@ -38,6 +38,17 @@ export default defineConfig({
         },
       },
       {
+        resolve: { alias },
+        test: {
+          name: 'gate',
+          // The M4 race gate (M4 design §1 and D7): minutes of model runs, so it runs only through
+          // `pnpm gate:m4` and is in neither `pnpm test` nor CI. Its tests pass their own timeouts.
+          include: ['examples/checkout/test/model.gate.test.ts'],
+          exclude: ['**/node_modules/**', '**/dist/**'],
+          fileParallelism: false,
+        },
+      },
+      {
         test: {
           name: 'device',
           include: ['**/*.device.test.ts'],
