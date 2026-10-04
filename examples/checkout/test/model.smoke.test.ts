@@ -1,4 +1,8 @@
+import { loadScenarioFiles, runScenario as runScenarioWithClient } from '@ironbird/cli/runner';
 import { createTestTarget, type ModelStep, type TestTarget } from '@ironbird/testing';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CheckoutState } from '../src/core/checkout';
 import headless from '../src/ironbird/headless';
@@ -36,6 +40,24 @@ async function applyWitness(target: TestTarget): Promise<CheckoutState> {
   return target.state<CheckoutState>();
 }
 
+// Measured by `pnpm gate:m4` on 2026-10-04 (docs/evals/m4-testing-package.md, "The CI
+// smoke"): the planted seed with the fewest runs to failure, found on Node 22 and 26. Only the seed
+// is pinned, with the gate's numRuns of 1,000 (raceModel); the run count and the shrunk steps are
+// deliberately not, because a fast-check upgrade may change them. If this seed stops finding the
+// race, re-run `pnpm gate:m4`, re-pin from its result file's `smoke` entry, and update the record.
+const SMOKE_SEED = 1;
+
+// Replays a trace through the CLI's scenario runner on a fresh target and returns the final state.
+// A trace has no expect steps (M4 design §6.4), so it passes; the state is what it reproduces.
+async function replay(file: string, cwd: string, plant: boolean): Promise<CheckoutState> {
+  const [trace] = await loadScenarioFiles([file], cwd);
+  if (!trace) throw new Error(`No trace at ${file}`);
+  const target = await boot(plant);
+  const result = await runScenarioWithClient(target.client, trace.scenario, { file: trace.file, artifacts: false, reset: true });
+  expect(result.passed, `trace replay failed at ${JSON.stringify(result.failedStep)}`).toBe(true);
+  return target.state<CheckoutState>();
+}
+
 describe('the race witness (deterministic)', () => {
   it('violates the invariant with PLANT_RACE=1', async () => {
     const state = await applyWitness(await boot(true));
@@ -70,4 +92,30 @@ describe('the race model configuration', () => {
       details: { fake: 'api', control: 'emitt' },
     });
   }, 60_000);
+});
+
+describe('modelTest on the measured seed (D7)', () => {
+  it('finds the planted race again with the measured seed, and its trace reproduces it', async () => {
+    const artifacts = await mkdtemp(path.join(os.tmpdir(), 'ironbird-model-smoke-'));
+    try {
+      const outcome = await runRaceModel({ seed: SMOKE_SEED, plant: true, artifacts });
+      expect(outcome).toMatchObject({ seed: SMOKE_SEED, found: true });
+      expect(outcome.runs).toBeLessThanOrEqual(1_000);
+      expect(outcome.failure).toMatchObject({ invariant: RACE_INVARIANT, seed: SMOKE_SEED });
+
+      const file = outcome.failure?.scenarioFile;
+      if (typeof file !== 'string') throw new Error('modelTest wrote no trace although artifacts was set');
+      expect(path.dirname(file)).toBe(artifacts);
+      expect(path.basename(file)).toMatch(/\.trace\.yaml$/);
+
+      const plantedState = await replay(file, artifacts, true);
+      expect(plantedState.order).toMatchObject({ status: 'completed', totalCents: 0 });
+      expect(raceInvariants[RACE_INVARIANT](plantedState)).toBe(false);
+
+      const cleanState = await replay(file, artifacts, false);
+      expect(raceInvariants[RACE_INVARIANT](cleanState)).toBe(true);
+    } finally {
+      await rm(artifacts, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
