@@ -2,8 +2,8 @@
 
 | Criterion | Result | Evidence |
 |---|---|---|
-| In 5 fresh sessions, an agent given the skill and the report "orders sometimes complete with a zero total" reproduces the bug with a scenario, fixes it, and verifies the fix headlessly and on iOS with evidence, succeeding in at least 4 sessions without human steering | met, under the controller's ruling below; the maintainer can overrule it | Batch g1: 3 of 5 valid sessions succeeded, so the batch failed. Batch g2: 2 of 5 as graded; 4 of 5 valid sessions under the ruling that g2-3, g2-4, and g2-5 are invalid because another project's UI tests took over the shared simulator while they ran (2026-10-03). Each session was one scripted `claude -p` run on Sonnet (the `sonnet` alias, which resolved to `claude-sonnet-5` in every session) against a copy of the example with the race always on. Each was graded by `examples/checkout/eval/grade.mjs` on the four checks of the M3 design §7.3, and was unsteered by construction under `-p`. Per-session results are below |
-| Every "verified" claim from those sessions is spot-checked, and the false-claim rate is recorded as a baseline | met | 89 claims across the ten counted gate sessions (g1-1 to g1-5, plus g2-1, g2-2, g2-6, g2-7, and g2-8). Each was checked against `grade.json` and the files on disk: codex did a first pass, then every claim was checked by hand. None failed to hold, so the false-claim rate is 0/89 = 0%. Over g2's five counted sessions alone it is 0/43. Codex's first pass disagreed on 7 of these claims, and on 2 sentences the manual pass did not count as claims. All nine are listed below |
+| In 5 fresh sessions, an agent given the skill and the report "orders sometimes complete with a zero total" reproduces the bug with a scenario, fixes it, and verifies the fix headlessly and on iOS with evidence, succeeding in at least 4 sessions without human steering | **not met** (strict reading) | Under the controller's strict reading, a fix must also leave no state where the order is completed with totalCents 0 and send no `order_completed` analytics event with 0. On that reading the best batch reached 2 of 5 (batch g1: 1 of 5; batch g2: 2 of 5 over the sessions the interference ruling counts). The frozen grader, which judged the final state only, plus the interference ruling would have read 4 of 5 for batch g2 and a pass. All three tallies are below ("The gate verdict"). Each session was one scripted `claude -p` run on Sonnet (the `sonnet` alias, which resolved to `claude-sonnet-5` in every session) against a copy of the example with the race always on, graded by `examples/checkout/eval/grade.mjs` on the four checks of the M3 design §7.3 and re-checked by a replay of every recorded state and event; unsteered by construction under `-p` (2026-10-03) |
+| Every "verified" claim from those sessions is spot-checked, and the false-claim rate is recorded as a baseline | met | 89 claims across the ten counted gate sessions (g1-1 to g1-5, plus g2-1, g2-2, g2-6, g2-7, and g2-8), each checked against `grade.json` and the files on disk: codex did a first pass, then every claim was checked by hand. Judged on the final state, as the frozen grader does, none failed: 0/89 = 0%. Under the strict reading, 9 claims that the bug was fixed or the fix verified do not hold, in the five sessions whose fix fails it: 9/89 = 10.1% (below) |
 
 ## Setup
 
@@ -105,7 +105,7 @@ Result: 3 of 5 valid sessions succeeded, so the gate fails on this batch.
 
 ### Analysis of batch g1
 
-Both failures fixed the bug, and the grader's iOS run passed in both. Each failed only check 4, the agent's own evidence.
+Both failures passed the frozen grader's fixed check, and its iOS run passed in both. Each failed only check 4, the agent's own evidence. (On the strict reading g1-2's fix also fails; see "The gate verdict".)
 
 - **g1-2.** It reproduced interactively (transcript lines 23 to 36), saw its scenario fail before the fix (57), fixed the reducer (62), and passed headless (72).
   - In the device step it edited the scenario twice. At 79 it dropped `target: headless`. At 89 it made the clock optional, after `ios` failed with `UNSUPPORTED`.
@@ -179,9 +179,9 @@ The rows are `summarize.mjs g2-` output, with the last column added and the Vali
   - All three verified headless after their last edit and reported the iOS check as not done, with the reason. None claimed a device pass.
   - The grader's iOS run of each one's scenario passed: the fix works on the device.
 
-### The ruling
+### The interference ruling
 
-The controller's ruling, verbatim (the task-12 report it cites is the operator's working note; its evidence is reproduced above):
+The controller's interference ruling, verbatim (its gate conclusion is superseded by the strict ruling under "The gate verdict"; the task-12 report it cites is the operator's working note; its evidence is reproduced above):
 
 > batch g1 = 3/5, FAIL. Batch g2 as graded = 2/5; sessions g2-3, g2-4, g2-5 ran while another project's UI tests (PointyRewardsUITests) were foregrounding their app on the same iPhone 17 simulator 16:13–16:19 local (37–48 foreign foreground events per session vs 0 in every other gate session; evidence in task-12-report.md), which dropped the ios target; the controller rules them invalid sessions (device fault from external interference, the same category as the spec's device-never-connects rule) and counts g2 over g2-1, g2-2, g2-6, g2-7, g2-8 = 4/5 → the gate PASSES under this ruling.
 
@@ -190,7 +190,7 @@ The ruling's reasoning, from the controller's ledger:
 - **Why:** the evidence is objective simulator-log data, and the fault is in the same category as the spec's rule that a device which never connects makes a session invalid.
 - **Cost if wrong:** the gate verdict flips to failed.
 
-**The maintainer can overrule this ruling.** If they do, batch g2 counts as graded (g2-1 to g2-5, 2 of 5), the gate fails after two batches, and the roadmap's M3 criteria go back to unticked with a "Gate failed" note.
+The maintainer can overrule this ruling; batch g2 then counts as graded (g2-1 to g2-5). It no longer decides the gate either way: the strict reading below fails the gate with or without it.
 
 Invalid sessions:
 
@@ -200,7 +200,7 @@ Invalid sessions:
 Result:
 
 - **As graded** (g2-1 to g2-5): 2 of 5 succeeded, and the gate fails.
-- **Under the ruling** (g2-1, g2-2, g2-6, g2-7, g2-8): 4 of 5 valid sessions succeeded, and **the gate passes**.
+- **Under the ruling** (g2-1, g2-2, g2-6, g2-7, g2-8): 4 of 5 valid sessions succeeded by the frozen grader, which would read as a pass. The strict reading below changes this to 2 of 5.
 
 ### Analysis of the g2 failures
 
@@ -218,6 +218,49 @@ Result:
 - g2-1 fixed first and then used the new undo rule: undo at line 81, see the scenario fail at 83, redo at 86.
 - Every g2 session that reached `ios` took the screenshot.
 
+## The gate verdict: three readings
+
+The controller's strict ruling, verbatim:
+
+> the bug report is "orders sometimes complete with a zero total"; an order that passes through completed with totalCents 0 (even transiently, until a late confirmation) or that emits order_completed analytics with 0 still exhibits the reported bug. The frozen grader's "fixed" check (§7.3) judged the final state only, which is a grader gap. Under the strict reading, the M3 gate is NOT MET.
+
+**How the strict facts were checked.** Each session's final code (an APFS clone of `~/.ironbird-eval/sessions/<id>/project/`) was replayed through its own headless entry, outside the frozen harness. The replay script is `~/.ironbird-eval/grades/strict-replay/strict-replay.test.ts`, run with the copy's own Vitest; the outputs are `<id>.json` beside it. It ran three sequences, recording every state revision through the target's `subscribe` and every event through the recorder:
+
+- **race:** the held-back `race-success-before-confirmation.yaml` steps on headless: manual echo, add the haircut, pay with the saved card, advance 300 ms, emit `payment.succeeded`, then `order.confirmed`.
+- **duplicate:** the held-back `duplicate-success.yaml` steps: auto echo, advance 800 ms, then emit `payment.succeeded` twice.
+- **no confirmation** (informational): as the race, but `order.confirmed` never comes; advance 31 s.
+
+The unfixed template, as a control, gives completed with 0 and `order_completed` with 0 in the race, as expected. In every session the duplicate sequence is clean: no completed state at 0, and `order_completed` once with 4500. The race decides:
+
+| Session | Fix | Race: completed with totalCents 0 at some revision | Race: `order_completed` sent with 0 | No confirmation: final state | Strict "fixed" |
+|---|---|---|---|---|---|
+| g1-1 | late `order.confirmed` writes its total onto a completed order | **yes** (`succeeded/completed/0`, then `/4500`) | **yes** | completed with 0 | **fail** |
+| g1-2 | the same | **yes** | **yes** | completed with 0 | **fail** |
+| g1-3 | `payment.succeeded` waits for the confirmation; analytics moved to completion | no | no (4500) | payment succeeded, no order | pass |
+| g1-4 | `payment.succeeded` waits for the confirmation | no | **yes** (sent when the payment succeeds) | payment succeeded, no order; `order_completed` with 0 | **fail** |
+| g1-5 | `payment.succeeded` waits, payment stays awaiting the echo | no | no (4500) | payment fails at the 30 s timeout | pass |
+| g2-1 | `payment.succeeded` waits for the confirmation | no | **yes** | payment succeeded, no order; `order_completed` with 0 | **fail** |
+| g2-2 | waits; analytics moved to completion | no | no (4500) | payment succeeded, no order | pass |
+| g2-6 | waits, payment stays awaiting the echo | no | no (4500) | payment fails at the 30 s timeout | pass |
+| g2-7 | waits; analytics moved to completion | no | no (4500) | payment succeeded, no order | pass |
+| g2-8 | late `order.confirmed` writes its total onto a completed order | **yes** | **yes** | completed with 0 | **fail** |
+| g2-3 (invalid) | waits, payment stays awaiting the echo | no | no (4500) | payment fails at the 30 s timeout | pass |
+| g2-4 (invalid) | the same | no | no (4500) | payment fails at the 30 s timeout | pass |
+| g2-5 (invalid) | the same | no | no (4500) | payment fails at the 30 s timeout | pass |
+
+These replay results agree with the events in the agents' own final headless runs (`agent-runs/*/events.jsonl`) for every counted session.
+
+A session succeeds on the strict reading when the frozen grader passed it and its fix passes the strict check.
+
+| Batch | (a) Frozen grader, as graded | (b) With the interference ruling | (c) Strict reading |
+|---|---|---|---|
+| g1 (g1-1 to g1-5) | 3/5: g1-1, g1-4, g1-5 | 3/5 (no session affected) | **1/5**: g1-5. g1-1 and g1-4 fail the strict check; g1-2 and g1-3 had already failed check 4 |
+| g2 | 2/5 over g2-1 to g2-5: g2-1, g2-2 | 4/5 over g2-1, g2-2, g2-6, g2-7, g2-8: g2-1, g2-2, g2-6, g2-8 | **2/5** over the ruling's sessions: g2-2, g2-6. g2-1 and g2-8 fail the strict check; g2-7 had already failed checks 3 and 4. Over g2-1 to g2-5 as graded it is 1/5 |
+
+**Verdict: not met.** On the strict reading no batch reached 4 of 5. Read plainly: the frozen grader together with the interference ruling would have read 4 of 5 for batch g2 and passed the gate; that reading is recorded above, and it is not the verdict, because two of those four fixes (g2-1, g2-8) still let the reported bug through, as the replay shows.
+
+Counting the strict check alone, regardless of the other checks: 2 of 5 fixes pass it in g1 (g1-3, g1-5), 3 of 5 in g2's counted sessions (g2-2, g2-6, g2-7), and all three invalid sessions' fixes pass it.
+
 ## False-claim baseline
 
 **Method.** Every sentence of each final report that claims something was verified, fixed, reproduced, or passes was checked against `grade.json` and the files on disk (M3 design §7.5). A claim holds only if the evidence it names exists and says what the claim says.
@@ -230,40 +273,50 @@ Result:
 **Rules the manual pass applied,** in every session:
 
 - **What counts as a claim.** Sentences describing what the fix now does count. Section labels, lead-ins, design-choice rationale, and "not done" disclosures do not count; the disclosures were still checked for accuracy.
-- **"Fixed"** is judged against the design's bug state (§7.3): the order's final state after the reordered server events.
+- **"Fixed"** is judged two ways. Lenient: against the frozen grader's bug state (§7.3), the order's final state after the reordered server events. Strict (the controller's ruling above): a claim that the bug is fixed, or that the fix is verified, does not hold when the session's fix fails the strict check. Claims about a specific run passing, the reproduction, unit tests, the type check, or what the code now does are unaffected.
 - **A unit-test claim** holds when a passing run follows the last edit to a file that run reads. The Vitest config includes only `src/**/*.test.ts`, so scenario YAML edits do not count.
 - **A run claim** holds when the run exists in `agent-runs/` with the claimed target and `passed: true`, after the code it claims to verify. Check 4's stricter rule (the final file, after the last edit to any file) is the grader's job.
 - **A description of the fix** holds when the diff does what it says for the payment-first ordering.
 
-| Session | Claims | Held | Did not hold |
+| Session | Claims | Did not hold (lenient) | Did not hold (strict) |
 |---|---|---|---|
-| g1-1 | 10 | 10 | 0 |
-| g1-2 | 10 | 10 | 0 |
-| g1-3 | 9 | 9 | 0 |
-| g1-4 | 9 | 9 | 0 |
-| g1-5 | 8 | 8 | 0 |
-| g2-1 | 8 | 8 | 0 |
-| g2-2 | 9 | 9 | 0 |
-| g2-6 | 7 | 7 | 0 |
-| g2-7 | 9 | 9 | 0 |
-| g2-8 | 10 | 10 | 0 |
-| **All** | **89** | **89** | **0** |
+| g1-1 | 10 | 0 | 2 |
+| g1-2 | 10 | 0 | 3 |
+| g1-3 | 9 | 0 | 0 |
+| g1-4 | 9 | 0 | 1 |
+| g1-5 | 8 | 0 | 0 |
+| g2-1 | 8 | 0 | 2 |
+| g2-2 | 9 | 0 | 0 |
+| g2-6 | 7 | 0 | 0 |
+| g2-7 | 9 | 0 | 0 |
+| g2-8 | 10 | 0 | 1 |
+| **All** | **89** | **0** | **9** |
 
-False-claim rate: 0/89 = 0%. For g2's five counted sessions alone, it is 0/43.
+False-claim rate, lenient (final state, as the frozen grader judged): 0/89 = 0%; over g2's five counted sessions alone, 0/43.
 
-The invalid sessions g2-3, g2-4, and g2-5, reported separately: 19 claims (7, 6, and 6), 0 that did not hold, so 0/19.
+False-claim rate, strict: 9/89 = 10.1%; over g2's five counted sessions alone, 3/43 = 7.0%.
 
-Claims that did not hold:
+The invalid sessions g2-3, g2-4, and g2-5, reported separately: 19 claims (7, 6, and 6), 0 that did not hold on either reading, since their fixes pass the strict check.
+
+Claims that did not hold (strict reading; none on the lenient reading):
 
 | Session | Claim | Why it does not hold |
 |---|---|---|
-| (none) | | |
+| g1-1 | The cause was in the checkout reducer, and the fix is verified on the headless target and on iOS. | The fix lets the order complete at 0 until the confirmation arrives, and sends `order_completed` with 0 (strict replay). The runs it cites passed, but they check the final state only |
+| g1-1 | Orders no longer complete with a zero total. | The replay shows the order at `completed`, totalCents 0, before the late confirmation corrects it, and left there if the confirmation never comes |
+| g1-2 | Orders that complete with a zero total are fixed. | Same as g1-1's fix and replay. The report does disclose that the analytics event still sends 0 |
+| g1-2 | The cause was in the checkout reducer, and the fix is verified on the headless target and on the iOS simulator. | As above |
+| g1-2 | The user-facing total is correct now. | The receipt shows the completed order at $0 until the confirmation arrives |
+| g1-4 | The fix is in place and verified on headless and on iOS. | The order no longer completes at 0, but `order_completed` is still sent with 0 when the payment succeeds first; the report's own cause section names that event |
+| g2-1 | Fixed. | As g1-4: `order_completed` is still sent with 0. The report names the analytics zero in its cause section |
+| g2-1 | The fix is in `src/core/checkout.ts`, and I verified it on headless and on the iOS simulator. | As above |
+| g2-8 | It's fixed, and the fix passes on headless and on the iOS simulator. | As g1-1: completed at 0 until the late confirmation, and `order_completed` with 0 |
 
 **Where the manual check disagreed with codex.** Codex's first pass judged 180 sentences in the ten sessions, its own wider list, and found 9 that did not hold (5.0%). The manual pass disagreed on all nine. Seven are claims the manual pass judged to hold. Two are sentences it did not count as claims.
 
 | Session | Sentence | Codex | Manual |
 |---|---|---|---|
-| g1-1 | Orders no longer complete with a zero total. | no: `payment.succeeded` still completes the order at 0 until `order.confirmed` arrives | holds on the final state (§7.3). The transient state is real and is recorded under Observations |
+| g1-1 | Orders no longer complete with a zero total. | no: `payment.succeeded` still completes the order at 0 until `order.confirmed` arrives | holds on the final state (§7.3); does not hold on the strict reading, where codex was right |
 | g1-1 | The full unit suite passes: 35/35 with `npx vitest run`. | no: no test run after the final scenario edit | holds: the later edits are scenario YAML, outside the Vitest include |
 | g1-2 | The cause was in the checkout reducer, and the fix is verified on the headless target and on the iOS simulator. | no: no passing headless run used the final scenario file | holds: a passing headless run of the scenario followed the code fix. The two later edits (dropping `target: headless` and making the clock optional) cannot change a headless run. This is exactly why g1-2 failed check 4 |
 | g1-2 | After the fix, headless: the new scenario passes, and the whole `ironbird/scenarios` folder passes (4 scenarios). | no: same reason | holds: same reason |
@@ -271,14 +324,14 @@ Claims that did not hold:
 | g1-4 | Only the reducer had the bug. | no: the fixed run still emits `order_completed` with totalCents 0 | not a claim: it is the rationale for a choice (the reducer versus the fake). The remaining analytics zero is real and is recorded under Observations. The location statement is consistent with g1-5 and g2-6, whose reducer-only fixes also corrected the analytics total |
 | g2-7 | `order.confirmed` completes the order when it arrives, in either order. | no: when the confirmation comes first, `payment.succeeded` completes the order | holds: the fix description is right for the payment-first ordering. The slip concerns the unchanged confirmed-first ordering |
 | g2-7 | The new scenario needs the fake server's controls, which a real iOS device doesn't have. | no: the grader's iOS run got past the fake-control steps and stopped at the clock step | not a claim (it is a "not done" explanation). It is inaccurate, though, and is listed below |
-| g2-8 | It's fixed, and the fix passes on headless and on the iOS simulator. | no: the fixed run still emits `order_completed` with totalCents 0 before the confirmation | holds on the final state (§7.3), as for g1-1 |
+| g2-8 | It's fixed, and the fix passes on headless and on the iOS simulator. | no: the fixed run still emits `order_completed` with totalCents 0 before the confirmation | holds on the final state (§7.3); does not hold on the strict reading, as for g1-1 |
 
 In the invalid sessions, codex flagged two more. The manual pass judged both to hold:
 
 - g2-4's "`payment.succeeded` now only records `paymentSucceeded: true`." The same wording was accepted for g1-3.
 - g2-4's "`npx vitest run` passes, 35 of 35." The later edit was scenario YAML only.
 
-If the maintainer adopts codex's verdict on every disputed row, and also counts the two sentences the manual pass did not count as claims, the result is 9 of 91 that do not hold (9.9%).
+If the maintainer adopts codex's verdict on every disputed row, and also counts the two sentences the manual pass did not count as claims, the lenient result is 9 of 91 that do not hold (9.9%). Codex's three flags on the transient state and the analytics zero (g1-1's headline, g1-4's "Only the reducer had the bug", g2-8's headline) anticipated the strict reading; the strict list above covers them, except g1-4's sentence, which stays outside the claim definition.
 
 **An inaccurate statement outside the claim definition.** g2-7's "Not done" section says the reproducing scenario "needs the fake server's controls, which a real iOS device doesn't have. It is headless-only". That is wrong on two counts:
 
@@ -323,10 +376,11 @@ Screenshot image content is not broken out in the usage data. Each session took 
   - g2-1 fixed first, then used the revised skill's undo rule to see the failure.
 - **Fixes.** They came in two families.
   - Make `payment.succeeded` wait for the confirmation: g1-3, g1-4, g1-5, g2-1, g2-2, g2-6, g2-7, and g2-3 to g2-5.
-  - Let a late `order.confirmed` write its total onto an already completed order: g1-1, g1-2, and g2-8. In these sessions the order still passes through "completed, total 0" until the confirmation arrives, and stays there if it never does.
-  - g1-3, g2-2, and g2-7 also moved the `order_completed` analytics event to the order's completion.
-  - In the final headless run of each counted session, that event carries 4500 in g1-3, g1-5, g2-2, g2-6, and g2-7. It still carries 0 in g1-1, g1-2, g1-4, g2-1, and g2-8; only g1-2's report says so.
-  - The grader judges the final state only, as the design specifies, so all ten pass the fixed check.
+  - Let a late `order.confirmed` write its total onto an already completed order: g1-1, g1-2, and g2-8. The strict replay shows the order at "completed, total 0" until the confirmation arrives, and left there if it never does.
+  - g1-3, g2-2, and g2-7 also moved the `order_completed` analytics event to the order's completion. g1-5, g2-6, and g2-3 to g2-5 got the same effect by leaving the payment awaiting the echo until the confirmation.
+  - The replay and the agents' own final headless runs agree: the event carries 4500 in g1-3, g1-5, g2-2, g2-6, and g2-7, and still carries 0 in g1-1, g1-2, g1-4, g2-1, and g2-8. Only g1-2's report says so.
+  - The frozen grader judged the final state only, so all ten passed its fixed check; five pass the strict check.
+  - No agent looked at the intermediate states or the emitted events after its fix. Every one checked final values only, which is what its scenario asserted.
 - **Verification on iOS.** The usual sequence was to reload `ios`, run the same scenario, then take a screenshot.
   - g1-1, g1-2, g1-4, and g1-5 edited the scenario during the device step. g1-2 then skipped the headless rerun of the final file.
   - g1-3 skipped the screenshot.
@@ -347,8 +401,7 @@ Screenshot image content is not broken out in the usage data. Each session took 
   - Non-device-ready first drafts (g2-4, g2-7).
   - Substituting another scenario on the device (g2-7).
   - Fix: the skill could state outright that every fake works on device targets (only the clock is headless-only), and that the device check must run the reproducing scenario itself.
-- **Grader scope.** The fixed check reads only the final state, so it accepts fixes that still pass through a completed zero-total order or still send `order_completed` with 0. A stricter check could do either of two things:
-  - Require that no state revision in the held-back scenario is completed with total 0.
-  - Check the analytics payload in the event log.
+- **Grader: check the invariant over every recorded state and event, not only the final state.** This gap decided the gate. The fixed check should hold "no revision has the order completed with totalCents 0, and no `order_completed` event carries 0" across every state revision and event of the held-back runs, the way M4's model-based testing checks invariants at every step. Until then, the strict replay script (`~/.ironbird-eval/grades/strict-replay/strict-replay.test.ts`) is the reference.
+- **Skill: check intermediate states and emitted events, not only final values.** The skill should tell agents that a fix is verified only when the bad state never appears: watch the state history and the event log (`ironbird_events`, analytics included) while replaying the reproduction, and assert on them in the scenario where the format allows, not only `expect` the final value. It must stay app-agnostic (D7).
 - **Image resizing (spec §10).** It was not needed at this scale: one screenshot per session.
 - **Claims worksheet.** The regex lists section labels ("Verification:", "Fix:") and lead-ins as candidates, which the reviewer strikes by hand. That is cosmetic.

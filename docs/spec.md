@@ -139,8 +139,8 @@ On 2026-09-10 Shopify described its answer for native apps: business logic decou
 
 | ID | Requirement | Acceptance summary |
 |---|---|---|
-| R13 | MCP server (`ironbird mcp`) | Tools mirror the CLI; `ironbird_step` returns the screenshot as image content. Delivered in M3; see docs/evals/m3-agent-interface.md |
-| R14 | Agent skill | A skill file that teaches the loop: describe, send, wait, then escalate to device checks. Delivered in M3; see docs/evals/m3-agent-interface.md |
+| R13 | MCP server (`ironbird mcp`) | Tools mirror the CLI; `ironbird_step` returns the screenshot as image content. Delivered in M3 as software: `ironbird mcp` (docs/cli.md, docs/agents.md) |
+| R14 | Agent skill | A skill file that teaches the loop: describe, send, wait, then escalate to device checks. Delivered in M3 as software: `packages/cli/skills/ironbird/`, installed by `ironbird agent setup` (docs/agents.md) |
 | R15 | Snapshots | `snapshot save` and `load` for targets that implement `persist` and `restore`; others return `UNSUPPORTED` |
 | R16 | Fake call log | `ironbird fake <name> --calls` lists recorded port calls with arguments and outcomes. Delivered in M2 with the D13 cursor shape; see docs/evals/m2-fakes-and-scenarios.md |
 | R17 | `watch` | Streams state revisions and JSON Patch diffs until interrupted. Moved from M3 to M5 (M3 design D3) |
