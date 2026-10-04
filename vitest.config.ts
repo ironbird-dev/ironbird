@@ -30,7 +30,9 @@ export default defineConfig({
           // cli.integration.test.ts and cli/commands/serve.test.ts both drive real daemons
           // against the shared examples/checkout/.ironbird/daemon.json; running test files
           // in parallel lets one suite's daemon.json writes/removals race the other's.
-          include: ['packages/cli/test/**/*.test.ts', 'packages/cli/src/cli/commands/serve.test.ts'],
+          // model.smoke.test.ts is the M4 race smoke (M4 design D7): in process, no daemon, and
+          // here so CI runs it one file at a time rather than beside the CPU-bound unit files.
+          include: ['packages/cli/test/**/*.test.ts', 'packages/cli/src/cli/commands/serve.test.ts', 'examples/checkout/test/model.smoke.test.ts'],
           exclude: ['**/*.device.test.ts', '**/node_modules/**', '**/dist/**'],
           fileParallelism: false,
         },

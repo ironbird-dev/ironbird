@@ -221,6 +221,9 @@ importers:
       '@ironbird/cli':
         specifier: workspace:*
         version: link:../../packages/cli
+      '@ironbird/testing':
+        specifier: workspace:*
+        version: link:../../packages/testing
       '@types/pngjs':
         specifier: ^6.0.5
         version: 6.0.5
