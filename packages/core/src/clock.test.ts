@@ -1,5 +1,5 @@
 import fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isIronbirdError } from './errors';
 import { MAX_FIRINGS_PER_ADVANCE, createManualClock, createRealClock } from './clock';
 
@@ -133,6 +133,75 @@ describe('createManualClock', () => {
       }),
     );
   });
+
+  it('lists timers by due time with ties by id, omitting label and repeatMs when absent', () => {
+    const clock = createManualClock({ now: 100 });
+    clock.setTimeout(() => {}, 50, 'late');
+    clock.setTimeout(() => {}, 10);
+    clock.setInterval(() => {}, 10, 'tick');
+    expect(clock.timers()).toStrictEqual([
+      { id: 2, dueAt: 110, scheduledAt: 100 },
+      { id: 3, dueAt: 110, scheduledAt: 100, label: 'tick', repeatMs: 10 },
+      { id: 1, dueAt: 150, scheduledAt: 100, label: 'late' },
+    ]);
+  });
+
+  it('repeats an interval every ms milliseconds, and a zero-ms interval every millisecond', async () => {
+    const clock = createManualClock();
+    const ten: number[] = [];
+    const tenId = clock.setInterval(() => ten.push(clock.now()), 10, 'ten');
+    await clock.advance(35);
+    clock.clearInterval(tenId);
+    expect(ten).toEqual([10, 20, 30]);
+    const zero: number[] = [];
+    clock.setInterval(() => zero.push(clock.now()), 0, 'zero');
+    await clock.advance(3);
+    expect(zero).toEqual([35, 36, 37, 38]);
+  });
+
+  it('re-arms an interval behind a timer already due at the same time, and reports when it was re-armed', async () => {
+    const clock = createManualClock();
+    const fired: string[] = [];
+    const id = clock.setInterval(() => fired.push(`i@${clock.now()}`), 10, 'i');
+    clock.setTimeout(() => fired.push(`t@${clock.now()}`), 20, 't');
+    await clock.advance(20);
+    // At 10 the interval re-arms for 20, after `t` was scheduled for 20, so `t` fires first.
+    expect(fired).toEqual(['i@10', 't@20', 'i@20']);
+    expect(clock.timers()).toStrictEqual([{ id, dueAt: 30, scheduledAt: 20, label: 'i', repeatMs: 10 }]);
+  });
+
+  it('allows exactly MAX_FIRINGS_PER_ADVANCE firings in one advance', async () => {
+    const clock = createManualClock();
+    let count = 0;
+    clock.setInterval(() => {
+      count += 1;
+    }, 1, 'tick');
+    await clock.advance(MAX_FIRINGS_PER_ADVANCE);
+    expect(count).toBe(MAX_FIRINGS_PER_ADVANCE);
+  });
+
+  it('names the five busiest labels in CLOCK_RUNAWAY, busiest first, with unlabeled timers by id', async () => {
+    const clock = createManualClock();
+    for (const label of ['a', 'b', 'c', 'd', 'e', 'f']) clock.setTimeout(() => {}, 0, label);
+    const runaway = clock.setInterval(() => {}, 0);
+    const error = await clock.advance(20_000).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(isIronbirdError(error) && error.code).toBe('CLOCK_RUNAWAY');
+    expect(isIronbirdError(error) && error.message).toMatch(/fired more than 10000 timers/);
+    expect(isIronbirdError(error) && error.details).toEqual({ labels: [`timer#${runaway}`, 'a', 'b', 'c', 'd'], firings: MAX_FIRINGS_PER_ADVANCE });
+  });
+
+  it('fires a re-armed interval before a later-due timer that was scheduled before the re-arm', async () => {
+    const clock = createManualClock();
+    const fired: string[] = [];
+    clock.setInterval(() => fired.push(`i@${clock.now()}`), 10, 'i');
+    clock.setTimeout(() => fired.push(`t@${clock.now()}`), 50, 't');
+    await clock.advance(50);
+    // After each re-arm the interval's scheduling order is newer than `t`'s, but only its due time decides until 50.
+    expect(fired).toEqual(['i@10', 'i@20', 'i@30', 'i@40', 't@50', 'i@50']);
+  });
 });
 
 describe('createRealClock', () => {
@@ -159,5 +228,76 @@ describe('createRealClock', () => {
     clock.clearTimeout(a);
     clock.clearInterval(b);
     expect(clock.timers()).toEqual([]);
+  });
+});
+
+describe('createRealClock with fake timers', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    vi.setSystemTime(10_000);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('lists real timers by due time with ties by id, and reads now from Date', () => {
+    const clock = createRealClock();
+    expect(clock.now()).toBe(10_000);
+    clock.setTimeout(() => {}, 50, 'late');
+    clock.setTimeout(() => {}, 10);
+    clock.setInterval(() => {}, 10, 'tick');
+    expect(clock.timers()).toStrictEqual([
+      { id: 2, dueAt: 10_010, scheduledAt: 10_000 },
+      { id: 3, dueAt: 10_010, scheduledAt: 10_000, label: 'tick', repeatMs: 10 },
+      { id: 1, dueAt: 10_050, scheduledAt: 10_000, label: 'late' },
+    ]);
+  });
+
+  it('gives a real timeout scheduled after an interval the next id', () => {
+    const clock = createRealClock();
+    const interval = clock.setInterval(() => {}, 10, 'tick');
+    const timeout = clock.setTimeout(() => {}, 20, 'after');
+    expect([interval, timeout]).toEqual([1, 2]);
+    expect(clock.timers().map((timer) => timer.id)).toEqual([1, 2]);
+    clock.clearInterval(interval);
+    clock.clearTimeout(timeout);
+  });
+
+  it('runs a real timeout once at its due time and drops it', () => {
+    const clock = createRealClock();
+    const fired: number[] = [];
+    clock.setTimeout(() => fired.push(clock.now()), 100, 'once');
+    vi.advanceTimersByTime(500);
+    expect(fired).toEqual([10_100]);
+    expect(clock.timers()).toEqual([]);
+  });
+
+  it('re-arms a real interval and reports its new due time', () => {
+    const clock = createRealClock();
+    let count = 0;
+    const id = clock.setInterval(() => {
+      count += 1;
+    }, 100, 'poll');
+    vi.advanceTimersByTime(250);
+    expect(count).toBe(2);
+    expect(clock.timers()).toStrictEqual([{ id, dueAt: 10_300, scheduledAt: 10_200, label: 'poll', repeatMs: 100 }]);
+    clock.clearInterval(id);
+  });
+
+  it('never runs a cleared real timeout or interval, and ignores unknown ids', () => {
+    const clock = createRealClock();
+    const fired: string[] = [];
+    const timeout = clock.setTimeout(() => fired.push('timeout'), 100);
+    const interval = clock.setInterval(() => fired.push('interval'), 100);
+    clock.clearTimeout(timeout);
+    clock.clearInterval(interval);
+    expect(() => {
+      clock.clearTimeout(timeout);
+      clock.clearInterval(interval);
+      clock.clearTimeout(999);
+      clock.clearInterval(999);
+    }).not.toThrow();
+    vi.advanceTimersByTime(500);
+    expect(fired).toEqual([]);
   });
 });
