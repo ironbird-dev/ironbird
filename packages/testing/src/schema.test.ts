@@ -1,7 +1,7 @@
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { arbitraryFromSchema } from './schema';
+import { arbitraryFromSchema, matchesSchema } from './schema';
 
 /** The payload schema `describe()` reports: core's registry calls toJSONSchema this way and drops `$schema`. */
 function described(schema: z.ZodType): Record<string, unknown> {
@@ -106,5 +106,52 @@ describe('arbitraryFromSchema', () => {
     expect(thrownBy(() => arbitraryFromSchema({ type: 'number', minimum: 5, maximum: 1 }))).toMatchObject({ code: 'INVALID_PAYLOAD' });
     expect(thrownBy(() => arbitraryFromSchema({ type: 'string', minLength: 3, maxLength: 1 }))).toMatchObject({ code: 'INVALID_PAYLOAD' });
     expect(thrownBy(() => arbitraryFromSchema({ type: 'array', items: { type: 'null' }, minItems: 2, maxItems: 1 }))).toMatchObject({ code: 'INVALID_PAYLOAD' });
+  });
+
+  it('generates oneOf values that match exactly one branch: an overlapping integer/number oneOf yields only non-integers', () => {
+    const schema = { oneOf: [{ type: 'integer' }, { type: 'number' }] };
+    const values = fc.sample(arbitraryFromSchema(schema), { seed: 3, numRuns: 300 });
+    expect(values.every((value) => typeof value === 'number' && !Number.isInteger(value))).toBe(true);
+    expect(values.every((value) => matchesSchema(schema, value))).toBe(true);
+  });
+
+  it('refuses a oneOf whose branches always overlap', () => {
+    expect(thrownBy(() => arbitraryFromSchema({ oneOf: [{ type: 'string' }, { type: 'string' }] }, { name: 'a.b' }))).toMatchObject({
+      code: 'INVALID_PAYLOAD',
+      details: { name: 'a.b', issues: [{ path: ['oneOf'], message: expect.stringContaining('pass a payload override') }] },
+    });
+  });
+});
+
+describe('matchesSchema', () => {
+  it('checks const, enum, and type', () => {
+    expect(matchesSchema({ const: { a: [1] } }, { a: [1] })).toBe(true);
+    expect(matchesSchema({ const: 1 }, 2)).toBe(false);
+    expect(matchesSchema({ enum: ['a', 'b'] }, 'b')).toBe(true);
+    expect(matchesSchema({ enum: ['a', 'b'] }, 'c')).toBe(false);
+    expect(matchesSchema({ type: ['string', 'null'] }, null)).toBe(true);
+    expect(matchesSchema({ type: ['string', 'null'] }, 1)).toBe(false);
+  });
+
+  it('checks numeric, string, and array bounds', () => {
+    expect(matchesSchema({ type: 'integer', minimum: 1, exclusiveMaximum: 3 }, 2)).toBe(true);
+    expect(matchesSchema({ type: 'integer', minimum: 1, exclusiveMaximum: 3 }, 3)).toBe(false);
+    expect(matchesSchema({ type: 'integer' }, 1.5)).toBe(false);
+    expect(matchesSchema({ type: 'number', exclusiveMinimum: 0 }, 0)).toBe(false);
+    expect(matchesSchema({ type: 'string', minLength: 2, maxLength: 3 }, 'abcd')).toBe(false);
+    expect(matchesSchema({ type: 'array', items: { type: 'null' }, maxItems: 1 }, [null, null])).toBe(false);
+    expect(matchesSchema({ type: 'array', items: { type: 'null' } }, [null, 1])).toBe(false);
+  });
+
+  it('checks objects, anyOf, and oneOf', () => {
+    const object = { type: 'object', properties: { a: { type: 'string' }, b: { type: 'number' } }, required: ['a'], additionalProperties: false };
+    expect(matchesSchema(object, { a: 'x' })).toBe(true);
+    expect(matchesSchema(object, { b: 1 })).toBe(false);
+    expect(matchesSchema(object, { a: 'x', c: 1 })).toBe(false);
+    expect(matchesSchema(object, { a: 1 })).toBe(false);
+    expect(matchesSchema(object, [])).toBe(false);
+    expect(matchesSchema({ anyOf: [{ type: 'string' }, { type: 'number' }] }, 1)).toBe(true);
+    expect(matchesSchema({ oneOf: [{ type: 'integer' }, { type: 'number' }] }, 1)).toBe(false);
+    expect(matchesSchema({ oneOf: [{ type: 'integer' }, { type: 'number' }] }, 1.5)).toBe(true);
   });
 });

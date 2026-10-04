@@ -28,6 +28,74 @@ const SUPPORTED = new Set([
   'maxItems',
 ]);
 
+const deepEqual = (a: unknown, b: unknown): boolean => {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, index) => deepEqual(item, b[index]));
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) => Object.hasOwn(right, key) && deepEqual(left[key], right[key]));
+};
+
+const matchesType = (type: unknown, node: JsonSchema, value: unknown): boolean => {
+  switch (type) {
+    case 'null':
+      return value === null;
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'string': {
+      if (typeof value !== 'string') return false;
+      const { minLength, maxLength } = node;
+      return (typeof minLength !== 'number' || value.length >= minLength) && (typeof maxLength !== 'number' || value.length <= maxLength);
+    }
+    case 'integer':
+    case 'number': {
+      if (typeof value !== 'number' || !Number.isFinite(value) || (type === 'integer' && !Number.isInteger(value))) return false;
+      const { minimum, maximum, exclusiveMinimum, exclusiveMaximum } = node;
+      return (
+        (typeof minimum !== 'number' || value >= minimum) &&
+        (typeof maximum !== 'number' || value <= maximum) &&
+        (typeof exclusiveMinimum !== 'number' || value > exclusiveMinimum) &&
+        (typeof exclusiveMaximum !== 'number' || value < exclusiveMaximum)
+      );
+    }
+    case 'array': {
+      if (!Array.isArray(value)) return false;
+      const { minItems, maxItems, items } = node;
+      if ((typeof minItems === 'number' && value.length < minItems) || (typeof maxItems === 'number' && value.length > maxItems)) return false;
+      return items === undefined || value.every((item) => matchesSchema(items, item));
+    }
+    case 'object': {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+      const record = value as Record<string, unknown>;
+      const properties = isSchema(node['properties']) ? node['properties'] : {};
+      const required = Array.isArray(node['required']) ? node['required'] : [];
+      if (required.some((key) => !Object.hasOwn(record, key as string))) return false;
+      if (node['additionalProperties'] === false && Object.keys(record).some((key) => !Object.hasOwn(properties, key))) return false;
+      return Object.entries(properties).every(([key, schema]) => !Object.hasOwn(record, key) || matchesSchema(schema, record[key]));
+    }
+    default:
+      return false;
+  }
+};
+
+/**
+ * Whether `value` is valid against `schema`, for the subset `arbitraryFromSchema` supports (a schema it
+ * could not generate for, such as one using `pattern`, has its unsupported keywords ignored here).
+ * Every keyword present must hold. Lengths count UTF-16 units, as Zod does.
+ */
+export function matchesSchema(schema: unknown, value: unknown): boolean {
+  if (!isSchema(schema)) return false;
+  if ('const' in schema && !deepEqual(schema['const'], value)) return false;
+  if (Array.isArray(schema['enum']) && !schema['enum'].some((member) => deepEqual(member, value))) return false;
+  if (Array.isArray(schema['anyOf']) && !schema['anyOf'].some((member) => matchesSchema(member, value))) return false;
+  if (Array.isArray(schema['oneOf']) && schema['oneOf'].filter((member) => matchesSchema(member, value)).length !== 1) return false;
+  const type = schema['type'];
+  if (type === undefined) return true;
+  return (Array.isArray(type) ? type : [type]).some((each) => matchesType(each, schema, value));
+}
+
 export interface ArbitraryFromSchemaOptions {
   /** The command or `<fake>.<control>` the schema belongs to, named in errors; default `'payload'`. */
   name?: string;
@@ -157,7 +225,15 @@ export function arbitraryFromSchema(schema: JsonSchema, options: ArbitraryFromSc
       if (!(key in node)) continue;
       const members = node[key];
       if (!Array.isArray(members) || members.length === 0) throw invalid([...path, key], `${key} must be a non-empty array`);
-      return fc.oneof(...members.map((member: unknown, index) => build(member, [...path, key, index])));
+      const union = fc.oneof(...members.map((member: unknown, index) => build(member, [...path, key, index])));
+      if (key === 'anyOf') return union;
+      // oneOf needs exactly one matching branch, so overlapping branches (an integer is also a number)
+      // must not produce values that match both. A fixed-seed probe refuses a oneOf that can't be satisfied.
+      // The probe samples the unfiltered union: filtering an unsatisfiable arbitrary would never finish.
+      if (!fc.sample(union, { numRuns: 100, seed: 0 }).some((value) => matchesSchema(node, value))) {
+        throw invalid([...path, key], 'no generated value matches exactly one oneOf branch');
+      }
+      return union.filter((value) => matchesSchema(node, value));
     }
     const type = node['type'];
     if (Array.isArray(type)) {
