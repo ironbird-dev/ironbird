@@ -34,6 +34,36 @@ const runawayApp = defineHeadless(({ clock }) => {
   };
 });
 
+// An app whose `bump.fail` adds one and then throws, so the target reports DISPATCH_FAILED without
+// rolling the change back. With `subscribe`, the target's revision moves too; without it, only the
+// state does, because createTarget bumps the revision only after a dispatch that returns.
+const mutateThenThrowApp = (notify: boolean) =>
+  defineHeadless(() => {
+    let state = { count: 0 };
+    const listeners = new Set<() => void>();
+    return {
+      target: createTarget({
+        commands: defineCommands({ 'bump.fail': z.object({}).describe('Add one, then throw') }),
+        dispatch: () => {
+          state = { count: state.count + 1 };
+          for (const listener of listeners) listener();
+          throw new Error('bump.fail threw after adding one');
+        },
+        getState: () => state,
+        ...(notify
+          ? {
+              subscribe: (listener: () => void) => {
+                listeners.add(listener);
+                return () => {
+                  listeners.delete(listener);
+                };
+              },
+            }
+          : {}),
+      }),
+    };
+  });
+
 let dir: string;
 
 beforeEach(async () => {
@@ -62,8 +92,8 @@ describe('modelTest', () => {
     const error = await failure({ headless: counterApp, env: { BUG: '1' }, steps: STEPS, invariants: { [CAP]: (s) => s.count <= 2 }, numRuns: 200, seed, artifacts: false });
     expect(error.code).toBe('INVARIANT_FAILED');
     const details = detailsOf(error);
-    expect(details).toMatchObject({ invariant: CAP, message: 'returned false', seed, steps: [INC, INC, INC], scenarioFile: null });
-    expect(Object.keys(details)).toEqual(['invariant', 'message', 'seed', 'path', 'runs', 'steps', 'scenarioFile']);
+    expect(details).toMatchObject({ invariant: CAP, message: 'returned false', seed, steps: [INC, INC, INC], scenarioFile: null, traceReplayable: true });
+    expect(Object.keys(details)).toEqual(['invariant', 'message', 'seed', 'path', 'runs', 'steps', 'scenarioFile', 'traceReplayable']);
     expect(typeof details['path']).toBe('string');
     expect(details['runs']).toBeGreaterThanOrEqual(1);
     expect(error.message).toBe(`Invariant "${CAP}" failed after 3 steps (seed ${seed}, path ${String(details['path'])})`);
@@ -106,13 +136,14 @@ describe('modelTest', () => {
     const env = { START: 'over-cap' };
     const error = await failure({ headless: counterApp, env, steps: ['count.fail'], invariants: { [CAP]: (s) => s.count <= 2 }, numRuns: 10, seed: 1, artifacts: dir });
     const details = detailsOf(error);
-    expect(details).toMatchObject({ invariant: CAP, steps: [{ send: 'count.fail', payload: {}, rejected: true }] });
+    expect(details).toMatchObject({ invariant: CAP, steps: [{ send: 'count.fail', payload: {}, rejected: true }], traceReplayable: true });
     expect(error.message).toContain('failed after 1 steps');
 
     // (a) The trace parses, with the rejected step left out.
     const file = details['scenarioFile'] as string;
     const scenario = parseScenario(await readFile(file, 'utf8'), file);
     expect(scenario.steps.map((step) => step.kind)).toEqual(['reset']);
+    expect(scenario.description).not.toContain('rejected after changing state');
 
     // (b) Replayed through the CLI runner on a fresh target it passes, and the invariant fails on the final state.
     const target = await createTestTarget({ headless: counterApp, env });
@@ -124,6 +155,31 @@ describe('modelTest', () => {
     } finally {
       await target.dispose();
     }
+  });
+
+  it.each([
+    ['with a subscribe, so the revision moves', true],
+    ['without a subscribe, so only the state moves', false],
+  ])('marks the trace not replayable when a rejected step changed state (%s)', async (_label, notify) => {
+    const headless = mutateThenThrowApp(notify);
+    let error: IronbirdError | undefined;
+    try {
+      await modelTest<{ count: number }>({ headless, steps: ['bump.fail'], invariants: { 'count stays at zero': (s) => s.count === 0 }, numRuns: 10, seed: 1, artifacts: dir });
+    } catch (caught) {
+      if (!isIronbirdError(caught)) throw caught;
+      error = caught;
+    }
+    expect(error?.code).toBe('INVARIANT_FAILED');
+    const details = detailsOf(error as IronbirdError);
+    expect(details).toMatchObject({ steps: [{ send: 'bump.fail', payload: {}, rejected: true }], traceReplayable: false });
+    expect(Object.keys(details)).toEqual(['invariant', 'message', 'seed', 'path', 'runs', 'steps', 'scenarioFile', 'traceReplayable']);
+
+    // The trace is still written, without the rejected step, and its description says why replay may differ.
+    const file = details['scenarioFile'] as string;
+    const scenario = parseScenario(await readFile(file, 'utf8'), file);
+    expect(scenario.steps.map((step) => step.kind)).toEqual(['reset']);
+    expect(scenario.description).toContain('Not faithfully replayable: steps 0 of details.steps were rejected after changing state');
+    expect(scenario.description).toContain('replay may not reproduce the violation');
   });
 
   it('finds nothing in a correct app and reports what ran', async () => {
@@ -185,7 +241,7 @@ describe('modelTest', () => {
     const details = detailsOf(error);
     expect(details['scenarioFile']).toBeNull();
     expect(details['traceError']).toEqual(expect.stringContaining('Could not write trace'));
-    expect(Object.keys(details)).toEqual(['invariant', 'message', 'seed', 'path', 'runs', 'steps', 'scenarioFile', 'traceError']);
+    expect(Object.keys(details)).toEqual(['invariant', 'message', 'seed', 'path', 'runs', 'steps', 'scenarioFile', 'traceReplayable', 'traceError']);
     expect(error.message).toBe(`Invariant "${CAP}" failed after 3 steps (seed 1, path ${String(details['path'])})`);
   });
 

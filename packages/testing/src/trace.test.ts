@@ -50,6 +50,17 @@ describe('traceYaml', () => {
     );
   });
 
+  it('says in the description which rejected steps changed state, so replay may not reproduce the violation', () => {
+    const yaml = traceYaml({ ...TRACE, rejectedAfterChange: [1, 3] });
+    const scenario = parseScenario(yaml, 'trace.yaml');
+    expect(scenario.description).toBe(
+      'modelTest seed 42, path 3:1:0. A trace: it reproduces the violating state; add expect steps to make it a regression check.\n' +
+        'Not faithfully replayable: steps 1, 3 of details.steps were rejected after changing state; the trace leaves them out, so replay may not reproduce the violation.',
+    );
+    expect(scenario.steps.map((step) => step.kind)).toEqual(['reset', 'send', 'fake', 'clock']);
+    expect(traceYaml({ ...TRACE, rejectedAfterChange: [] })).toBe(traceYaml(TRACE));
+  });
+
   it('round-trips through parseScenario', () => {
     const scenario = parseScenario(traceYaml(TRACE), 'trace.yaml');
     expect(scenario.name).toBe('Counterexample: the bell never rings');

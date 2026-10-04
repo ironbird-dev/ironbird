@@ -121,6 +121,32 @@ describe('arbitraryFromSchema', () => {
     expect(values.every((value) => value === 'unique')).toBe(true);
   });
 
+  it('computes the exclusive values of finite oneOf branches exactly, however rare', () => {
+    // 999 is the only value in exactly one branch; 50 samples of the first branch rarely find it.
+    const schema = { oneOf: [{ enum: Array.from({ length: 1000 }, (_, n) => n) }, { enum: Array.from({ length: 999 }, (_, n) => n) }] };
+    const values = fc.sample(arbitraryFromSchema(schema), { seed: 5, numRuns: 100 });
+    expect(new Set(values)).toEqual(new Set([999]));
+  });
+
+  it('mixes exact finite branches with probed infinite ones', () => {
+    // true is in both finite branches, so only false (from the boolean) and null (from the const) are exclusive;
+    // the string branch is infinite and overlaps nothing.
+    const schema = { oneOf: [{ type: 'boolean' }, { enum: [true, null] }, { type: 'string', maxLength: 2 }, { const: true, type: 'string' }] };
+    const values = fc.sample(arbitraryFromSchema(schema), { seed: 6, numRuns: 300 });
+    expect(values.every((value) => matchesSchema(schema, value))).toBe(true);
+    expect(values).toContain(false);
+    expect(values).toContain(null);
+    expect(values.some((value) => typeof value === 'string')).toBe(true);
+    expect(values).not.toContain(true);
+  });
+
+  it('refuses a oneOf of finite branches with no exclusive value', () => {
+    expect(thrownBy(() => arbitraryFromSchema({ oneOf: [{ type: ['boolean', 'null'] }, { enum: [true, false, null] }] }))).toMatchObject({
+      code: 'INVALID_PAYLOAD',
+      details: { issues: [{ path: ['oneOf'] }] },
+    });
+  });
+
   it('refuses a oneOf whose branches always overlap', () => {
     expect(thrownBy(() => arbitraryFromSchema({ oneOf: [{ type: 'string' }, { type: 'string' }] }, { name: 'a.b' }))).toMatchObject({
       code: 'INVALID_PAYLOAD',

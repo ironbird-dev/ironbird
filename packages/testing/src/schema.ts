@@ -102,6 +102,31 @@ export function matchesSchema(schema: unknown, value: unknown): boolean {
   return (Array.isArray(type) ? type : [type]).some((each) => matchesType(each, schema, value));
 }
 
+const LISTED_TYPES: Record<string, readonly unknown[]> = { boolean: [true, false], null: [null] };
+
+/**
+ * Every value a schema accepts, when it can be listed: a `const`, an `enum`, or a `type` (or list of
+ * types) of only `boolean` and `null`; otherwise undefined. Only the values the whole schema accepts
+ * are kept, so `{ const: true, type: 'string' }` lists none.
+ */
+function finiteValues(schema: unknown): unknown[] | undefined {
+  if (!isSchema(schema)) return undefined;
+  let candidates: readonly unknown[];
+  if ('const' in schema) candidates = [schema['const']];
+  else if (Array.isArray(schema['enum'])) candidates = schema['enum'];
+  else {
+    const type = schema['type'];
+    const types = Array.isArray(type) ? type : [type];
+    if (types.length === 0 || !types.every((each) => typeof each === 'string' && Object.hasOwn(LISTED_TYPES, each))) return undefined;
+    candidates = types.flatMap((each) => LISTED_TYPES[each as string] ?? []);
+  }
+  const values: unknown[] = [];
+  for (const candidate of candidates) {
+    if (matchesSchema(schema, candidate) && !values.some((value) => deepEqual(value, candidate))) values.push(candidate);
+  }
+  return values;
+}
+
 export interface ArbitraryFromSchemaOptions {
   /** The command or `<fake>.<control>` the schema belongs to, named in errors; default `'payload'`. */
   name?: string;
@@ -234,12 +259,24 @@ export function arbitraryFromSchema(schema: JsonSchema, options: ArbitraryFromSc
       const branches = members.map((member: unknown, index) => build(member, [...path, key, index]));
       if (key === 'anyOf') return fc.oneof(...branches);
       // oneOf needs exactly one matching branch, so overlapping branches (an integer is also a number)
-      // must not produce values that match both. Probe each branch on its own with a fixed seed, so a
-      // rare valid branch among many duplicates is kept, and keep only branches that can produce a
-      // valid value. The probe samples the unfiltered branch: filtering an unsatisfiable one never finishes.
-      const kept = branches.filter((branch) => fc.sample(branch, { numRuns: 50, seed: 0 }).some((value) => matchesSchema(node, value)));
-      if (kept.length === 0) throw invalid([...path, key], 'no generated value matches exactly one oneOf branch');
-      return fc.oneof(...kept.map((branch) => branch.filter((value) => matchesSchema(node, value))));
+      // must not produce values that match both. A branch whose values can be listed (const, enum,
+      // boolean, null) contributes exactly its values that match one branch, however rare. Any other
+      // branch is probed on its own with a fixed seed and kept only if a sample matches exactly one
+      // branch; a branch whose exclusive values the probe misses is dropped. The probe samples the
+      // unfiltered branch: filtering an unsatisfiable one never finishes.
+      const kept: Array<fc.Arbitrary<unknown>> = [];
+      members.forEach((member: unknown, index) => {
+        const listed = finiteValues(member);
+        if (listed !== undefined) {
+          const exclusive = listed.filter((value) => matchesSchema(node, value));
+          if (exclusive.length > 0) kept.push(fc.constantFrom(...exclusive));
+          return;
+        }
+        const branch = branches[index] as fc.Arbitrary<unknown>;
+        if (fc.sample(branch, { numRuns: 50, seed: 0 }).some((value) => matchesSchema(node, value))) kept.push(branch.filter((value) => matchesSchema(node, value)));
+      });
+      if (kept.length === 0) throw invalid([...path, key], 'no value matches exactly one oneOf branch');
+      return fc.oneof(...kept);
     }
     const type = node['type'];
     if (Array.isArray(type)) {

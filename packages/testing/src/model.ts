@@ -1,7 +1,7 @@
-import { IronbirdError, isIronbirdError, messageOf, type ErrorCode, type HeadlessDefinition } from '@ironbird/core';
+import { IronbirdError, deepEqual, isIronbirdError, messageOf, type ErrorCode, type HeadlessDefinition } from '@ironbird/core';
 import * as fc from 'fast-check';
 import { applyAction, optionsError, planSteps, toTraceStep, type Action, type ModelStep, type RecordedStep } from './steps';
-import { createTestTarget } from './target';
+import { createTestTarget, type TestTarget } from './target';
 import { writeTrace } from './trace';
 
 export interface ModelTestOptions<S = unknown> {
@@ -46,6 +46,8 @@ class Violation extends Error {
     readonly invariant: string,
     readonly reason: string,
     readonly steps: RecordedStep[],
+    /** Indexes into `steps` of rejected steps that changed the state or revision anyway. */
+    readonly rejectedAfterChange: number[],
   ) {
     super(`Invariant "${invariant}" ${reason}`);
     this.name = 'Violation';
@@ -94,7 +96,13 @@ async function failureOf(details: fc.RunDetails<[Action[]]>, artifacts: string |
     let traceError: string | undefined;
     if (artifacts !== false) {
       try {
-        scenarioFile = await writeTrace(artifacts, { invariant: error.invariant, seed: where.seed, path: where.path, steps: error.steps });
+        scenarioFile = await writeTrace(artifacts, {
+          invariant: error.invariant,
+          seed: where.seed,
+          path: where.path,
+          steps: error.steps,
+          rejectedAfterChange: error.rejectedAfterChange,
+        });
       } catch (writeError) {
         // The violation is the news; a trace that can't be written must not hide it. The message
         // keeps the §6.4 form without a file, and the write failure goes in the details.
@@ -110,6 +118,7 @@ async function failureOf(details: fc.RunDetails<[Action[]]>, artifacts: string |
       runs: where.runs,
       steps: error.steps,
       scenarioFile,
+      traceReplayable: error.rejectedAfterChange.length === 0,
       ...(traceError === undefined ? {} : { traceError }),
     });
   }
@@ -121,6 +130,9 @@ async function failureOf(details: fc.RunDetails<[Action[]]>, artifacts: string |
   if (isIronbirdError(error)) return error;
   return new IronbirdError('INTERNAL', `modelTest failed: ${messageOf(error)}`, { message: messageOf(error) });
 }
+
+/** The whole state and the target's revision, read in one operation. */
+const snapshot = (target: TestTarget): Promise<{ rev: number; value: unknown }> => target.client.rpc<{ rev: number; value: unknown }>('getState', { path: '' });
 
 /**
  * Model-based testing with the app as the model (M4 design §6): each run resets the target,
@@ -155,6 +167,12 @@ export async function modelTest<S = unknown>(options: ModelTestOptions<S>): Prom
       // The executed prefix, each step marked rejected or not: details.steps reports all of it,
       // and the trace keeps only the applied ones (a rejected step would fail its replay).
       const applied: RecordedStep[] = [];
+      // A rejected step is left out of the trace on the assumption it changed nothing, but a
+      // dispatch that mutates and then throws is reported as DISPATCH_FAILED with no rollback. Each
+      // rejected step's revision and state are compared with the previous step's, and the indexes
+      // of those that changed make the trace not faithfully replayable.
+      const rejectedAfterChange: number[] = [];
+      let before = await snapshot(target);
       for (const action of actions) {
         const recorded: RecordedStep = { ...toTraceStep(action), rejected: false };
         applied.push(recorded);
@@ -167,10 +185,13 @@ export async function modelTest<S = unknown>(options: ModelTestOptions<S>): Prom
           if (onStepError === 'fail' || ALWAYS_FAIL.has(error.code)) throw new StepFailure(error, [...applied]);
           stepsRejected += 1;
         }
-        const state = await target.state<S>();
+        const after = await snapshot(target);
+        if (recorded.rejected && (after.rev !== before.rev || !deepEqual(after.value, before.value))) rejectedAfterChange.push(applied.length - 1);
+        before = after;
+        const state = after.value as S;
         for (const [name, check] of invariants) {
           const reason = verdict(check, state);
-          if (reason !== undefined) throw new Violation(name, reason, [...applied]);
+          if (reason !== undefined) throw new Violation(name, reason, [...applied], [...rejectedAfterChange]);
         }
       }
     });

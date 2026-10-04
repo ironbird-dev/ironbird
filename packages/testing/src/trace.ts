@@ -10,6 +10,11 @@ export interface Trace {
   path: string;
   /** The executed prefix, rejected steps included; only the applied ones are written. */
   steps: RecordedStep[];
+  /**
+   * Indexes into `steps` of rejected steps that changed the state or revision anyway (a dispatch
+   * that mutated and then threw). The trace still leaves them out, so it may not replay faithfully.
+   */
+  rejectedAfterChange?: readonly number[];
 }
 
 const SLUG_MAX = 60;
@@ -18,15 +23,23 @@ const SLUG_MAX = 60;
  * The shrunk run as a scenario file (M4 design §6.4): it drives a target into the violating state.
  * It has no `expect`, because invariants are code, so running it passes; add `wait` and `expect`
  * steps to make it a regression check. `clock` steps are plain milliseconds and not optional,
- * because the trace's timing is exact only on headless. Steps the app rejected are left out: they
- * changed nothing, and on replay their error would stop the scenario.
+ * because the trace's timing is exact only on headless. Steps the app rejected are left out: on
+ * replay their error would stop the scenario. A rejected step usually changed nothing; one that did
+ * (`rejectedAfterChange`) is named in the description, because then replay may not reproduce the violation.
  */
 export function traceYaml(trace: Trace): string {
   const applied = trace.steps.filter((step) => !step.rejected).map(({ rejected: _rejected, ...step }) => step);
+  const changed = trace.rejectedAfterChange ?? [];
+  const lines = [`modelTest seed ${trace.seed}, path ${trace.path}. A trace: it reproduces the violating state; add expect steps to make it a regression check.`];
+  if (changed.length > 0) {
+    lines.push(
+      `Not faithfully replayable: steps ${changed.join(', ')} of details.steps were rejected after changing state; the trace leaves them out, so replay may not reproduce the violation.`,
+    );
+  }
   return stringify(
     {
       name: `Counterexample: ${trace.invariant}`,
-      description: `modelTest seed ${trace.seed}, path ${trace.path}. A trace: it reproduces the violating state; add expect steps to make it a regression check.`,
+      description: lines.join('\n'),
       steps: [{ reset: true }, ...applied],
     },
     { lineWidth: 0 },
