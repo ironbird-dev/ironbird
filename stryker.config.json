@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "mutate": ["packages/core/src/clock.ts", "packages/core/src/tracker.ts"],
+  "testRunner": "command",
+  "coverageAnalysis": "off",
+  "concurrency": 4,
+  "commandRunner": { "command": "pnpm exec vitest run -c packages/core/vitest.stryker.config.ts" },
+  "reporters": ["clear-text", "json"],
+  "jsonReporter": { "fileName": "reports/mutation/mutation.json" },
+  "thresholds": { "high": 85, "low": 70, "break": 70 },
+  "ignorePatterns": ["/examples", "/docs", "/.ironbird", "/.superpowers", "/.claude", "/coverage"],
+  "tempDirName": ".stryker-tmp",
+  "cleanTempDir": "always",
+  "incrementalFile": "reports/stryker-incremental.json"
+}
