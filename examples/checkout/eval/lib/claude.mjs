@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { createWriteStream } from 'node:fs';
 import readline from 'node:readline';
 import { MODEL } from './paths.mjs';
-import { reapGroup, run } from './proc.mjs';
+import { guardStdin, reapGroup, run } from './proc.mjs';
 import { sandboxed } from './sandbox.mjs';
 
 export async function claudeVersion() {
@@ -36,6 +36,8 @@ export function startClaude({ cwd, args, env, prompt, transcriptFile, stderrFile
     }
     onEvent?.(event);
   });
+  // Claude may exit before it reads the whole prompt: its exit code reports that, not an EPIPE here.
+  guardStdin(child, (error) => stderr.write(`[harness] writing the prompt to claude failed: ${error.message}\n`));
   child.stdin.end(prompt);
   const done = (async () => {
     const [code, signal] = await once(child, 'close');

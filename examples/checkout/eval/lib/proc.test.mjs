@@ -2,7 +2,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { groupAlive, must, run, startLogged, stopGroups, waitFor } from './proc.mjs';
+import { EventEmitter } from 'node:events';
+import { groupAlive, guardStdin, must, run, startLogged, stopGroups, waitFor } from './proc.mjs';
 
 const alive = (pid) => {
   try {
@@ -32,6 +33,33 @@ describe('process helpers', () => {
     expect(Number.isInteger(sleeper) && sleeper > 0).toBe(true);
     expect(alive(sleeper)).toBe(false);
   }, 15_000);
+
+  it('does not raise an unhandled error when the child exits without reading its input', async () => {
+    // The input is far larger than a pipe buffer, so it is still being written when the child is gone.
+    const input = 'x'.repeat(4 * 1024 * 1024);
+    const unhandled = [];
+    const record = (error) => unhandled.push(error);
+    process.on('uncaughtException', record);
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        expect(await run('/bin/sh', ['-c', 'exit 0'], { input, timeoutMs: 10_000 })).toMatchObject({ code: 0, timedOut: false });
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off('uncaughtException', record);
+    }
+    expect(unhandled).toEqual([]);
+  }, 30_000);
+
+  it('ignores a closed stdin pipe and surfaces any other stdin error', () => {
+    const child = { stdin: new EventEmitter() };
+    const seen = [];
+    guardStdin(child, (error) => seen.push(error.code));
+    child.stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+    child.stdin.emit('error', Object.assign(new Error('destroyed'), { code: 'ERR_STREAM_DESTROYED' }));
+    child.stdin.emit('error', Object.assign(new Error('no space'), { code: 'ENOSPC' }));
+    expect(seen).toEqual(['ENOSPC']);
+  });
 
   it('reports a timed-out run as failed even when the child exits 0 on SIGTERM', async () => {
     const script = 'trap "exit 0" TERM; sleep 30 & wait';
