@@ -219,7 +219,10 @@ describe('bridge against daemon', () => {
     noToken.socket.send(hello());
     expect(await noToken.closed).toBe(4003);
     const withToken = bridge(secured, app(), { token: 'secret' });
-    await until(() => withToken.connected, 'the tokened bridge');
+    // `connected` flips on the daemon's welcome; the daemon lists the target only once its
+    // `describe` has answered (docs/protocol.md), so wait for the listing rather than the welcome.
+    await until(() => secured.targets().length === 1, 'the tokened bridge');
+    expect(withToken.connected).toBe(true);
     expect(secured.targets().map((t) => t.id)).toEqual(['ios']);
   });
 
