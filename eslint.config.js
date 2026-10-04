@@ -89,4 +89,23 @@ export default tseslint.config(
       '@typescript-eslint/no-require-imports': 'off',
     },
   },
+  {
+    // @ironbird/testing reaches the CLI only through the dual-format runner subpath, and its
+    // library code imports no test framework, so it behaves the same under Vitest and Jest
+    // (M4 design D1, D9).
+    files: ['packages/testing/src/**/*.ts'],
+    ignores: ['packages/testing/src/**/*.test.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [{ name: '@ironbird/cli', message: 'Import the CLI through @ironbird/cli/runner, which ships CommonJS too (M4 design D1).' }],
+          patterns: [
+            { group: ['@ironbird/cli/*', '!@ironbird/cli/runner'], message: 'Import the CLI through @ironbird/cli/runner (M4 design D1).' },
+            { group: ['vitest', 'vitest/*', 'jest', '@jest/*'], message: '@ironbird/testing imports no test framework (M4 design D9).' },
+          ],
+        },
+      ],
+    },
+  },
 );
