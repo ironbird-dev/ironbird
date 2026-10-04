@@ -202,6 +202,45 @@ describe('createManualClock', () => {
     // After each re-arm the interval's scheduling order is newer than `t`'s, but only its due time decides until 50.
     expect(fired).toEqual(['i@10', 'i@20', 'i@30', 'i@40', 't@50', 'i@50']);
   });
+
+  it('property: timeouts and re-arming intervals fire in due order, with ties in the order they were scheduled or re-armed', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(fc.record({ interval: fc.boolean(), ms: fc.integer({ min: 0, max: 6 }) }), { minLength: 1, maxLength: 8 }),
+        async (timers) => {
+          const clock = createManualClock();
+          // Scheduling order, as the caller sees it: each schedule call and each interval firing (which re-arms
+          // that interval) takes the next arm number.
+          let arms = 0;
+          const armOf: number[] = [];
+          const dueOf: number[] = [];
+          const firings: Array<{ index: number; at: number; due: number; arm: number }> = [];
+          timers.forEach(({ interval, ms }, index) => {
+            armOf[index] = arms++;
+            dueOf[index] = clock.now() + ms;
+            const callback = (): void => {
+              firings.push({ index, at: clock.now(), due: dueOf[index] ?? -1, arm: armOf[index] ?? -1 });
+              if (interval) {
+                armOf[index] = arms++;
+                dueOf[index] = clock.now() + Math.max(1, ms);
+              }
+            };
+            if (interval) clock.setInterval(callback, ms);
+            else clock.setTimeout(callback, ms);
+          });
+          await clock.advance(20);
+          for (const firing of firings) expect(firing.at).toBe(firing.due);
+          for (let i = 1; i < firings.length; i += 1) {
+            const [previous, current] = [firings[i - 1], firings[i]];
+            const inOrder = previous !== undefined && current !== undefined && (previous.due < current.due || (previous.due === current.due && previous.arm < current.arm));
+            expect(inOrder, JSON.stringify({ previous, current })).toBe(true);
+          }
+          const timeouts = timers.filter((timer) => !timer.interval).length;
+          expect(firings.filter((firing) => timers[firing.index]?.interval === false)).toHaveLength(timeouts);
+        },
+      ),
+    );
+  });
 });
 
 describe('createRealClock', () => {
