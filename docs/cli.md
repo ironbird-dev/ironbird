@@ -268,6 +268,8 @@ Output is one `ScenarioResult` per file (see [Output shapes](#output-shapes)), a
 
 Each file starts from a fresh app: right after `describe`, on a target that declares the `reset` capability (headless), the runner resets it before the first step, so files don't share state and a directory run does not depend on file order. On a remote app, which has no `reset`, the scenario runs against the app's current state; run `ironbird reload --target <id>` first for a fresh start.
 
+To run scenario files from Vitest or Jest without a daemon, use `runScenario` from [`@ironbird/testing`](api.md#ironbirdtesting). It runs this same engine in process against your headless definition, through `@ironbird/cli/runner`, the subpath that publishes the runner in both ESM and CommonJS.
+
 ```sh
 ironbird scenario run ironbird/scenarios
 ironbird scenario run ironbird/scenarios/race-success-before-confirmation.yaml --target ios
