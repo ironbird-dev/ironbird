@@ -68,7 +68,35 @@ export function useAppCore(): AppCore {
 }
 ```
 
-Replace the screen's `appCore` import with `useAppCore()`. The device build provides the instance it creates on the real clock; tests provide one from `createCheckout`.
+The example's screen is the `App` component in `App.tsx`, the Expo entry, and it has no `CheckoutScreen` module. The illustrative refactor moves it into one, reading the core from context instead of importing `appCore`, and leaves `App.tsx` to provide the instance the device build creates on the real clock:
+
+```tsx
+// src/CheckoutScreen.tsx (illustrative): the body of the example's App.tsx, moved and exported by name
+import { useAppCore } from './core/AppCoreContext';
+
+export function CheckoutScreen() {
+  const appCore = useAppCore();
+  // ...the rest of the example's App component, unchanged, with useCheckout and useSend
+  // taking this appCore instead of the module-level import
+}
+```
+
+```tsx
+// App.tsx (illustrative): the device build provides its real-clock instance
+import { CheckoutScreen } from './src/CheckoutScreen';
+import { AppCoreContext } from './src/core/AppCoreContext';
+import { appCore } from './src/core/instance';
+
+export default function App() {
+  return (
+    <AppCoreContext.Provider value={appCore}>
+      <CheckoutScreen />
+    </AppCoreContext.Provider>
+  );
+}
+```
+
+Tests provide one from `createCheckout` instead.
 
 ## Drive the same commands in both
 
@@ -141,4 +169,4 @@ Or as a scenario file an agent can also run against a device: `runScenario('iron
 - Wrap `target.dispatch` and `clock.advance` in `act`, because both change state the screen renders.
 - Switch motion to `reduced` (`ui.setMotion` in the example) so animations don't depend on wall-clock time while the app's own time comes from the manual clock.
 - `@ironbird/testing` ships a CommonJS build, so it runs in the same Jest setup as RNTL with no transform for it; keep logic tests in `*.logic.test.ts` if you want to run them without the React Native preset.
-- When a model test fails, its trace in `.ironbird/model/` replays with `ironbird scenario run` on headless or a device. Add an `expect` for the bad state, and keep it as a regression scenario next to your RNTL tests.
+- When a model test fails, its trace in `.ironbird/model/` replays with `ironbird scenario run` on headless or a device. Replay it against the same environment the model test used: a trace from `modelTest({ ..., env: { PLANT_RACE: '1' } })` reproduces the race only on an app with the race planted, so run `PLANT_RACE=1 ironbird serve` and then `ironbird scenario run <trace>` (on a device, restart Metro with `EXPO_PUBLIC_PLANT_RACE=1`). If `details.traceReplayable` is `false`, a rejected step changed state and the trace may not reproduce the violation at all. Add an `expect` for the bad state, and keep it as a regression scenario next to your RNTL tests.
