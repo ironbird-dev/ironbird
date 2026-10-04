@@ -90,7 +90,13 @@ export function matchesSchema(schema: unknown, value: unknown): boolean {
   if ('const' in schema && !deepEqual(schema['const'], value)) return false;
   if (Array.isArray(schema['enum']) && !schema['enum'].some((member) => deepEqual(member, value))) return false;
   if (Array.isArray(schema['anyOf']) && !schema['anyOf'].some((member) => matchesSchema(member, value))) return false;
-  if (Array.isArray(schema['oneOf']) && schema['oneOf'].filter((member) => matchesSchema(member, value)).length !== 1) return false;
+  if (Array.isArray(schema['oneOf'])) {
+    let matched = 0;
+    for (const member of schema['oneOf']) {
+      if (matchesSchema(member, value) && ++matched > 1) return false;
+    }
+    if (matched !== 1) return false;
+  }
   const type = schema['type'];
   if (type === undefined) return true;
   return (Array.isArray(type) ? type : [type]).some((each) => matchesType(each, schema, value));
@@ -225,15 +231,15 @@ export function arbitraryFromSchema(schema: JsonSchema, options: ArbitraryFromSc
       if (!(key in node)) continue;
       const members = node[key];
       if (!Array.isArray(members) || members.length === 0) throw invalid([...path, key], `${key} must be a non-empty array`);
-      const union = fc.oneof(...members.map((member: unknown, index) => build(member, [...path, key, index])));
-      if (key === 'anyOf') return union;
+      const branches = members.map((member: unknown, index) => build(member, [...path, key, index]));
+      if (key === 'anyOf') return fc.oneof(...branches);
       // oneOf needs exactly one matching branch, so overlapping branches (an integer is also a number)
-      // must not produce values that match both. A fixed-seed probe refuses a oneOf that can't be satisfied.
-      // The probe samples the unfiltered union: filtering an unsatisfiable arbitrary would never finish.
-      if (!fc.sample(union, { numRuns: 100, seed: 0 }).some((value) => matchesSchema(node, value))) {
-        throw invalid([...path, key], 'no generated value matches exactly one oneOf branch');
-      }
-      return union.filter((value) => matchesSchema(node, value));
+      // must not produce values that match both. Probe each branch on its own with a fixed seed, so a
+      // rare valid branch among many duplicates is kept, and keep only branches that can produce a
+      // valid value. The probe samples the unfiltered branch: filtering an unsatisfiable one never finishes.
+      const kept = branches.filter((branch) => fc.sample(branch, { numRuns: 50, seed: 0 }).some((value) => matchesSchema(node, value)));
+      if (kept.length === 0) throw invalid([...path, key], 'no generated value matches exactly one oneOf branch');
+      return fc.oneof(...kept.map((branch) => branch.filter((value) => matchesSchema(node, value))));
     }
     const type = node['type'];
     if (Array.isArray(type)) {

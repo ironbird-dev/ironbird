@@ -115,6 +115,12 @@ describe('arbitraryFromSchema', () => {
     expect(values.every((value) => matchesSchema(schema, value))).toBe(true);
   });
 
+  it('keeps a rare valid oneOf branch among many duplicates', () => {
+    const schema = { oneOf: [...Array.from({ length: 1000 }, () => ({ const: 'duplicate' })), { const: 'unique' }] };
+    const values = fc.sample(arbitraryFromSchema(schema), { seed: 4, numRuns: 50 });
+    expect(values.every((value) => value === 'unique')).toBe(true);
+  });
+
   it('refuses a oneOf whose branches always overlap', () => {
     expect(thrownBy(() => arbitraryFromSchema({ oneOf: [{ type: 'string' }, { type: 'string' }] }, { name: 'a.b' }))).toMatchObject({
       code: 'INVALID_PAYLOAD',
