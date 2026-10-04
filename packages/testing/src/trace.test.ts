@@ -1,6 +1,6 @@
 import { parseScenario, runScenario as runScenarioOnClient } from '@ironbird/cli/runner';
 import * as fc from 'fast-check';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -104,5 +104,18 @@ describe('writeTrace', () => {
     const file = await writeTrace(path.join(dir, 'model'), TRACE, { now: () => Date.parse('2026-10-03T12:34:56.789Z') });
     expect(file).toBe(path.join(dir, 'model', '2026-10-03T12-34-56-789Z-the-bell-never-rings.trace.yaml'));
     expect(await readFile(file, 'utf8')).toBe(traceYaml(TRACE));
+  });
+
+  it('fails with INTERNAL naming the file when the directory cannot be created', async () => {
+    const blocker = path.join(dir, 'file');
+    await writeFile(blocker, '');
+    const clock = { now: () => Date.parse('2026-10-03T12:34:56.789Z') };
+    const error = await writeTrace(path.join(blocker, 'model'), TRACE, clock).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    const expectedFile = path.join(blocker, 'model', '2026-10-03T12-34-56-789Z-the-bell-never-rings.trace.yaml');
+    expect(error).toMatchObject({ name: 'IronbirdError', code: 'INTERNAL', details: { file: expectedFile, message: expect.any(String) } });
+    expect((error as Error).message).toContain(`Could not write trace ${expectedFile}: `);
   });
 });

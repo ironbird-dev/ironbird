@@ -1,4 +1,4 @@
-import { createRealClock, type Clock } from '@ironbird/core';
+import { IronbirdError, createRealClock, messageOf, type Clock } from '@ironbird/core';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { stringify } from 'yaml';
@@ -47,12 +47,20 @@ export function traceSlug(invariant: string): string {
 /**
  * Writes `<dir>/<UTC stamp>-<slug>.trace.yaml`, creating `dir`, and returns the absolute path. The
  * stamp comes from the injected clock, never from `Date.now` (AGENTS.md rule 9); tests pass a fixed one.
+ * A directory or file that can't be written fails with `INTERNAL` naming the file (AGENTS.md rule 8).
  */
 export async function writeTrace(dir: string, trace: Trace, clock: Pick<Clock, 'now'> = createRealClock()): Promise<string> {
   const root = path.resolve(dir);
-  await mkdir(root, { recursive: true });
-  const stamp = new Date(clock.now()).toISOString().replace(/[:.]/g, '-');
-  const file = path.join(root, `${stamp}-${traceSlug(trace.invariant)}.trace.yaml`);
-  await writeFile(file, traceYaml(trace));
-  return file;
+  let file = path.join(root, `${traceSlug(trace.invariant)}.trace.yaml`);
+  try {
+    const stamp = new Date(clock.now()).toISOString().replace(/[:.]/g, '-');
+    file = path.join(root, `${stamp}-${traceSlug(trace.invariant)}.trace.yaml`);
+    const yaml = traceYaml(trace);
+    await mkdir(root, { recursive: true });
+    await writeFile(file, yaml);
+    return file;
+  } catch (error) {
+    // The IronbirdError constructor takes no `cause`, so the original message goes in the details.
+    throw new IronbirdError('INTERNAL', `Could not write trace ${file}: ${messageOf(error)}`, { file, message: messageOf(error) });
+  }
 }
