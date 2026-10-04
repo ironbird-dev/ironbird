@@ -56,6 +56,8 @@ export const counterApp = defineHeadless(({ clock, recorder, env }) => {
   const buggy = env['BUG'] === '1';
   let state: CounterState = { count: env['START'] === 'over-cap' ? COUNT_CAP + 1 : 0, rings: 0 };
   const listeners = new Set<() => void>();
+  // A capped command never lowers the count, so an app that boots over the cap stays over it.
+  const capped = (by: number): number => Math.max(state.count, Math.min(COUNT_CAP, state.count + by));
   const set = (next: CounterState): void => {
     state = next;
     for (const listener of listeners) listener();
@@ -65,8 +67,8 @@ export const counterApp = defineHeadless(({ clock, recorder, env }) => {
   const target = createTarget({
     commands: counterCommands,
     dispatch: (command) => {
-      if (command.name === 'count.inc') set({ ...state, count: buggy ? state.count + 1 : Math.min(COUNT_CAP, state.count + 1) });
-      if (command.name === 'count.add') set({ ...state, count: Math.min(COUNT_CAP, state.count + command.payload.by) });
+      if (command.name === 'count.inc') set({ ...state, count: buggy ? state.count + 1 : capped(1) });
+      if (command.name === 'count.add') set({ ...state, count: capped(command.payload.by) });
       if (command.name === 'count.fail') throw new Error('count.fail always fails');
     },
     getState: () => state,

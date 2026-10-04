@@ -1,7 +1,7 @@
 import type { Description, StepResult } from '@ironbird/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createTestTarget, type TestTarget, type TestTargetOptions } from './target';
-import { counterApp, type CounterState } from './test-app';
+import { COUNT_CAP, counterApp, type CounterState } from './test-app';
 
 let target: TestTarget | undefined;
 
@@ -77,14 +77,25 @@ describe('createTestTarget', () => {
   });
 
   it('never reads process.env', async () => {
+    const previous = process.env['BUG'];
     process.env['BUG'] = '1';
     try {
       const t = await boot();
       for (let i = 0; i < 3; i += 1) await t.send('count.inc');
       expect(await t.state('count')).toBe(2);
     } finally {
-      delete process.env['BUG'];
+      if (previous === undefined) delete process.env['BUG'];
+      else process.env['BUG'] = previous;
     }
+  });
+
+  it('boots over the cap with START=over-cap, and accepted capped commands never lower the count', async () => {
+    const t = await boot({ env: { START: 'over-cap' } });
+    expect(await t.state('count')).toBe(COUNT_CAP + 1);
+    await t.send('count.inc');
+    expect(await t.state('count')).toBe(COUNT_CAP + 1);
+    await t.send('count.add', { by: 2 });
+    expect(await t.state('count')).toBe(COUNT_CAP + 1);
   });
 
   it('fails every call after dispose', async () => {
