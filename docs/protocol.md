@@ -284,7 +284,7 @@ Capabilities say which operations a target supports, and an operation whose capa
 | `PROTOCOL_MISMATCH` | Handshake versions differ | `{ daemon, bridge }` |
 | `APP_MISMATCH` | A bridge's app id differs from the app this daemon session serves | `{ expected, received }` |
 | `UNAUTHORIZED` | Token missing or wrong, or a request with an `Origin` header or a foreign `Host` (HTTP 403) | none |
-| `INVARIANT_FAILED` | `modelTest` in `@ironbird/testing` found a sequence of steps after which an invariant returned something other than `true` or threw; raised in the test process, never sent over the wire | `{ invariant, message, seed, path, runs, steps, scenarioFile }` |
+| `INVARIANT_FAILED` | `modelTest` in `@ironbird/testing` found a sequence of steps after which an invariant returned something other than `true` or threw; raised in the test process, never sent over the wire | `{ invariant, message, seed, path, runs, steps, scenarioFile }`; when the trace file could not be written, `scenarioFile` is `null` and `traceError` holds the write error's message |
 | `INTERNAL` | A bug in ironbird | `{ message }` |
 
 Settle timeouts are not errors, because the command has already been applied; the result reports `idle: false`. Warning codes such as `UNSERIALIZABLE_STATE` appear only in notifications.
