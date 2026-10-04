@@ -139,11 +139,11 @@ On 2026-09-10 Shopify described its answer for native apps: business logic decou
 
 | ID | Requirement | Acceptance summary |
 |---|---|---|
-| R13 | MCP server (`ironbird mcp`) | Tools mirror the CLI; `ironbird_step` returns the screenshot as image content |
-| R14 | Agent skill | A skill file that teaches the loop: describe, send, wait, then escalate to device checks |
+| R13 | MCP server (`ironbird mcp`) | Tools mirror the CLI; `ironbird_step` returns the screenshot as image content. Delivered in M3; see docs/evals/m3-agent-interface.md |
+| R14 | Agent skill | A skill file that teaches the loop: describe, send, wait, then escalate to device checks. Delivered in M3; see docs/evals/m3-agent-interface.md |
 | R15 | Snapshots | `snapshot save` and `load` for targets that implement `persist` and `restore`; others return `UNSUPPORTED` |
 | R16 | Fake call log | `ironbird fake <name> --calls` lists recorded port calls with arguments and outcomes. Delivered in M2 with the D13 cursor shape; see docs/evals/m2-fakes-and-scenarios.md |
-| R17 | `watch` | Streams state revisions and JSON Patch diffs until interrupted |
+| R17 | `watch` | Streams state revisions and JSON Patch diffs until interrupted. Moved from M3 to M5 (M3 design D3) |
 | R18 | `@ironbird/testing` | Runs scenarios in Vitest or Jest; model-based testing helper built on fast-check |
 | R19 | Adapters | `@ironbird/xstate` and `@ironbird/redux` targets, with persistence where the library supports it |
 | R20 | `doctor` | Checks Node version, config, headless load, simulator and adb availability, and that `.ironbird/` is gitignored |
@@ -183,7 +183,7 @@ These targets are hypotheses to revisit after the first pilots.
 |---|---|---|---|
 | Q1 | ~~Can we claim the `@ironbird` npm scope and an `ironbird` GitHub org?~~ **Resolved 2026-09-10:** `@ironbird` npm org claimed; GitHub org is `ironbird-dev` because `ironbird` was taken; repository `ironbird-dev/ironbird`. The unscoped `ironbird` package is still unpublished and becomes the CLI entry point in M0 | Maintainer | Resolved |
 | Q2 | ~~How should the daemon load TypeScript headless entries?~~ **Resolved 2026-09-11:** esbuild bundles the entry with dependencies external; tsconfig `paths` are honored and the metafile yields the `react-native` import chain | Engineering | Resolved |
-| Q3 | Does Zod 4's JSON Schema output work cleanly as MCP tool input schemas with the MCP TypeScript SDK? | Engineering | M3 |
+| Q3 | ~~Does Zod 4's JSON Schema output work cleanly as MCP tool input schemas with the MCP TypeScript SDK?~~ **Resolved 2026-10-03:** yes, by design: `@modelcontextprotocol/server` 2.x takes Zod 4 objects as tool input schemas directly, and app command schemas reach agents as JSON Schema inside `ironbird_describe` results, never as tool input schemas (M3 design D2) | Engineering | Resolved |
 | Q4 | How do we map a connected app to a specific simulator when several are booted, without native code? | Engineering | No; config fallback exists |
 | Q5 | ~~Are JS-only signals enough to settle around UI-thread animations (for example Reanimated), layout animations, and image decoding, or is an optional native add-on needed?~~ **Resolved 2026-09-20 at the M1 gate (ADR-0005 accepted):** yes with motion reduced. JS-only signals cannot see native-driver animations: in the clean gate run, Android's fast capture landed mid-fade on 50 of 60 full-motion `payment.start` steps, while the full-motion iOS 0% is capture timing, not detection, because the iOS capture is slower than the 400 ms fade. With motion reduced, no app content differed in any capture on either platform in either run, so a native add-on is not warranted; agent-driven development builds run with motion reduced | Engineering | Resolved |
 | Q6 | Should fast-check arbitraries be derived from Zod schemas with an existing library or a minimal in-house generator? | Engineering | M4 |

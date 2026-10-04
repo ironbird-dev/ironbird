@@ -2,7 +2,7 @@
 
 Ground-test React Native apps for AI coding agents.
 
-> **Status: M2 implemented.** M0 (headless loop), M1 (remote mode), and M2 (fakes and scenarios) are implemented and published to npm as 0.0.x previews, and the M2 gate closed on 2026-09-26 ([docs/evals/m2-fakes-and-scenarios.md](docs/evals/m2-fakes-and-scenarios.md)). Every API shown here is still a draft; see [docs/roadmap.md](docs/roadmap.md) for what's next.
+> **Status: M3 implemented.** M0 (headless loop), M1 (remote mode), M2 (fakes and scenarios), and M3 (agent interface: the MCP server and the agent skill) are implemented, M0 to M2 are published to npm as 0.0.x previews, and the M3 gate closed on 2026-10-03 ([docs/evals/m3-agent-interface.md](docs/evals/m3-agent-interface.md)). Every API shown here is still a draft; see [docs/roadmap.md](docs/roadmap.md) for what's next.
 
 Repository: [github.com/ironbird-dev/ironbird](https://github.com/ironbird-dev/ironbird) · npm: [`@ironbird`](https://www.npmjs.com/org/ironbird) and `ironbird`
 

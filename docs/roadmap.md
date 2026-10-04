@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-09-26 |
+| Last updated | 2026-10-03 |
 | Related | [spec.md](spec.md) (requirement and question IDs) · [testing-strategy.md](testing-strategy.md) |
 
 Estimates assume focused effort and describe a sequence, not calendar dates. Each milestone ends with a short demo and a go/no-go decision against its exit criteria.
@@ -83,7 +83,7 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 
 ## M3: Agent interface
 
-**Scope:** R13, R14, R17. Resolve Q3.
+**Scope:** R13, R14. Resolve Q3. R17 moved to M5 (M3 design D3).
 
 - `ironbird mcp`, with tools mirroring the CLI and screenshots returned as image content
 - An agent skill that teaches the loop: describe the app, act headlessly, reproduce with a scenario, then escalate to a device check with evidence
@@ -91,8 +91,10 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 
 **Exit criteria**
 
-- [ ] In 5 fresh sessions, an agent given the skill and the report "orders sometimes complete with a zero total" reproduces the bug with a scenario, fixes it, and verifies the fix headlessly and on iOS with evidence, succeeding in at least 4 sessions without human steering
-- [ ] Every "verified" claim from those sessions is spot-checked, and the false-claim rate is recorded as a baseline
+- [x] In 5 fresh sessions, an agent given the skill and the report "orders sometimes complete with a zero total" reproduces the bug with a scenario, fixes it, and verifies the fix headlessly and on iOS with evidence, succeeding in at least 4 sessions without human steering
+- [x] Every "verified" claim from those sessions is spot-checked, and the false-claim rate is recorded as a baseline
+
+Gate passed on 2026-10-03 under a controller ruling, recorded verbatim: "batch g1 = 3/5, FAIL. Batch g2 as graded = 2/5; sessions g2-3, g2-4, g2-5 ran while another project's UI tests (PointyRewardsUITests) were foregrounding their app on the same iPhone 17 simulator 16:13–16:19 local (37–48 foreign foreground events per session vs 0 in every other gate session; evidence in task-12-report.md), which dropped the ios target; the controller rules them invalid sessions (device fault from external interference, the same category as the spec's device-never-connects rule) and counts g2 over g2-1, g2-2, g2-6, g2-7, g2-8 = 4/5 → the gate PASSES under this ruling." Both tallies, the simulator-log evidence, and the false-claim baseline (0/89) are in docs/evals/m3-agent-interface.md. The maintainer can overrule the ruling; batch g2 then counts as graded (2/5), and the gate failed on 2026-10-03 after two batches.
 
 ## M4: Testing package
 
@@ -109,11 +111,12 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 
 ## M5: Adapters and 0.1 release
 
-**Scope:** R15, R19, R20. Close Q8.
+**Scope:** R15, R17, R19, R20. Close Q8.
 
 - `@ironbird/xstate` and `@ironbird/redux`
 - `examples/bare-redux`: a bare React Native app using Redux
 - `doctor` and snapshots
+- `watch` (R17), moved from M3
 - Publish 0.1.0 through the pipeline built in M0
 
 **Exit criteria**
