@@ -13,6 +13,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { claudeVersion, startClaude } from './lib/claude.mjs';
 import { claudeArgs, fillPaths, probeAllow, renderSettings, sessionEnv } from './lib/claude-args.mjs';
+import { changedSince, templateFreshness } from './lib/freshness.mjs';
 import { isInitialState } from './lib/grading.mjs';
 import { assertBooted, openExpoGo, readState, startMetro, startServe, terminateExpoGo, waitForIos } from './lib/ironbird.mjs';
 import { checkIsolation, userSkillNames } from './lib/isolation.mjs';
@@ -173,6 +174,11 @@ async function main() {
   if (version !== baseline.claudeVersion) throw new Error(`claude is ${version} but the baseline was recorded with ${baseline.claudeVersion}; run prepare.mjs again`);
   const harness = await harnessRevision();
   if (options.label === 'gate' && harness.dirty.length > 0) throw new Error(`Gate sessions need the harness and the skill committed: ${harness.dirty.join(', ')}`);
+  // The template must be built from what is committed now: a skill, CLI, or harness commit after prepare makes it stale.
+  const prepared = await readJson(L.prepareFile).catch(() => null);
+  const preparedHead = prepared?.repo?.head;
+  const stale = templateFreshness({ prepared, changed: typeof preparedHead === 'string' && preparedHead !== '' ? await changedSince(repoRoot, preparedHead) : [], label: options.label });
+  if (stale.length > 0) throw new Error(`The template is stale: ${stale.join('; ')}`);
   // The user's own skills, read now: a session skill with one of these names leaked from the user's setup.
   const userSkills = await userSkillNames();
   await assertPortsFree(PORTS);
@@ -185,7 +191,6 @@ async function main() {
 
   // The session folder exists from here on, so every outcome below ends in a session.json.
   await mkdir(S.logs, { recursive: true });
-  const prepared = await readJson(L.prepareFile).catch(() => null);
   const record = {
     session: id,
     label: options.label,
@@ -193,6 +198,7 @@ async function main() {
     deadline: new Date(deadline).toISOString(),
     harness,
     templatePreparedAt: prepared?.preparedAt ?? null,
+    templatePreparedHead: preparedHead ?? null,
     claudeVersion: version,
     model: MODEL,
     resolvedModel: null,

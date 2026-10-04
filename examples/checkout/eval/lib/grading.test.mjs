@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
 import {
   chooseReproducing,
   cleanPass,
@@ -13,8 +16,10 @@ import {
   judgeRun,
   mismatches,
   reproduces,
+  strictProblems,
   summarizeRun,
 } from './grading.mjs';
+import { readRunFolder } from './ironbird.mjs';
 import { parseTranscript } from './transcript.mjs';
 
 const ROOT = '/Users/dev/.ironbird-eval/sessions/1/project';
@@ -24,9 +29,14 @@ const bug = { cart: { items: [] }, payment: { status: 'succeeded' }, order: { st
 const good = { cart: { items: [] }, payment: { status: 'succeeded' }, order: { status: 'completed', orderId: 'ord_1', totalCents: 4_500, paymentSucceeded: true } };
 const initial = { cart: { items: [], subtotalCents: 0 }, payment: { status: 'idle' }, order: { status: 'none', totalCents: 0, paymentSucceeded: false }, reader: { connected: true }, ui: { motion: 'full' } };
 
+/** A state revision as the grader's instrumented headless entry records it, and an analytics event as the app records it. */
+const stateAt = (seq, order) => ({ seq, t: 0, source: 'grader', name: 'state', data: { rev: seq, order } });
+const tracked = (seq, name, data) => ({ seq, t: 0, source: 'analytics', name, data });
+const cleanHistory = [stateAt(1, { status: 'none', totalCents: 0 }), tracked(2, 'order_completed', { orderId: 'ord_1', totalCents: 4_500 }), stateAt(3, good.order)];
+
 const orderStep = { index: 9, step: { expect: 'order.totalCents', equals: 4_500 }, expected: { equals: 4_500 }, actual: 0 };
 const failing = summarizeRun({ exitCode: 4, result: { passed: false, target: 'headless', failedStep: orderStep, artifacts: '/a' }, state: bug });
-const passing = summarizeRun({ exitCode: 0, result: { passed: true, target: 'headless', artifacts: '/b' }, state: good });
+const passing = summarizeRun({ exitCode: 0, result: { passed: true, target: 'headless', artifacts: '/b' }, state: good, events: cleanHistory });
 
 const use = (id, name, input) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } });
 const done = (id, text, isError = false) => JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: text, is_error: isError }] } });
@@ -127,7 +137,7 @@ describe('check 1: reproduces', () => {
 });
 
 describe('check 2: fixed', () => {
-  const heldBack = (file, expected, state = good) => ({ file, expected, ...summarizeRun({ exitCode: 0, result: { passed: true }, state }) });
+  const heldBack = (file, expected, state = good) => ({ file, expected, ...summarizeRun({ exitCode: 0, result: { passed: true }, state, events: cleanHistory }) });
   const RACE = { 'order.status': 'completed', 'order.totalCents': 4_500 };
   const DUPLICATE = { ...RACE, 'payment.status': 'succeeded' };
 
@@ -139,7 +149,7 @@ describe('check 2: fixed', () => {
   it('fails on a wrong final value even when the run passed, and on unclean runs and npm test', () => {
     const result = fixedCheck({
       heldBack: [heldBack('race', RACE, { ...good, order: { ...good.order, totalCents: 9_000 } }), { ...heldBack('dup', DUPLICATE), artifactErrors: ['events.jsonl: truncated'] }],
-      remaining: [{ file: 'b', ...summarizeRun({ exitCode: 4, result: { passed: false }, state: good }) }],
+      remaining: [{ file: 'b', ...summarizeRun({ exitCode: 4, result: { passed: false }, state: good, events: cleanHistory }) }],
       npmTestExit: 1,
     });
     expect(result.pass).toBe(false);
@@ -152,15 +162,97 @@ describe('check 2: fixed', () => {
   });
 });
 
+describe('the bug at any recorded point (the strict reading)', () => {
+  const RACE = { 'order.status': 'completed', 'order.totalCents': 4_500 };
+  const DUPLICATE = { ...RACE, 'payment.status': 'succeeded' };
+  const folders = [];
+  afterAll(() => Promise.all(folders.map((dir) => rm(dir, { recursive: true, force: true }))));
+
+  /** A run folder as `scenario run` leaves it: state.json and events.jsonl (either may be left out). */
+  async function runFolder({ state, events }) {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'ironbird-eval-run-'));
+    folders.push(dir);
+    if (state !== undefined) await writeFile(path.join(dir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`);
+    if (events !== undefined) await writeFile(path.join(dir, 'events.jsonl'), events.map((event) => `${JSON.stringify(event)}\n`).join(''));
+    return dir;
+  }
+  /** A passing held-back run read back from its folder, as grade.mjs gathers it. */
+  async function heldBackFrom(file, expected, contents) {
+    const dir = await runFolder(contents);
+    return { file, expected, ...summarizeRun({ exitCode: 0, result: { passed: true, target: 'headless', artifacts: dir }, ...(await readRunFolder(dir)) }) };
+  }
+  const duplicate = () => heldBackFrom('duplicate-success.yaml', DUPLICATE, { state: good, events: cleanHistory });
+
+  it('passes a fix whose every recorded state and analytics event is clean', async () => {
+    const race = await heldBackFrom('race.yaml', RACE, { state: good, events: cleanHistory });
+    expect(race).toMatchObject({ eventsReadable: true, stateHistory: 2, bugSightings: [] });
+    expect(fixedCheck({ heldBack: [race, await duplicate()], remaining: [], npmTestExit: 0 })).toEqual({ pass: true, problems: [] });
+  });
+
+  it('fails a fix that lets the order pass through completed with totalCents 0, though it ends at 4500', async () => {
+    const transient = [stateAt(1, { status: 'none', totalCents: 0 }), stateAt(2, { status: 'completed', totalCents: 0 }), tracked(3, 'order_completed', { totalCents: 4_500 }), stateAt(4, good.order)];
+    const race = await heldBackFrom('race.yaml', RACE, { state: good, events: transient });
+    expect(race.bugState).toBe(false);
+    expect(fixedCheck({ heldBack: [race, await duplicate()], remaining: [], npmTestExit: 0 })).toEqual({
+      pass: false,
+      problems: ['held-back race.yaml fails the strict check: the state at seq 2 has the order completed with totalCents 0'],
+    });
+  });
+
+  it('fails a fix that sends order_completed analytics with totalCents 0, though no state shows it', async () => {
+    const zeroSent = [stateAt(1, { status: 'none', totalCents: 0 }), tracked(2, 'order_completed', { totalCents: 0 }), stateAt(3, good.order)];
+    const race = await heldBackFrom('race.yaml', RACE, { state: good, events: zeroSent });
+    expect(fixedCheck({ heldBack: [race, await duplicate()], remaining: [], npmTestExit: 0 })).toEqual({
+      pass: false,
+      problems: ['held-back race.yaml fails the strict check: analytics order_completed at seq 2 has totalCents 0'],
+    });
+  });
+
+  it('fails a fixture scenario that shows the bug, and a run with no state history or no events', async () => {
+    const remaining = [{ file: 'checkout.yaml', ...summarizeRun({ exitCode: 0, result: { passed: true }, state: good, events: [...cleanHistory, tracked(9, 'order_completed', { totalCents: 0 })] }) }];
+    const noHistory = await heldBackFrom('race.yaml', RACE, { state: good, events: [tracked(1, 'order_completed', { totalCents: 4_500 })] });
+    const noEvents = await heldBackFrom('duplicate-success.yaml', DUPLICATE, { state: good });
+    expect(noEvents.eventsReadable).toBe(false);
+    expect(fixedCheck({ heldBack: [noHistory, noEvents], remaining, npmTestExit: 0 }).problems).toEqual([
+      'held-back race.yaml fails the strict check: no state history was recorded',
+      'held-back duplicate-success.yaml fails the strict check: its events.jsonl is missing or unreadable',
+      'held-back duplicate-success.yaml fails the strict check: no state history was recorded',
+      'fixture scenario checkout.yaml fails the strict check: analytics order_completed at seq 9 has totalCents 0',
+    ]);
+  });
+
+  it("rejects a reproducing scenario whose session-side run passes through the bug; the template side still needs it at the end", async () => {
+    const dir = await runFolder({ state: good, events: [stateAt(1, { status: 'completed', totalCents: 0 }), stateAt(2, good.order)] });
+    const transient = summarizeRun({ exitCode: 0, result: { passed: true, target: 'headless', artifacts: dir }, ...(await readRunFolder(dir)) });
+    expect(cleanPass(transient)).toBe(true);
+    expect(reproduces(failing, transient)).toBe(false);
+    expect(reproduces(failing, passing)).toBe(true);
+    expect(strictProblems(passing)).toEqual([]);
+    expect(strictProblems(transient)).toEqual(['the state at seq 1 has the order completed with totalCents 0']);
+  });
+});
+
 describe('check 3: iOS verdict', () => {
-  const iosRun = summarizeRun({ exitCode: 0, result: { passed: true, target: 'ios' }, state: good });
+  // A device run records the app's events (analytics included) but no state history: only the grader's headless entry records one.
+  const deviceEvents = [tracked(1, 'order_completed', { orderId: 'ord_1', totalCents: 4_500 })];
+  const iosRun = summarizeRun({ exitCode: 0, result: { passed: true, target: 'ios' }, state: good, events: deviceEvents });
   it('needs the reload target, a fresh connection, the initial state, and a clean ios pass without the bug', () => {
     expect(iosVerdict({ reloadTarget: 'ios', freshTarget: { id: 'ios' }, initialState: initial, run: iosRun })).toEqual({ pass: true, problems: [] });
-    expect(iosVerdict({ reloadTarget: 'ios', freshTarget: undefined, initialState: good, run: { ...iosRun, bugState: true } }).problems).toEqual([
+    const bugRun = summarizeRun({ exitCode: 0, result: { passed: true, target: 'ios' }, state: bug, events: deviceEvents });
+    expect(iosVerdict({ reloadTarget: 'ios', freshTarget: undefined, initialState: good, run: bugRun }).problems).toEqual([
       'no fresh ios connection after the reload',
       'the reloaded app was not in its initial state: {"status":"completed","orderId":"ord_1","totalCents":4500,"paymentSucceeded":true}',
-      'the final state is the bug state',
+      'the scenario fails the strict check: the final state has the order completed with totalCents 0',
     ]);
+  });
+
+  it('rejects an ios run that sent order_completed with a zero total, or whose events are unreadable, though its final state is right', () => {
+    const zeroSent = summarizeRun({ exitCode: 0, result: { passed: true, target: 'ios' }, state: good, events: [tracked(4, 'order_completed', { totalCents: 0 })] });
+    expect(iosVerdict({ reloadTarget: 'ios', freshTarget: { id: 'ios' }, initialState: initial, run: zeroSent }).problems).toEqual([
+      'the scenario fails the strict check: analytics order_completed at seq 4 has totalCents 0',
+    ]);
+    const noEvents = summarizeRun({ exitCode: 0, result: { passed: true, target: 'ios' }, state: good });
+    expect(iosVerdict({ reloadTarget: 'ios', freshTarget: { id: 'ios' }, initialState: initial, run: noEvents }).problems).toEqual(['the scenario fails the strict check: its events.jsonl is missing or unreadable']);
   });
 
   it('judges every later step against the target the reload returned, whatever its id', () => {

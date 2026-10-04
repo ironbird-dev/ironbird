@@ -81,9 +81,12 @@ export function sessionLayout(home, id) {
   };
 }
 
-/** One grade's folder: copies of the session's project and of the template, the grader's logs and outputs. */
-export function gradeLayout(home, id) {
-  const dir = path.join(home, 'grades', id);
+/**
+ * One grade's folder: copies of the session's project and of the template, the grader's logs and
+ * outputs. `root` is where grades go, `<home>/grades` unless grade.mjs is given `--out`.
+ */
+export function gradeLayout(home, id, root = path.join(home, 'grades')) {
+  const dir = path.join(path.resolve(root), id);
   return {
     dir,
     session: path.join(dir, 'session'),

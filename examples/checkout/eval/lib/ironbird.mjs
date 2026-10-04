@@ -38,13 +38,15 @@ async function readDaemonInfo(project) {
 
 /**
  * Starts `ironbird serve` in `project` and resolves once it has written a fresh daemon.json.
- * `ephemeral` binds both ports to 0, for headless-only grading, so no app can dial in. On any
- * failure the process group is reaped before the error is thrown.
+ * `ephemeral` binds both ports to 0, for headless-only grading, so no app can dial in. `config`
+ * names a config file other than the project's ironbird.config.ts (the grader's instrumented one,
+ * lib/instrument.mjs). On any failure the process group is reaped before the error is thrown.
  */
-export async function startServe(project, { env = process.env, logFile, ephemeral = false, timeoutMs = 60_000 }) {
+export async function startServe(project, { env = process.env, logFile, ephemeral = false, config, timeoutMs = 60_000 }) {
   await rm(path.join(project, '.ironbird', 'daemon.json'), { force: true });
   const launchedAt = Date.now();
-  const proc = await startLogged(ironbirdBin(project), ['serve', ...(ephemeral ? ['--port', '0', '--bridge-port', '0'] : [])], { cwd: project, env, logFile });
+  const args = [...(config ? ['--config', config] : []), 'serve', ...(ephemeral ? ['--port', '0', '--bridge-port', '0'] : [])];
+  const proc = await startLogged(ironbirdBin(project), args, { cwd: project, env, logFile });
   let ready = false;
   const early = proc.exited.then(({ code, signal }) => {
     if (!ready) throw new Error(`ironbird serve exited (${code ?? signal}) before it was ready; see ${logFile}`);
@@ -160,17 +162,32 @@ export async function readState(project, target, { env = process.env, timeoutMs 
  * Resolves `{ exitCode, result, error, state }`: `result` is the ScenarioResult line, absent when
  * the command failed before running (an invalid file exits 2 with an `error` line instead).
  */
+/**
+ * A run folder's state.json and events.jsonl, parsed. Either is undefined when it is missing or
+ * does not parse (one bad line makes the whole events log unreadable, so nothing is silently skipped).
+ */
+export async function readRunFolder(dir) {
+  const parse = async (file, parser) => {
+    try {
+      return parser(await readFile(path.join(dir, file), 'utf8'));
+    } catch {
+      return undefined;
+    }
+  };
+  const state = await parse('state.json', JSON.parse);
+  const events = await parse('events.jsonl', (text) =>
+    text
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .map((line) => JSON.parse(line)),
+  );
+  return { state, events };
+}
+
 export async function runScenarioFile(project, file, target, { env = process.env } = {}) {
   const out = await ironbird(project, ['scenario', 'run', file, '--target', target], { env });
   const result = out.lines.find((line) => typeof line.passed === 'boolean');
   const error = result ? undefined : (out.lines.find((line) => line.error)?.error ?? { message: out.stderr.trim() || `exit ${out.code}` });
-  let state;
-  if (typeof result?.artifacts === 'string') {
-    try {
-      state = JSON.parse(await readFile(path.join(result.artifacts, 'state.json'), 'utf8'));
-    } catch {
-      state = undefined;
-    }
-  }
-  return { exitCode: out.code, result, error, state };
+  const { state, events } = typeof result?.artifacts === 'string' ? await readRunFolder(result.artifacts) : {};
+  return { exitCode: out.code, result, error, state, events };
 }

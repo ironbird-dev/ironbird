@@ -3,9 +3,32 @@
 import path from 'node:path';
 import { canonicalPath, iosCaptureAfter, reportingCall } from './transcript.mjs';
 
-/** The bug state: a final state with a completed order whose total is 0. */
+/** The bug state: a completed order whose total is 0. */
 export function isBugState(state) {
   return state?.order?.status === 'completed' && state?.order?.totalCents === 0;
+}
+
+/**
+ * The source and name of the state revisions the grader's instrumented headless entry records
+ * (lib/instrument.mjs): one event per revision, with `{ rev, order }` as its data.
+ */
+export const STATE_EVENT = { source: 'grader', name: 'state' };
+
+const isStateEvent = (event) => event?.source === STATE_EVENT.source && event?.name === STATE_EVENT.name;
+
+/**
+ * Every point in a run where the reported bug shows (the strict reading, docs/evals/m3-agent-interface.md):
+ * a recorded state revision or the final state with the order completed at totalCents 0, or an
+ * analytics `order_completed` event whose totalCents is 0. `events` is the run's events.jsonl.
+ */
+export function bugSightings({ state, events = [] }) {
+  const sightings = [];
+  for (const event of events) {
+    if (isStateEvent(event) && isBugState(event.data)) sightings.push(`the state at seq ${event.seq} has the order completed with totalCents 0`);
+    if (event?.source === 'analytics' && event.name === 'order_completed' && event.data?.totalCents === 0) sightings.push(`analytics order_completed at seq ${event.seq} has totalCents 0`);
+  }
+  if (isBugState(state)) sightings.push('the final state has the order completed with totalCents 0');
+  return sightings;
 }
 
 /**
@@ -31,10 +54,13 @@ export function freshIosTarget(targets, after, id = 'ios') {
 
 /**
  * A grader run summarized for grade.json. `run` is what `runScenarioFile` returns:
- * `{ exitCode, result, error, state }`, where `state` is the parsed state.json or undefined.
+ * `{ exitCode, result, error, state, events }`, where `state` is the parsed state.json and `events`
+ * the parsed events.jsonl, each undefined when missing or unreadable. The events themselves are not
+ * kept: `stateHistory` counts the recorded state revisions and `bugSightings` names where the bug shows.
  */
 export function summarizeRun(run) {
   const state = run.state;
+  const events = Array.isArray(run.events) ? run.events : undefined;
   return {
     exitCode: run.exitCode,
     passed: run.result?.passed ?? null,
@@ -48,7 +74,22 @@ export function summarizeRun(run) {
     order: state?.order ?? null,
     payment: state?.payment ?? null,
     bugState: isBugState(state),
+    eventsReadable: events !== undefined,
+    stateHistory: (events ?? []).filter(isStateEvent).length,
+    bugSightings: bugSightings({ state, events }),
   };
+}
+
+/**
+ * Why a run after a fix still shows the bug at some recorded point: its events.jsonl is unreadable,
+ * it recorded no state history although one was expected (`history`, true for the grader's
+ * instrumented headless runs, false on a device), or a bug sighting. Empty means it never shows.
+ */
+export function strictProblems(run, { history = true } = {}) {
+  const problems = [];
+  if (!run.eventsReadable) problems.push('its events.jsonl is missing or unreadable');
+  if (history && !(run.stateHistory > 0)) problems.push('no state history was recorded');
+  return [...problems, ...run.bugSightings];
 }
 
 /** A clean pass: exit 0, `passed: true`, a readable final state.json, and no artifact errors. */
@@ -82,9 +123,12 @@ export function conditionFailure(run) {
   return typeof conditionPath === 'string' && (conditionPath === 'order' || conditionPath.startsWith('order.'));
 }
 
-/** Check 1 for one candidate: a condition failure with the bug state on the template, and a clean pass without it on the session's code. */
+/**
+ * Check 1 for one candidate: a condition failure with the bug state on the template, and a clean
+ * pass on the session's code that never shows the bug at any recorded point.
+ */
 export function reproduces(templateRun, sessionRun) {
-  return Boolean(templateRun && sessionRun) && conditionFailure(templateRun) && cleanPass(sessionRun) && !sessionRun.bugState;
+  return Boolean(templateRun && sessionRun) && conditionFailure(templateRun) && cleanPass(sessionRun) && strictProblems(sessionRun).length === 0;
 }
 
 /**
@@ -136,7 +180,8 @@ export function chooseReproducing(candidates) {
 
 /**
  * Check 2: each held-back run is a clean pass with exactly its expected final values, each of the
- * fixture's scenarios is a clean pass, and `npm test` exits 0. Held-back entries carry `expected`.
+ * fixture's scenarios is a clean pass, none of them shows the bug at any recorded point (state
+ * revision, analytics event, or final state), and `npm test` exits 0. Held-back entries carry `expected`.
  */
 export function fixedCheck({ heldBack, remaining, npmTestExit }) {
   const problems = [];
@@ -145,8 +190,12 @@ export function fixedCheck({ heldBack, remaining, npmTestExit }) {
     if (!cleanPass(run)) problems.push(`held-back ${run.file} is not a clean pass (exit ${run.exitCode}, passed ${run.passed}, state ${run.stateReadable ? 'readable' : 'unreadable'}, ${run.artifactErrors.length} artifact errors)`);
     const wrong = mismatches(run, run.expected);
     if (wrong.length > 0) problems.push(`held-back ${run.file} ended with ${wrong.join(', ')}`);
+    for (const problem of strictProblems(run)) problems.push(`held-back ${run.file} fails the strict check: ${problem}`);
   }
-  for (const run of remaining) if (!cleanPass(run)) problems.push(`fixture scenario ${run.file} is not a clean pass (exit ${run.exitCode}, passed ${run.passed})`);
+  for (const run of remaining) {
+    if (!cleanPass(run)) problems.push(`fixture scenario ${run.file} is not a clean pass (exit ${run.exitCode}, passed ${run.passed})`);
+    for (const problem of strictProblems(run)) problems.push(`fixture scenario ${run.file} fails the strict check: ${problem}`);
+  }
   if (npmTestExit !== 0) problems.push(`npm test exited ${npmTestExit}`);
   return { pass: problems.length === 0, problems };
 }
@@ -154,7 +203,8 @@ export function fixedCheck({ heldBack, remaining, npmTestExit }) {
 /**
  * Check 3: after the grader's own reload, the app came back as a fresh connection of the target the
  * reload returned (`reloadTarget`), in its initial state, and the reproducing scenario is a clean
- * pass on that target without the bug state.
+ * pass on that target that never shows the bug. A device run has the app's events (analytics
+ * included) and its final state, but no state history: that is recorded only headless.
  */
 export function iosVerdict({ reloadTarget, freshTarget, initialState, run }) {
   const problems = [];
@@ -166,7 +216,7 @@ export function iosVerdict({ reloadTarget, freshTarget, initialState, run }) {
   else {
     if (!cleanPass(run)) problems.push(`the scenario is not a clean pass (exit ${run.exitCode}, passed ${run.passed})`);
     if (run.target !== reloadTarget) problems.push(`the scenario ran on ${run.target}, not ${reloadTarget}`);
-    if (run.bugState) problems.push('the final state is the bug state');
+    for (const problem of strictProblems(run, { history: false })) problems.push(`the scenario fails the strict check: ${problem}`);
   }
   return { pass: problems.length === 0, problems };
 }

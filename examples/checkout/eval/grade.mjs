@@ -2,11 +2,14 @@
 // Grades one session on the four checks of M3 design §7.3 and writes grade.json, the final report,
 // and the claims worksheet to ~/.ironbird-eval/grades/<id>/.
 //
-//   IRONBIRD_SIM_UDID=<iPhone 17 udid> node examples/checkout/eval/grade.mjs <id> [--skip-ios]
+//   IRONBIRD_SIM_UDID=<iPhone 17 udid> node examples/checkout/eval/grade.mjs <id> [--skip-ios] [--out <dir>]
 //
 // The grader works on copies of the session's project and of the template and writes its own runs
-// under those copies' .ironbird/, never to the session's agent-runs/. --skip-ios leaves the
-// grader's iOS check not run (and so failed): for harness self-tests without a simulator.
+// under those copies' .ironbird/, never to the session's agent-runs/. Its headless runs of the
+// session's code record every state revision (lib/instrument.mjs), so a fix that shows the bug at
+// any recorded point fails. --skip-ios leaves the grader's iOS check not run (and so failed): for
+// harness self-tests without a simulator. --out <dir> writes the grade to <dir>/<id>/ instead, so a
+// re-grade leaves an earlier grade alone.
 import { readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,17 +17,18 @@ import { parseArgs } from 'node:util';
 import { claimCandidates, claimsTable } from './lib/claims.mjs';
 import { sessionEnv } from './lib/claude-args.mjs';
 import { chooseReproducing, decide, evaluateAgentRuns, fixedCheck, freshIosTarget, iosVerdict, reproduces, summarizeRun } from './lib/grading.mjs';
+import { instrumentProject } from './lib/instrument.mjs';
 import { assertBooted, ironbird, openExpoGo, readState, runScenarioFile, startMetro, startServe, terminateExpoGo, waitForIos } from './lib/ironbird.mjs';
 import { BRIDGE_PORT, DAEMON_PORT, gradeLayout, HELD_BACK, layout, METRO_PORT, sessionId, sessionLayout, simUdid } from './lib/paths.mjs';
 import { assertPortsFree, clone, readJson, reapPorts, run, stopGroups, writeJson } from './lib/proc.mjs';
 import { addedScenarios, scenarioFiles } from './lib/tree.mjs';
 import { deniedCalls, finalReport, lastEdit, outOfFolderPaths, parseTranscript, untrackedWrites } from './lib/transcript.mjs';
 
-const { values: options, positionals } = parseArgs({ allowPositionals: true, options: { 'skip-ios': { type: 'boolean' } } });
+const { values: options, positionals } = parseArgs({ allowPositionals: true, options: { 'skip-ios': { type: 'boolean' }, out: { type: 'string' } } });
 const id = sessionId(positionals[0]);
 const L = layout();
 const S = sessionLayout(L.home, id);
-const G = gradeLayout(L.home, id);
+const G = gradeLayout(L.home, id, options.out);
 
 function step(message) {
   process.stderr.write(`grade ${id}: ${message}\n`);
@@ -56,15 +60,19 @@ async function loadAgentRuns(dir) {
   return runs;
 }
 
-/** Headless runs: each candidate against the template, then candidates, held-back, and fixture scenarios against the session. */
-async function headlessRuns(candidates, templateScenarios, env) {
+/**
+ * Headless runs: each candidate against the template, then candidates, held-back, and fixture
+ * scenarios against the session, served with the instrumented entry (`sessionConfig`) so each run
+ * records its state history.
+ */
+async function headlessRuns(candidates, templateScenarios, env, sessionConfig) {
   const serveTemplate = await startServe(G.template, { env, logFile: path.join(G.logs, 'serve-template.log'), ephemeral: true });
   try {
     for (const candidate of candidates) candidate.template = summarizeRun(await runScenarioFile(G.template, path.join(G.session, candidate.file), 'headless', { env }));
   } finally {
     await stopAll([{ name: 'daemon (template)', proc: serveTemplate }]);
   }
-  const serveSession = await startServe(G.session, { env, logFile: path.join(G.logs, 'serve-session.log'), ephemeral: true });
+  const serveSession = await startServe(G.session, { env, logFile: path.join(G.logs, 'serve-session.log'), ephemeral: true, config: sessionConfig });
   try {
     for (const candidate of candidates) candidate.session = summarizeRun(await runScenarioFile(G.session, path.join(G.session, candidate.file), 'headless', { env }));
     const heldBack = [];
@@ -140,6 +148,7 @@ async function main() {
   await clone(S.project, G.session);
   await clone(L.template, G.template);
   for (const dir of [G.session, G.template]) for (const cache of ['.ironbird', '.expo']) await rm(path.join(dir, cache), { recursive: true, force: true });
+  const sessionConfig = await instrumentProject(G.session);
 
   const parsed = parseTranscript(await readFile(S.transcript, 'utf8').catch(() => ''));
   const roots = [S.project, await realpath(S.project)];
@@ -148,7 +157,7 @@ async function main() {
   step(`${candidates.length} added scenario file(s): ${candidates.map((candidate) => candidate.file).join(', ') || 'none'}`);
 
   step('headless runs');
-  const { heldBack, remaining } = await headlessRuns(candidates, templateScenarios, env);
+  const { heldBack, remaining } = await headlessRuns(candidates, templateScenarios, env, sessionConfig);
   step('npm test');
   const npmTest = await run('npm', ['test'], { cwd: G.session, env, timeoutMs: 10 * 60_000 });
 
