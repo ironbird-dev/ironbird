@@ -65,6 +65,21 @@ export function killGroup(child, signal = 'SIGTERM') {
   }
 }
 
+/** Whether `error` only says the other end of a pipe is gone: a child that exited without reading all its input. */
+export const isClosedPipe = (error) => error?.code === 'EPIPE' || error?.code === 'ERR_STREAM_DESTROYED';
+
+/**
+ * Handles errors on a child's stdin. A child may exit before it reads its input, which surfaces as
+ * EPIPE (or ERR_STREAM_DESTROYED) on the write and is not a failure of the caller: its exit code is
+ * what reports that. Any other error goes to `onError`. Without a listener the error is unhandled
+ * and takes the process down.
+ */
+export function guardStdin(child, onError) {
+  child.stdin.on('error', (error) => {
+    if (!isClosedPipe(error)) onError(error);
+  });
+}
+
 /**
  * Runs a command to completion. Resolves with its exit code and output; never rejects on a non-zero
  * exit. A run that hit `timeoutMs` always reports failure: `timedOut: true` and `code` 124, whatever
@@ -101,6 +116,10 @@ export function run(command, args, { cwd, env = process.env, input = '', timeout
     child.on('close', (code, signal) => {
       clearTimeout(timer);
       resolve({ code: timedOut ? 124 : (code ?? 128), signal, stdout, stderr, timedOut });
+    });
+    guardStdin(child, (error) => {
+      clearTimeout(timer);
+      reject(error);
     });
     child.stdin.end(input);
   });
