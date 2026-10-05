@@ -56,7 +56,13 @@ function app(options: { persist?: boolean } = {}): HandlerContext & { warnings: 
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    ...(options.persist ? { persist: () => ({ count: state.count }), restore: (snapshot: unknown) => set({ ...state, count: (snapshot as { count: number }).count }) } : {}),
+    ...(options.persist
+      ? {
+          persist: () => (state.junk === undefined ? { count: state.count } : { count: state.count, junk: state.junk }),
+          // Validates before applying, as every restore must (AGENTS.md rule 4).
+          restore: (snapshot: unknown) => set({ ...state, count: z.strictObject({ count: z.number().int() }).parse(snapshot).count }),
+        }
+      : {}),
   });
   const warnings: Array<[string, string]> = [];
   return {
@@ -208,6 +214,38 @@ describe('createHandlers', () => {
     expect(await able['snapshotLoad']!({ snapshot: { count: 7 } })).toMatchObject({ rev: 2, path: '', value: { count: 7 } });
     const unable = createHandlers(app());
     expect(await failure(unable['snapshotSave']!({}))).toMatchObject({ code: 'UNSUPPORTED', details: { op: 'snapshotSave', target: 'ios' } });
+  });
+
+  it('saves strictly: a state that would need a placeholder fails INVALID_SNAPSHOT naming the path', async () => {
+    const handlers = createHandlers(app({ persist: true }));
+    await handlers['dispatch']!({ name: 'state.junk', payload: {}, settle: false });
+    expect(await failure(handlers['snapshotSave']!({}))).toEqual({ code: 'INVALID_SNAPSHOT', details: { path: 'junk', reason: 'Map' } });
+  });
+
+  it('checks the app id before restoring, and skips the check without one', async () => {
+    const ctx = app({ persist: true });
+    const handlers = createHandlers(ctx);
+    expect(await failure(handlers['snapshotLoad']!({ snapshot: { count: 5 }, app: 'com.example.other' }))).toEqual({
+      code: 'APP_MISMATCH',
+      details: { expected: 'com.example.test', received: 'com.example.other' },
+    });
+    expect(ctx.target.getState()).toMatchObject({ count: 0 });
+    expect(await handlers['snapshotLoad']!({ snapshot: { count: 5 }, app: 'com.example.test' })).toMatchObject({ path: '', value: { count: 5 } });
+    expect(await handlers['snapshotLoad']!({ snapshot: { count: 6 } })).toMatchObject({ path: '', value: { count: 6 } });
+  });
+
+  it('refuses malformed params and a snapshot the target rejects, leaving the state unchanged', async () => {
+    const ctx = app({ persist: true });
+    const handlers = createHandlers(ctx);
+    expect(await failure(handlers['snapshotLoad']!({ snapshot: { count: 1 }, app: 7 }))).toEqual({
+      code: 'INVALID_PAYLOAD',
+      details: { name: 'snapshotLoad', issues: [{ path: ['app'], message: 'expected a string' }] },
+    });
+    expect(await failure(handlers['snapshotLoad']!({}))).toEqual({ code: 'INVALID_PAYLOAD', details: { name: 'snapshotLoad', issues: [{ path: ['snapshot'], message: 'required' }] } });
+    expect(await failure(handlers['snapshotLoad']!({ snapshot: { count: 'x' } }))).toMatchObject({ code: 'INVALID_SNAPSHOT', details: { path: '' } });
+    expect(ctx.target.getState()).toMatchObject({ count: 0 });
+    expect(ctx.target.revision()).toBe(0);
+    expect(await failure(createHandlers(app())['snapshotLoad']!({ snapshot: {} }))).toMatchObject({ code: 'UNSUPPORTED', details: { op: 'snapshotLoad', target: 'ios' } });
   });
 
   it('answers UNSUPPORTED for clock and reset operations', async () => {
