@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft; signatures will change during M0–M2 |
-| Last updated | 2026-10-03 |
+| Last updated | 2026-10-04 |
 | Related | [protocol.md](protocol.md) for wire types and error codes · [cli.md](cli.md) for the CLI |
 
 Priority markers match [spec.md](spec.md): **P0** ships in 0.1, **P1** is planned for 0.1 if milestones hold. Sections marked **M1** or **M2** describe APIs planned for those milestones ([roadmap.md](roadmap.md)); they are not in the repository yet.
@@ -77,7 +77,7 @@ interface Target<S = unknown> {
 }
 ```
 
-`TargetDefinition` is exported alongside `createTarget`. `persist` and `restore` ship today: a definition that provides either gets the matching method and capability on the `Target`. What is P1 is the pair of protocol operations that use them, `snapshotSave` and `snapshotLoad`; see [protocol.md §4.1](protocol.md#41-target-operations).
+`TargetDefinition` is exported alongside `createTarget`. A definition that provides `persist` or `restore` gets the matching method and capability on the `Target`, and the `snapshotSave` and `snapshotLoad` operations use them; see [protocol.md §4.1](protocol.md#41-target-operations). `persist` should return plain JSON data: `snapshotSave` passes it through `serializeSnapshot`, which refuses a `Map`, a `Date`, a class instance, a cycle, and the like rather than saving something that loads back wrong. `restore` receives `unknown`, whatever the definition's state type, because it comes from a file or the wire: validate it, for example with a Zod schema for the whole state, before applying it, and apply nothing when it doesn't fit (AGENTS.md rule 4). A plain error that `persist` or `restore` throws reaches the caller as `INVALID_SNAPSHOT` with `{ path: '', reason: <its message> }`; an `IronbirdError` passes through unchanged, so a `restore` can report the path that failed with its own `INVALID_SNAPSHOT`.
 
 `capabilities` lists only what the `Target` itself provides. The daemon and bridge add `settle`, `events`, `fakes`, `clock`, `reset`, and `reload` as appropriate when they describe the target; see [protocol.md §5](protocol.md#5-types). A subscriber that throws is skipped with a `console.warn`; it never prevents later subscribers from running or the dispatch from completing.
 
@@ -340,6 +340,8 @@ const PROTOCOL_VERSION: 1;
 | `getAtPath` | Reads a dot path out of a state value, `undefined` when it doesn't resolve |
 | `parsePath` | Splits a dot path into segments; the empty path is no segments |
 | `serializeState` | JSON-safe copy plus the `SerializationWarning[]` for what it replaced |
+| `serializeSnapshot` | JSON-safe copy of a persisted snapshot, or `INVALID_SNAPSHOT` with `{ path, reason }` for the first value it can't save losslessly; never substitutes a placeholder (see [protocol.md §7](protocol.md#7-serialization)) |
+| `parseSnapshotLoadParams` | `(params, appId) => { snapshot }` for a target applying `snapshotLoad`: `INVALID_PAYLOAD` for a non-string `app` or a missing `snapshot`, `APP_MISMATCH` with `{ expected, received }` when `app` is another app's id |
 | `parseCondition` | Reads exactly one of `equals`, `notEquals`, `exists`, `matches` from a `waitFor` params object; throws `INVALID_PAYLOAD` otherwise (M1: moved here from `@ironbird/cli`, which re-exports it) |
 | `conditionHolds` | Whether a value satisfies a parsed `Condition` |
 | `deepEqual` | Structural equality used by `equals` and `notEquals` |

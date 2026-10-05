@@ -4,7 +4,7 @@
 |---|---|
 | Status | Draft |
 | `PROTOCOL_VERSION` | `1` |
-| Last updated | 2026-09-29 |
+| Last updated | 2026-10-04 |
 | Related | [architecture.md](architecture.md) · [cli.md](cli.md) · [api.md](api.md) |
 
 ironbird has two transports that carry the same operations:
@@ -280,9 +280,10 @@ Capabilities say which operations a target supports, and an operation whose capa
 | `HEADLESS_LOAD_FAILED` | The headless entry failed to load, at start or on `reload` | `{ entry, message, importChain? }` |
 | `INVALID_CONFIG` | `ironbird.config.ts` is missing a default export or fails validation | `{ file, issues }` |
 | `INVALID_SCENARIO` | A scenario file fails to parse or validate; raised by the CLI before any operation is sent, never by a target | `{ file, issues }` |
+| `INVALID_SNAPSHOT` | `snapshotSave` found a value it can't save losslessly, or `snapshotLoad`'s snapshot failed the target's validation or couldn't be applied | `{ path, reason }`; `path` is a dot path into the snapshot, `''` at the root or when the failure isn't tied to one path; `reason` names the kind, such as `Map` or `cycle`, or carries the target's message |
 | `CLOCK_RUNAWAY` | `clockAdvance` exceeded 10,000 timer firings | `{ labels }` |
 | `PROTOCOL_MISMATCH` | Handshake versions differ | `{ daemon, bridge }` |
-| `APP_MISMATCH` | A bridge's app id differs from the app this daemon session serves | `{ expected, received }` |
+| `APP_MISMATCH` | A bridge's app id differs from the app this daemon session serves, or a `snapshotLoad`'s `app` differs from the app id of the target applying it | `{ expected, received }` |
 | `UNAUTHORIZED` | Token missing or wrong, or a request with an `Origin` header or a foreign `Host` (HTTP 403) | none |
 | `INVARIANT_FAILED` | `modelTest` in `@ironbird/testing` found a sequence of steps after which an invariant returned something other than `true` or threw; raised in the test process, never sent over the wire | `{ invariant, message, seed, path, runs, steps, scenarioFile, traceReplayable }`; `traceReplayable` is `false` when a rejected step changed the target's state or revision, so the trace, which leaves rejected steps out, may not reproduce the violation, and `true` otherwise; when the trace file could not be written, `scenarioFile` is `null` and `traceError` holds the write error's message |
 | `INTERNAL` | A bug in ironbird | `{ message }` |
@@ -292,6 +293,8 @@ Settle timeouts are not errors, because the command has already been applied; th
 ## 7. Serialization
 
 State values follow `JSON.stringify` rules: `Date` serializes through `toJSON`, and `undefined` properties are omitted, so optional fields never produce warnings. Values that JSON would throw on or silently flatten, namely functions, `BigInt`, `NaN`, `Infinity`, `-Infinity`, `Map`, `Set`, class instances other than `Date`, and cyclic references, are replaced with `{ "$unserializable": "<kind>" }`. Boxed primitives unwrap as in JSON. An invalid `Date`, which JSON would flatten to `null`, is marked `InvalidDate`. A property whose getter throws is marked `throwing-getter`, and an object that can't be inspected at all, such as a revoked `Proxy`, is marked `unreadable`; serialization never throws. Each affected path produces one `UNSERIALIZABLE_STATE` warning per connection.
+
+Snapshots are the exception. `snapshotSave` serializes strictly and never substitutes a placeholder, because a placeholder would load back as corrupt state: functions, symbols, `BigInt`, `NaN`, `Infinity`, `-Infinity`, `Map`, `Set`, `Date`, any other non-plain object (class instances, boxed primitives, typed arrays), cycles, `undefined` or holes in arrays, enumerable array properties other than indices (such as `items.extra`), enumerable symbol-keyed properties, throwing getters, and objects that can't be inspected each fail the save with `INVALID_SNAPSHOT` and `{ path, reason }` for the first one found. `undefined` object properties are omitted, as in JSON. Plain objects with a `null` prototype are accepted.
 
 ## 8. Versioning
 

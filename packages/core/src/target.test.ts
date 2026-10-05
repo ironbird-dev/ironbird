@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { isIronbirdError } from './errors';
+import { IronbirdError, isIronbirdError } from './errors';
 import { defineCommands } from './registry';
 import { createTarget } from './target';
 
@@ -106,6 +106,36 @@ describe('createTarget', () => {
     await target.restore?.({ value: 9 });
     expect(target.getState()).toBe(9);
     expect(target.revision()).toBe(1);
+  });
+
+  it('reports a plain error from persist or restore as INVALID_SNAPSHOT and passes IronbirdErrors through', async () => {
+    let restoreError: unknown = new Error('bad shape');
+    const target = createTarget({
+      commands,
+      dispatch: () => {},
+      getState: () => 0,
+      persist: () => {
+        throw new Error('disk gone');
+      },
+      restore: () => {
+        throw restoreError;
+      },
+    });
+    let saved: unknown;
+    try {
+      target.persist?.();
+    } catch (error) {
+      saved = error;
+    }
+    expect(saved).toMatchObject({ code: 'INVALID_SNAPSHOT', message: 'Snapshot could not be saved: disk gone', details: { path: '', reason: 'disk gone' } });
+    expect(await target.restore?.({}).catch((error: unknown) => error)).toMatchObject({
+      code: 'INVALID_SNAPSHOT',
+      message: 'Snapshot could not be restored: bad shape',
+      details: { path: '', reason: 'bad shape' },
+    });
+    restoreError = new IronbirdError('INVALID_SNAPSHOT', 'Invalid snapshot at todos.0', { path: 'todos.0', reason: 'Expected string' });
+    expect(await target.restore?.({}).catch((error: unknown) => error)).toBe(restoreError);
+    expect(target.revision()).toBe(0);
   });
 });
 
