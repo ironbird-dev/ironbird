@@ -56,6 +56,11 @@ describe('tryBind', () => {
   it('reports EADDRNOTAVAIL for an address this machine does not have', async () => {
     expect(await tryBind('203.0.113.1', 0)).toMatchObject({ ok: false, code: 'EADDRNOTAVAIL' });
   });
+
+  it('reports a port that is out of range instead of throwing', async () => {
+    expect(await tryBind('127.0.0.1', 70_000)).toMatchObject({ ok: false, code: 'ERR_SOCKET_BAD_PORT' });
+    expect(await tryBind('127.0.0.1', -1)).toMatchObject({ ok: false, code: 'ERR_SOCKET_BAD_PORT' });
+  });
 });
 
 describe('probeHttp', () => {
@@ -87,6 +92,23 @@ describe('probeHttp', () => {
     const started = performance.now();
     expect(await probeHttp(`http://127.0.0.1:${port}/v1/rpc`, 100)).toEqual({ kind: 'timeout' });
     expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
+  it('times out on a server that sends headers and then stalls the body', async () => {
+    const server = createHttpServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.write('{"ok":');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    cleanups.push(
+      () =>
+        new Promise((resolve) => {
+          server.closeAllConnections();
+          server.close(resolve);
+        }),
+    );
+    const { port } = server.address() as net.AddressInfo;
+    expect(await probeHttp(`http://127.0.0.1:${port}/v1/rpc`, 100)).toEqual({ kind: 'timeout' });
   });
 
   it('reports a closed port as unreachable', async () => {

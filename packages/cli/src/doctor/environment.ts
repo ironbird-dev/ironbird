@@ -36,17 +36,19 @@ export interface DoctorEnvironment {
  * then stalls is a timeout rather than a hang. Never throws.
  */
 export async function probeHttp(url: string, timeoutMs: number): Promise<HttpProbe> {
+  const signal = AbortSignal.timeout(timeoutMs);
   try {
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ op: 'status' }),
       redirect: 'manual',
-      signal: AbortSignal.timeout(timeoutMs),
+      signal,
     });
     return { kind: 'response', status: response.status, body: await response.text() };
   } catch (error) {
-    if ((error as { name?: unknown }).name === 'TimeoutError') return { kind: 'timeout' };
+    // A stalled body rejects with AbortError rather than TimeoutError, so the signal is the authority.
+    if (signal.aborted || (error as { name?: unknown }).name === 'TimeoutError') return { kind: 'timeout' };
     const code = (error as { cause?: { code?: unknown } }).cause?.code;
     return { kind: 'unreachable', code: typeof code === 'string' ? code : messageOf(error) };
   }
@@ -56,8 +58,14 @@ export async function probeHttp(url: string, timeoutMs: number): Promise<HttpPro
 export function tryBind(host: string, port: number): Promise<BindProbe> {
   return new Promise((resolve) => {
     const server = net.createServer();
-    server.once('error', (error: NodeJS.ErrnoException) => resolve({ ok: false, code: error.code ?? 'UNKNOWN', message: error.message }));
-    server.listen(port, host, () => server.close(() => resolve({ ok: true })));
+    const fail = (error: NodeJS.ErrnoException): void => resolve({ ok: false, code: error.code ?? 'UNKNOWN', message: error.message });
+    server.once('error', fail);
+    try {
+      server.listen(port, host, () => server.close(() => resolve({ ok: true })));
+    } catch (error) {
+      // listen validates the port synchronously (ERR_SOCKET_BAD_PORT) instead of emitting 'error'.
+      fail(error as NodeJS.ErrnoException);
+    }
   });
 }
 
