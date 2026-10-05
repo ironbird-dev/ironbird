@@ -110,7 +110,7 @@ ironbird step payment.start '{"method":"card"}' --target ios   # dev build: stat
 | `@ironbird/react-native` | Your dev build | Bridge to the daemon, settle detection | P0 |
 | `@ironbird/cli` | Node 22+ | `ironbird` binary: daemon, commands, scenarios, screenshots, MCP server | P0 (MCP is P1) |
 | `ironbird` | Node 22+ | Thin wrapper that exposes the same binary, so `npx ironbird` works without a local install | P0 |
-| `@ironbird/testing` | Vitest or Jest | Scenario runner and model-based testing helpers | P1 |
+| `@ironbird/testing` | Vitest or Jest | Scenario runner and model-based testing helpers | P1 (delivered in M4) |
 | `@ironbird/xstate`, `@ironbird/redux` | Node and React Native | Target adapters for common state containers | P1 |
 
 ## What ironbird is not

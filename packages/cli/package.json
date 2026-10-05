@@ -29,6 +29,16 @@
         "default": "./dist/config-entry.cjs"
       }
     },
+    "./runner": {
+      "import": {
+        "types": "./dist/runner.d.ts",
+        "default": "./dist/runner.js"
+      },
+      "require": {
+        "types": "./dist/runner.d.cts",
+        "default": "./dist/runner.cjs"
+      }
+    },
     "./bin": "./dist/bin.js"
   },
   "files": [

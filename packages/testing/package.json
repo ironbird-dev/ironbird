@@ -1,0 +1,45 @@
+{
+  "name": "@ironbird/testing",
+  "version": "0.0.0",
+  "description": "Run ironbird scenarios and model-based tests against a headless app from Vitest or Jest",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ironbird-dev/ironbird.git",
+    "directory": "packages/testing"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup && node scripts/verify-build.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --project unit",
+    "test:jest": "jest --config jest.config.cjs"
+  },
+  "dependencies": {
+    "@ironbird/cli": "workspace:*",
+    "@ironbird/core": "workspace:*",
+    "fast-check": "^4.9.0",
+    "yaml": "^2.9.0"
+  },
+  "peerDependencies": {
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "jest": "^30.5.2",
+    "zod": "^4.2.0"
+  }
+}

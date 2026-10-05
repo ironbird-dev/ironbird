@@ -39,6 +39,7 @@ describe('exit codes', () => {
     expect(exitCodeForError('INVALID_PAYLOAD')).toBe(1);
     expect(exitCodeForError('DISPATCH_FAILED')).toBe(1);
     expect(exitCodeForError('INTERNAL')).toBe(1);
+    expect(exitCodeForError('INVARIANT_FAILED')).toBe(1);
     expect(exitCodeForError('AMBIGUOUS_TARGET')).toBe(2);
     expect(exitCodeForError('HEADLESS_LOAD_FAILED')).toBe(2);
     expect(exitCodeForError('INVALID_CONFIG')).toBe(2);

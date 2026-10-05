@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-10-03 |
+| Last updated | 2026-10-04 |
 | Related | [spec.md](spec.md) (requirement and question IDs) · [testing-strategy.md](testing-strategy.md) |
 
 Estimates assume focused effort and describe a sequence, not calendar dates. Each milestone ends with a short demo and a go/no-go decision against its exit criteria.
@@ -106,8 +106,8 @@ Gate failed on 2026-10-03 after two batches; see docs/evals/m3-agent-interface.m
 
 **Exit criteria**
 
-- [ ] With the planted scenario removed, model-based testing finds the race within 1,000 runs for at least 9 of 10 seeds
-- [ ] Mutation score ≥ 70% on the clock and tracker
+- [x] With the planted scenario removed, model-based testing finds the race within 1,000 runs for at least 9 of 10 seeds
+- [x] Mutation score ≥ 70% on the clock and tracker
 
 ## M5: Adapters and 0.1 release
 

@@ -24,6 +24,7 @@
   },
   "devDependencies": {
     "@ironbird/cli": "workspace:*",
+    "@ironbird/testing": "workspace:*",
     "@types/pngjs": "^6.0.5",
     "@types/react": "~19.2.18",
     "pngjs": "^7.0.0"

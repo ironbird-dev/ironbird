@@ -7,3 +7,5 @@ coverage/
 .claude
 .expo/
 
+reports/
+.stryker-tmp/

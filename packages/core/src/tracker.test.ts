@@ -1,7 +1,8 @@
 import fc from 'fast-check';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createManualClock, createRealClock } from './clock';
-import { createTracker, isFakePort, markFakePort } from './tracker';
+import type { SettleResult } from './protocol';
+import { FAKE_PORT_MARK, QUIESCENT_STABLE_YIELDS, createTracker, isFakePort, markFakePort } from './tracker';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -224,6 +225,89 @@ describe('createTracker', () => {
       { numRuns: 30 },
     );
   });
+
+  it('marks a port with a hidden, permanent global-registry symbol', () => {
+    const port = markFakePort({ go: () => Promise.resolve() });
+    // The registry key lets a second copy of core (the ESM and CommonJS builds) recognise the mark.
+    expect(FAKE_PORT_MARK).toBe(Symbol.for('ironbird.fakePort'));
+    expect(Object.getOwnPropertyDescriptor(port, FAKE_PORT_MARK)).toEqual({ value: true, enumerable: false, configurable: false, writable: false });
+    expect(isFakePort({ ...port })).toBe(false);
+  });
+
+  it('passes non-promise results through untouched', () => {
+    const tracker = createTracker();
+    const plain = { ok: true };
+    const notThenable = { then: 'later' };
+    const wrapped = tracker.wrap({ plain: () => plain, nothing: () => null, odd: () => notThenable }, 'api');
+    expect(wrapped.plain()).toBe(plain);
+    expect(wrapped.nothing()).toBeNull();
+    expect(wrapped.odd()).toBe(notThenable);
+    expect(tracker.pending()).toEqual([]);
+  });
+
+  it('passes symbol-keyed methods through unwrapped', () => {
+    const tracker = createTracker();
+    const key = Symbol('custom');
+    const method = (): Promise<number> => Promise.resolve(1);
+    const wrapped = tracker.wrap({ [key]: method }, 'api');
+    expect(wrapped[key]).toBe(method);
+  });
+
+  it('calls a method replaced on the port after it was first read', async () => {
+    const tracker = createTracker();
+    const port = { fetch: (): Promise<number> => Promise.resolve(1) };
+    const wrapped = tracker.wrap(port, 'api');
+    const first = wrapped.fetch;
+    expect(await wrapped.fetch()).toBe(1);
+    port.fetch = () => Promise.resolve(2);
+    expect(wrapped.fetch).not.toBe(first);
+    expect(await wrapped.fetch()).toBe(2);
+  });
+
+  it('returns a callable unsubscribe from onChange when disabled', () => {
+    const tracker = createTracker({ enabled: false });
+    const off = tracker.onChange(() => {});
+    expect(typeof off).toBe('function');
+    expect(() => off()).not.toThrow();
+  });
+
+  it('in idle mode, waits out fake-backed work instead of reporting quiescence', async () => {
+    const tracker = createTracker({ clock: createManualClock() });
+    tracker.wrap(markFakePort({ go: () => new Promise<void>(() => {}) }), 'reader').go();
+    const result = await tracker.whenIdle({ timeoutMs: 40 });
+    expect(result).toMatchObject({ idle: false, quiescent: false });
+    expect(result.pending.map((item) => item.label)).toEqual(['reader.go']);
+  });
+
+  it('reports quiescence after QUIESCENT_STABLE_YIELDS unchanged samples, restarting the count when real work interleaves', async () => {
+    const clock = createRealClock();
+    const tracker = createTracker({ clock });
+    tracker.wrap(markFakePort({ go: () => new Promise<void>(() => {}) }), 'reader').go();
+    const real = deferred<void>();
+    let samples = 0;
+    // A real clock's timers() is read exactly once per settle sample, so the spy counts samples and
+    // acts at chosen ones: real work starts during sample 2 (seen from sample 3) and settles during sample 3.
+    vi.spyOn(clock, 'timers').mockImplementation(() => {
+      samples += 1;
+      if (samples === 2) void tracker.track(real.promise, 'api.submit');
+      if (samples === 3) real.resolve();
+      return [];
+    });
+    const result = await tracker.whenIdle({ timeoutMs: 5_000, mode: 'quiescent' });
+    expect(result).toMatchObject({ idle: false, quiescent: true });
+    // Samples 1-2 fake only, sample 3 sees the real effect and restarts the count, then
+    // QUIESCENT_STABLE_YIELDS + 1 unchanged fake-only samples (4 to 7) report quiescence.
+    expect(samples).toBe(3 + QUIESCENT_STABLE_YIELDS + 1);
+  });
+
+  it('settles once a short real timer fires, though timers send no change', async () => {
+    const clock = createRealClock();
+    const tracker = createTracker({ clock });
+    clock.setTimeout(() => {}, 30, 'debounce');
+    const result = await tracker.whenIdle({ timeoutMs: 2_000 });
+    expect(result.idle).toBe(true);
+    expect(result.waitedMs).toBeLessThan(1_000);
+  });
 });
 
 describe('listener isolation', () => {
@@ -241,6 +325,104 @@ describe('listener isolation', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(calls).toBe(2);
     expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('listener broke'));
     warn.mockRestore();
+  });
+});
+
+describe('createTracker with frozen wall-clock time', () => {
+  beforeEach(() => {
+    // setImmediate stays real so quiescent sampling still yields; scheduler.sleep never fires.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    vi.setSystemTime(10_000);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reports an effect tracked without options as real, with its wall-clock age', () => {
+    const tracker = createTracker();
+    void tracker.track(new Promise<void>(() => {}), 'work');
+    vi.setSystemTime(10_250);
+    expect(tracker.pending()).toEqual([{ kind: 'effect', label: 'work', ageMs: 250, fake: false }]);
+  });
+
+  it('counts a real timer due exactly at the threshold, names unlabeled timers by id, and ages timers from when they were scheduled', () => {
+    const clock = createRealClock();
+    const tracker = createTracker({ clock, timerThresholdMs: 1_000 });
+    clock.setTimeout(() => {}, 1_300, 'edge');
+    clock.setTimeout(() => {}, 1_301, 'beyond');
+    const unlabeled = clock.setTimeout(() => {}, 500);
+    vi.advanceTimersByTime(300);
+    // now 10_300: 'edge' is due in exactly 1_000 ms, 'beyond' in 1_001 ms.
+    expect(tracker.pending()).toEqual([
+      { kind: 'timer', label: `timer#${unlabeled}`, ageMs: 300, fake: false },
+      { kind: 'timer', label: 'edge', ageMs: 300, fake: false },
+    ]);
+  });
+
+  it("reports nextTimerInMs from the manual clock's current time, and never for a real clock", async () => {
+    const manual = createManualClock({ now: 5_000 });
+    manual.setTimeout(() => {}, 1_200, 'reader');
+    expect(await createTracker({ clock: manual }).whenIdle()).toEqual({ idle: true, quiescent: false, waitedMs: 0, pending: [], nextTimerInMs: 1_200 });
+    const real = createRealClock();
+    real.setTimeout(() => {}, 5_000, 'poll');
+    expect(await createTracker({ clock: real }).whenIdle()).toEqual({ idle: true, quiescent: false, waitedMs: 0, pending: [] });
+  });
+
+  it('wakes on a tracked change instead of waiting for the next poll', async () => {
+    const tracker = createTracker();
+    const work = deferred<void>();
+    void tracker.track(work.promise, 'work');
+    const settled = tracker.whenIdle({ timeoutMs: 1_000 });
+    work.resolve();
+    expect(await settled).toEqual({ idle: true, quiescent: false, waitedMs: 0, pending: [] });
+  });
+
+  it('returns at once with the pending list when timeoutMs is 0', async () => {
+    const tracker = createTracker();
+    void tracker.track(new Promise<void>(() => {}), 'api.submit');
+    expect(await tracker.whenIdle({ timeoutMs: 0 })).toEqual({
+      idle: false,
+      quiescent: false,
+      waitedMs: 0,
+      pending: [{ kind: 'effect', label: 'api.submit', ageMs: 0, fake: false }],
+    });
+  });
+
+  it('times out at its deadline rather than on the next poll after it', async () => {
+    const tracker = createTracker();
+    void tracker.track(new Promise<void>(() => {}), 'api.submit');
+    let result: SettleResult | undefined;
+    void tracker.whenIdle({ timeoutMs: 20 }).then((settled) => {
+      result = settled;
+    });
+    // Polls at 0 and 16 ms; the second sleeps only the 4 ms left, so the deadline is met exactly.
+    await vi.advanceTimersByTimeAsync(20);
+    expect(result).toEqual({ idle: false, quiescent: false, waitedMs: 20, pending: [{ kind: 'effect', label: 'api.submit', ageMs: 20, fake: false }] });
+  });
+
+  it('re-samples unchanged real work on a bounded poll instead of spinning', async () => {
+    const clock = createRealClock();
+    const tracker = createTracker({ clock });
+    let samples = 0;
+    // A real clock's timers() is read exactly once per settle sample.
+    vi.spyOn(clock, 'timers').mockImplementation(() => {
+      samples += 1;
+      return [];
+    });
+    void tracker.track(new Promise<void>(() => {}), 'api.submit');
+    const settled = tracker.whenIdle({ timeoutMs: 100 });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await settled).toMatchObject({ idle: false, waitedMs: 100 });
+    // A poll of roughly 10 to 30 ms samples a handful of times in 100 ms; a zero-delay spin samples about once per ms.
+    expect(samples).toBeGreaterThanOrEqual(3);
+    expect(samples).toBeLessThanOrEqual(12);
+  });
+
+  it('gives up after one sample in quiescent mode when timeoutMs is 0', async () => {
+    const tracker = createTracker({ clock: createManualClock() });
+    tracker.wrap(markFakePort({ go: () => new Promise<void>(() => {}) }), 'reader').go();
+    expect(await tracker.whenIdle({ timeoutMs: 0, mode: 'quiescent' })).toMatchObject({ idle: false, quiescent: false, waitedMs: 0 });
   });
 });

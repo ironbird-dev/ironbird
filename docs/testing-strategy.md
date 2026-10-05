@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-09-11 |
+| Last updated | 2026-10-04 |
 | Related | [spec.md](spec.md) · [roadmap.md](roadmap.md) · [AGENTS.md](../AGENTS.md) |
 
 ironbird's tests have two jobs: prove that ironbird works, and measure how far its results can be trusted. The second job matters as much as the first, because a verification tool that is quietly wrong is worse than having none.
@@ -17,6 +17,7 @@ ironbird's tests have two jobs: prove that ironbird works, and measure how far i
 | Protocol contract (from M1) | Vitest | Every commit | Shared message fixtures that both the daemon and the bridge must accept and produce; fixtures are kept per protocol version |
 | Daemon integration | Vitest in Node | Every commit | Every CLI command against the example app's headless entry: outputs, error codes, exit codes, reset isolation, two concurrent clients including a `wait` in one satisfied by a `clock advance` in the other |
 | Bridge integration, no device | Vitest in Node | Every commit | The real bridge running in Node with shims for `Platform`, `requestAnimationFrame`, and `WebSocket` and a manual clock, connected to a real daemon: handshake, reconnection, the app-id check, request ordering, settle timeouts, the dev-only guard |
+| Model-based (from M4) | Vitest with `@ironbird/testing` | Smoke every commit; full gate per milestone | The example's race model: a fixed five-step witness and one measured seed in `pnpm test`; 10 seeds × 1,000 runs, planted and unplanted, in `pnpm gate:m4` |
 | Device end to end | Vitest on a macOS runner with iOS Simulator and an Android emulator | Nightly and before each release | Example app: 300-step stale-screenshot run, Metro reload reconnection, `step` latency, `verify-bundle` against real release and export output |
 | Agent evals | Scripted sessions with a coding agent | Per milestone from M3, and before each release | Fresh-session tasks on the example app; task success rate and false "verified" claims |
 
