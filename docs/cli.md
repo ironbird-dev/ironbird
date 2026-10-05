@@ -307,13 +307,27 @@ ironbird send todos.clear
 ironbird snapshot load todos.json
 ```
 
-### watch (P1)
+### watch
 
 ```text
 ironbird watch [--path <path>]
 ```
 
-Streams `{ rev, patch }` JSON lines, where `patch` is a JSON Patch (RFC 6902) against the previous state, until interrupted.
+Prints one JSON line per change to the state at `--path` (default: the whole state), regardless of TTY, until interrupted: `{ "rev": 7, "patch": [...] }`. `patch` is a JSON Patch (RFC 6902) that turns the last printed value into the new one. Its pointers are relative to the value at `--path`, so the root is `""`, and keys escape `~` as `~0` and `/` as `~1` (RFC 6901). `rev` is the revision the read returned.
+
+- The first line is always printed: `[{ "op": "add", "path": "", "value": ... }]` with the current value, or `[]` when the path is missing. A path is missing when it doesn't resolve or holds `undefined`; `null` is a value.
+- Later, a path that disappears prints `[{ "op": "remove", "path": "" }]` and one that appears prints an `add` at `""`. A change that leaves the watched value equal prints nothing.
+- Objects are compared by key (`add`, `remove`, `replace`). Arrays are compared index by index: changed items are replaced whole, extra old items are removed from the highest index down, and new items are added at the end. A change of type is a `replace`.
+- `watch` samples state. The daemon sends at most 10 state frames per second and coalesces the revisions in between, so intermediate values can be skipped; use `events --follow` when every recorded event matters. Revisions restart after `reset` and `reload`, so `rev` can go backwards.
+- It opens the stream before its first read and reads only after the daemon's first `state` frame, so no change after it starts is missed. Reads never overlap, and any frame that arrives during a read causes one more read after it.
+- SIGINT ends it with exit 0. An `error` frame, such as `TARGET_DISCONNECTED` when a connected app goes away, or a read that fails, prints `{ "error": ... }` as the last line and exits with that error's code. `watch` doesn't reconnect.
+
+```sh
+ironbird watch --path todos
+{"rev":3,"patch":[{"op":"add","path":"","value":[{"title":"milk","done":false}]}]}
+{"rev":4,"patch":[{"op":"replace","path":"/0","value":{"title":"milk","done":true}}]}
+{"rev":5,"patch":[{"op":"add","path":"/1","value":{"title":"eggs","done":false}}]}
+```
 
 ### doctor
 

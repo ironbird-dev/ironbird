@@ -1,4 +1,4 @@
-import { IronbirdError, messageOf, suggestNames, toErrorShape, type Description, type ErrorShape, type FakeCallsResult, type SettleResult, type StepResult, type TargetInfo } from '@ironbird/core';
+import { IronbirdError, messageOf, suggestNames, toErrorShape, type Description, type FakeCallsResult, type SettleResult, type StepResult, type TargetInfo } from '@ironbird/core';
 import { Command, CommanderError, InvalidArgumentError } from 'commander';
 import { createDaemonClient, resolveDaemon, type DaemonClient } from './client';
 import type { runServe } from './commands/serve';
@@ -6,7 +6,7 @@ import type { McpServerOptions } from '../mcp/server';
 import type { DoctorEnvironment } from '../doctor/environment';
 import { UsageError, parseDuration } from './durations';
 import { exitCodeForError, exitCodeForStep } from './exit-codes';
-import { createOutput, withTarget, type Output } from './output';
+import { asErrorShape, createOutput, withTarget, type Output } from './output';
 import { parseJsonOrString, parsePayload } from './values';
 import { formatSnapshotFile, parseSnapshotFile } from './snapshot-file';
 import { formatScenarioResult } from '../scenario/format';
@@ -14,6 +14,7 @@ import { access, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findMarker } from '../verify-bundle';
+import { runWatch } from '../watch/watch';
 
 export interface ProgramIo {
   cwd: string;
@@ -50,14 +51,6 @@ interface Context {
 }
 
 type Outcome = { value?: unknown; exit?: number } | undefined;
-
-/** Recognizes a stream frame shaped like an ErrorShape (an object with string `code` and `message`). */
-function asErrorShape(data: unknown): ErrorShape | undefined {
-  if (data === null || typeof data !== 'object') return undefined;
-  const candidate = data as { code?: unknown; message?: unknown };
-  if (typeof candidate.code !== 'string' || typeof candidate.message !== 'string') return undefined;
-  return candidate as ErrorShape;
-}
 
 const integer = (value: string): number => {
   const parsed = Number(value);
@@ -245,6 +238,12 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
         return { exit: followExit };
       }),
     );
+
+  program
+    .command('watch')
+    .description('Print { rev, patch } JSON lines as the state at a path changes, until interrupted')
+    .option('--path <path>', 'watch only this subtree of state', '')
+    .action(wrap(async (ctx, opts: { path: string }) => ({ exit: await runWatch({ client: ctx.client, target: ctx.target, path: opts.path, signal: signal(), write: io.stdout }) })));
 
   program
     .command('fake <fake> [control] [payload]')

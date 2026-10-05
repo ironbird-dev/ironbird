@@ -606,3 +606,27 @@ describe('snapshot', () => {
     expect(h.stdout).toEqual([]);
   });
 });
+
+describe('watch', () => {
+  it('reads the path after the first state frame and prints the first line, on the target given', async () => {
+    const h = harness(
+      { events: { events: [], nextSeq: 4, truncated: false }, getState: { rev: 2, path: 'cart', value: { items: [] } } },
+      { streamFrames: [{ kind: 'state', data: { rev: 2 } }], signal: new AbortController().signal },
+    );
+    expect(await h.run(['watch', '--path', 'cart', '--target', 'ios'])).toBe(0);
+    expect(h.calls).toEqual([
+      { op: 'events', params: { limit: 0 }, target: 'ios' },
+      { op: 'getState', params: { path: 'cart' }, target: 'ios' },
+    ]);
+    expect(h.stdout).toEqual(['{"rev":2,"patch":[{"op":"add","path":"","value":{"items":[]}}]}\n']);
+  });
+
+  it('prints an error frame as a JSON line even in a TTY and exits with its code', async () => {
+    const h = harness(
+      { events: { events: [], nextSeq: 0, truncated: false } },
+      { isTTY: true, streamFrames: [{ kind: 'error', data: { code: 'TARGET_DISCONNECTED', message: 'gone' } }], signal: new AbortController().signal },
+    );
+    expect(await h.run(['watch'])).toBe(1);
+    expect(h.stdout).toEqual(['{"error":{"code":"TARGET_DISCONNECTED","message":"gone"}}\n']);
+  });
+});

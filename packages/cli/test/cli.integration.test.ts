@@ -97,4 +97,31 @@ describe('ironbird CLI against the example app', () => {
     expect(settle.code).toBe(0);
     expect(settle.json).toMatchObject({ target: 'headless', idle: true });
   });
+
+  it('watch prints the first value and each change as JSON lines, and exits 0 on SIGINT', async () => {
+    await ironbird('reset');
+    const child = spawn('node', [bin, 'watch', '--path', 'cart.items'], { cwd: example, env, stdio: ['ignore', 'pipe', 'inherit'] });
+    const lines: Array<{ rev: number; patch: Array<{ op: string; path: string; value?: unknown }> }> = [];
+    let buffer = '';
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      buffer += chunk;
+      for (let end = buffer.indexOf('\n'); end !== -1; end = buffer.indexOf('\n')) {
+        lines.push(JSON.parse(buffer.slice(0, end)) as (typeof lines)[number]);
+        buffer = buffer.slice(end + 1);
+      }
+    });
+    const exitCode = new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
+    const until = async (ready: () => boolean, what: string): Promise<void> => {
+      for (let i = 0; i < 1_000 && !ready(); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      if (!ready()) throw new Error(`timed out waiting for ${what}`);
+    };
+    await until(() => lines.length === 1, 'the first line');
+    expect(lines[0]).toEqual({ rev: 0, patch: [{ op: 'add', path: '', value: [] }] });
+    await ironbird('send', 'cart.addItem', '{"sku":"cut-45","qty":1}');
+    await until(() => lines.length === 2, 'the change');
+    expect(lines[1]?.patch).toEqual([{ op: 'add', path: '/0', value: expect.objectContaining({ sku: 'cut-45' }) }]);
+    child.kill('SIGINT');
+    expect(await exitCode).toBe(0);
+  });
 });
