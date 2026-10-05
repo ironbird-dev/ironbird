@@ -26,6 +26,7 @@ describe('IronbirdError', () => {
   it('wraps unknown errors as INTERNAL', () => {
     expect(toErrorShape(new Error('disk on fire'))).toEqual({ code: 'INTERNAL', message: 'disk on fire', details: { message: 'disk on fire' } });
     expect(toErrorShape('a string')).toEqual({ code: 'INTERNAL', message: 'a string', details: { message: 'a string' } });
+    expect(toErrorShape(Object.create(null))).toEqual({ code: 'INTERNAL', message: '[unprintable error]', details: { message: '[unprintable error]' } });
     expect(toErrorShape(new IronbirdError('NO_TARGET', 'none', { available: [] }))).toEqual({ code: 'NO_TARGET', message: 'none', details: { available: [] } });
   });
 

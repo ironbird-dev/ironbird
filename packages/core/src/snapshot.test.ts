@@ -119,6 +119,30 @@ describe('serializeSnapshot', () => {
     expect(rejection({ revoked: revoked.proxy })).toMatchObject({ details: { path: 'revoked', reason: 'unreadable' } });
   });
 
+  it('turns a Proxy whose traps throw into INVALID_SNAPSHOT, at the array or key that was being read', () => {
+    const trap = (): never => {
+      throw new Error('trap');
+    };
+    const noDescriptor = new Proxy([1, 2], { getOwnPropertyDescriptor: trap });
+    expect(rejection({ list: noDescriptor })).toMatchObject({ code: 'INVALID_SNAPSHOT', details: { path: 'list', reason: 'unreadable' } });
+    const noHas = new Proxy([1, 2], { has: trap, get: trap });
+    expect(rejection({ list: noHas })).toMatchObject({ code: 'INVALID_SNAPSHOT', details: { reason: 'unreadable' } });
+    const noOwnKeys = new Proxy({ a: 1 }, { ownKeys: trap });
+    expect(rejection({ obj: noOwnKeys })).toMatchObject({ code: 'INVALID_SNAPSHOT', details: { path: 'obj', reason: 'unreadable' } });
+    // Only the hole probe fails: inspection (Object.keys) succeeds, then the trap throws on the next read of index 1.
+    let reads = 0;
+    const onlyIndex = new Proxy([1, 2], {
+      getOwnPropertyDescriptor: (target, key) => {
+        if (key === '1') {
+          reads += 1;
+          if (reads > 1) throw new Error('trap');
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    expect(rejection({ list: onlyIndex })).toMatchObject({ code: 'INVALID_SNAPSHOT', details: { path: 'list.1', reason: 'unreadable' } });
+  });
+
   it('accepts null-prototype objects and keeps a __proto__ key as own data on a plain object', () => {
     const bare = Object.create(null) as Record<string, unknown>;
     bare['x'] = 1;

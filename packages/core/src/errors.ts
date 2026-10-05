@@ -49,13 +49,23 @@ export class IronbirdError extends Error {
 
 export function isIronbirdError(value: unknown): value is IronbirdError {
   if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as { name?: unknown; code?: unknown; message?: unknown };
-  return candidate.name === 'IronbirdError' && typeof candidate.code === 'string' && typeof candidate.message === 'string';
+  try {
+    const candidate = value as { name?: unknown; code?: unknown; message?: unknown };
+    return candidate.name === 'IronbirdError' && typeof candidate.code === 'string' && typeof candidate.message === 'string';
+  } catch {
+    // A throwing getter or a revoked Proxy is not an IronbirdError.
+    return false;
+  }
 }
 
 export function messageOf(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  try {
+    if (error instanceof Error) return String(error.message);
+    return String(error);
+  } catch {
+    // Object.create(null), a throwing toString, or a revoked Proxy has no printable form.
+    return '[unprintable error]';
+  }
 }
 
 export function toErrorShape(error: unknown): ErrorShape {

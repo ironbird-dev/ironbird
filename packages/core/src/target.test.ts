@@ -137,6 +137,44 @@ describe('createTarget', () => {
     expect(await target.restore?.({}).catch((error: unknown) => error)).toBe(restoreError);
     expect(target.revision()).toBe(0);
   });
+
+  it('classifies a thrown value that cannot be printed as INVALID_SNAPSHOT', async () => {
+    const hostile = {
+      toString: () => {
+        throw new Error('no string');
+      },
+    };
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    const thrown: unknown[] = [Object.create(null), Symbol('boom'), hostile, revoked.proxy, undefined, null];
+    for (const value of thrown) {
+      const target = createTarget({
+        commands,
+        dispatch: () => {},
+        getState: () => 0,
+        persist: () => {
+          throw value;
+        },
+        restore: () => {
+          throw value;
+        },
+      });
+      let saved: unknown;
+      try {
+        target.persist?.();
+      } catch (error) {
+        saved = error;
+      }
+      expect(saved).toBeInstanceOf(IronbirdError);
+      expect(saved).toMatchObject({ code: 'INVALID_SNAPSHOT', details: { path: '' } });
+      const restored = await target.restore?.({}).catch((error: unknown) => error);
+      expect(restored).toBeInstanceOf(IronbirdError);
+      expect(restored).toMatchObject({ code: 'INVALID_SNAPSHOT', details: { path: '' } });
+    }
+    const bare = Object.create(null) as object;
+    const unprintable = createTarget({ commands, dispatch: () => {}, getState: () => 0, persist: () => { throw bare; } });
+    expect(() => unprintable.persist?.()).toThrow('Snapshot could not be saved: [unprintable error]');
+  });
 });
 
 describe('listener isolation', () => {

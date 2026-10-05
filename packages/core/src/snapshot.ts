@@ -1,4 +1,4 @@
-import { IronbirdError } from './errors';
+import { IronbirdError, isIronbirdError } from './errors';
 
 /**
  * Copies what a `Target`'s `persist` returned into JSON-safe data, or throws `INVALID_SNAPSHOT`
@@ -53,7 +53,26 @@ export function serializeSnapshot(value: unknown): unknown {
     else fail([...path, key], 'array-property');
   };
 
+  // Every reflective read below can reach a Proxy trap or a hostile getter. A failure that isn't
+  // already an IronbirdError (a nested INVALID_SNAPSHOT passes through) means the object can't be inspected.
   const visitObject = (object: object, path: string[]): unknown => {
+    try {
+      return inspectObject(object, path);
+    } catch (error) {
+      if (isIronbirdError(error)) throw error;
+      return fail(path, 'unreadable');
+    }
+  };
+
+  const hasOwn = (object: object, index: number, path: string[]): boolean => {
+    try {
+      return Object.prototype.hasOwnProperty.call(object, index);
+    } catch {
+      return fail(path, 'unreadable');
+    }
+  };
+
+  const inspectObject = (object: object, path: string[]): unknown => {
     if (ancestors.has(object)) return fail(path, 'cycle');
     let proto: object | null;
     let isArray: boolean;
@@ -81,7 +100,7 @@ export function serializeSnapshot(value: unknown): unknown {
         const items: unknown[] = [];
         for (let index = 0; index < array.length; index += 1) {
           const childPath = [...path, String(index)];
-          if (!Object.prototype.hasOwnProperty.call(array, index)) return fail(childPath, 'hole');
+          if (!hasOwn(array, index, childPath)) return fail(childPath, 'hole');
           const item = visit(read(array, String(index), childPath), childPath);
           if (item === undefined) return fail(childPath, 'undefined');
           items.push(item);
