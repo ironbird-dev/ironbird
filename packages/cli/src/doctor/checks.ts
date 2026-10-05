@@ -1,3 +1,6 @@
+import { messageOf } from '@ironbird/core';
+import path from 'node:path';
+import { listAndroidDevices, listBootedSimulators } from '../devices';
 import type { DoctorEnvironment, HttpProbe } from './environment';
 
 export type DoctorCheckId = 'node' | 'config' | 'headless' | 'port' | 'gitignore' | 'versions' | 'simctl' | 'adb';
@@ -129,4 +132,119 @@ export async function checkPort(ports: PortConfig | undefined, env: Pick<DoctorE
   const bridge = await inspectBridgePort(host, bridgePort, env);
   if (!bridge.ok) return failCheck('port', true, `${daemon.detail}, but ${bridge.detail}`, bridge.fix);
   return passCheck('port', true, `${daemon.detail}; ${bridge.detail}`);
+}
+
+const codeOf = (error: unknown): unknown => (error as { code?: unknown }).code;
+
+const MAX_ONE_LINE_LENGTH = 200;
+
+/** External text (host tool output, package.json fields, device names) onto one line: control characters become spaces and the length is capped, so `detail` stays one line. */
+function oneLine(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  const clean = text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').trim();
+  return clean.length > MAX_ONE_LINE_LENGTH ? `${clean.slice(0, MAX_ONE_LINE_LENGTH)}...` : clean;
+}
+
+/** The first line of a host tool's stderr, else the error's message, on one line. */
+export function failureText(error: unknown): string {
+  const stderr = (error as { stderr?: unknown }).stderr;
+  const first = typeof stderr === 'string' ? stderr.trim().split('\n')[0] : undefined;
+  return oneLine(first ? first : messageOf(error));
+}
+
+/**
+ * The artifacts directory (`.ironbird/` by default) must be ignored by git (M5 design §6), because it
+ * holds state, events, and screenshots (architecture.md §9). Asked with a trailing slash: without
+ * it, git reports a `.ironbird/` pattern as not matching while the directory doesn't exist yet, as
+ * in a fresh clone.
+ */
+export async function checkGitignore(paths: { rootDir: string; artifactsPath: string }, env: Pick<DoctorEnvironment, 'exec'>): Promise<DoctorCheck> {
+  const { rootDir, artifactsPath } = paths;
+  const gitFix = `Run git status in ${rootDir} and fix what it reports`;
+  try {
+    await env.exec('git', ['-C', rootDir, 'rev-parse', '--show-toplevel']);
+  } catch (error) {
+    if (codeOf(error) === 'ENOENT') return passCheck('gitignore', true, 'git is not installed, so there is nothing to check');
+    if (failureText(error).includes('not a git repository')) return passCheck('gitignore', true, 'not in a git repository');
+    return failCheck('gitignore', true, `git rev-parse failed: ${failureText(error)}`, gitFix);
+  }
+  const relative = `${path.relative(rootDir, artifactsPath).split(path.sep).join('/') || '.'}/`;
+  const shown = oneLine(relative);
+  try {
+    await env.exec('git', ['-C', rootDir, 'check-ignore', '-q', '--', relative]);
+    return passCheck('gitignore', true, `${shown} is ignored by git`);
+  } catch (error) {
+    if (codeOf(error) === 1) return failCheck('gitignore', true, `${shown} is not ignored by git, so state, events, and screenshots could be committed`, `Add ${shown} to ${path.join(rootDir, '.gitignore')}`);
+    if (failureText(error).includes('outside repository')) return passCheck('gitignore', true, `${shown} is outside the git repository`);
+    return failCheck('gitignore', true, `git check-ignore failed: ${failureText(error)}`, gitFix);
+  }
+}
+
+const SEMVER_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:-.+)?$/;
+
+function compareKeys(a: number[], b: number[]): number {
+  for (let index = 0; index < a.length; index += 1) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+/** The highest of `versions` by major, minor, and patch, a prerelease ranking below its release; strings that aren't `x.y.z[-pre]` are ignored. */
+export function newestVersion(versions: string[]): string | undefined {
+  let best: { version: string; key: number[] } | undefined;
+  for (const version of versions) {
+    const match = SEMVER_PATTERN.exec(version);
+    if (!match) continue;
+    const key = [Number(match[1]), Number(match[2]), Number(match[3]), version.includes('-') ? 0 : 1];
+    if (best === undefined || compareKeys(key, best.key) > 0) best = { version, key };
+  }
+  return best?.version;
+}
+
+/**
+ * Every installed `@ironbird/*` package, the `ironbird` package, and the running CLI must have one
+ * version (M5 design §6): a CLI from `npx` or a global install that differs from the app's packages
+ * is the skew the M3 eval hit. Changesets releases them as one fixed group, so equal is the norm.
+ */
+export async function checkVersions(rootDir: string, runningVersion: string, env: Pick<DoctorEnvironment, 'listInstalledPackages'>): Promise<DoctorCheck> {
+  const installed = await env.listInstalledPackages(rootDir);
+  if (installed.length === 0) {
+    return failCheck('versions', true, `No ironbird packages are installed in ${rootDir} or above it`, `Install @ironbird/core and @ironbird/react-native, and @ironbird/cli as a dev dependency, all at ${runningVersion}`);
+  }
+  const entries: Array<{ name: string; version: string | undefined }> = [...installed.map(({ name, version }) => ({ name, version })), { name: 'this CLI', version: runningVersion }];
+  const detail = entries.map(({ name, version }) => `${oneLine(name)} ${version === undefined ? '(no readable version)' : oneLine(version)}`).join(', ');
+  const versions = new Set(entries.map(({ version }) => version));
+  if (versions.size === 1 && !versions.has(undefined)) return passCheck('versions', true, detail);
+  const target = newestVersion(entries.flatMap(({ version }) => (version === undefined ? [] : [version]))) ?? runningVersion;
+  return failCheck(
+    'versions',
+    true,
+    detail,
+    `Install one version of every ironbird package, for example ${installed.map(({ name }) => `${name}@${target}`).join(' ')}, and run the CLI installed in the project (npx ironbird) so it matches`,
+  );
+}
+
+/** Informational (M5 design §6): iOS work needs macOS and `xcrun simctl`; the detail lists booted simulators. */
+export async function checkSimctl(env: Pick<DoctorEnvironment, 'platform' | 'exec'>): Promise<DoctorCheck> {
+  if (env.platform !== 'darwin') return failCheck('simctl', false, `iOS simulators need macOS; this machine runs ${env.platform}`);
+  try {
+    const booted = await listBootedSimulators(env.exec);
+    if (booted.length === 0) return passCheck('simctl', false, 'xcrun simctl is available; no simulator is booted');
+    return passCheck('simctl', false, `xcrun simctl is available; booted: ${booted.map((device) => `${oneLine(device.name ?? 'unnamed')} (${oneLine(device.id)})`).join(', ')}`);
+  } catch (error) {
+    return failCheck('simctl', false, `xcrun simctl is unavailable: ${failureText(error)}`, 'Install Xcode, open it once to finish installing its components, and select it with sudo xcode-select -s /Applications/Xcode.app');
+  }
+}
+
+/** Informational (M5 design §6): Android work needs `adb`; the detail lists connected devices. */
+export async function checkAdb(env: Pick<DoctorEnvironment, 'exec'>): Promise<DoctorCheck> {
+  try {
+    const devices = await listAndroidDevices(env.exec);
+    if (devices.length === 0) return passCheck('adb', false, 'adb is available; no device is connected');
+    return passCheck('adb', false, `adb is available; devices: ${devices.map((device) => (device.name ? `${oneLine(device.name)} (${oneLine(device.id)})` : oneLine(device.id))).join(', ')}`);
+  } catch (error) {
+    if (codeOf(error) === 'ENOENT') return failCheck('adb', false, 'adb is not on the PATH', 'Install the Android SDK Platform-Tools and add them to your PATH');
+    return failCheck('adb', false, `adb failed: ${failureText(error)}`, 'Run adb devices and fix what it reports');
+  }
 }
