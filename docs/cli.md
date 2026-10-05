@@ -3,10 +3,10 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-09-25 |
+| Last updated | 2026-09-29 |
 | Related | [protocol.md](protocol.md) · [api.md](api.md) |
 
-The `ironbird` binary ships in `@ironbird/cli` and requires Node 22 or newer. The unscoped `ironbird` package exposes the same binary, so `npx ironbird <command>` works without a local install. Every command except `serve`, `doctor`, `verify-bundle`, and `mcp` talks to a running daemon.
+The `ironbird` binary ships in `@ironbird/cli` and requires Node 22 or newer. The unscoped `ironbird` package exposes the same binary, so `npx ironbird <command>` works without a local install. Every command except `serve`, `doctor`, `verify-bundle`, `mcp`, and `agent setup` talks to a running daemon. `mcp` starts without one and finds it on each tool call.
 
 ## Global options
 
@@ -72,7 +72,7 @@ Errors print to stdout as JSON too, so agents parse one stream:
 
 In a TTY, the same data is printed in a readable form.
 
-The CLI prints the daemon's `result` object, adding `target` to results that don't already carry it, such as `state` and `reset`. Errors are the daemon's `error` object under an `error` key, without the `ok` envelope described in [protocol.md](protocol.md#21-rpc).
+The CLI prints the daemon's `result` object, adding `target` to results that don't already carry it, such as `state`, `reset`, and `reload`. Errors are the daemon's `error` object under an `error` key, without the `ok` envelope described in [protocol.md](protocol.md#21-rpc).
 
 `scenario run` prints one scenario result per file. The type is exported from `@ironbird/core` so other packages can share it:
 
@@ -99,7 +99,7 @@ interface ScenarioResult {
 ironbird serve [--port 4567] [--bridge-port 4568] [--host 127.0.0.1] [--no-headless] [--token <token>]
 ```
 
-Runs the daemon in the foreground. Loads the headless entry unless `--no-headless` is passed, accepts bridge connections, and runs `adb reverse tcp:<bridgePort> tcp:<bridgePort>` for each connected Android device when `adb` is on the path, logging and continuing when it is not. Binding a non-loopback `--host` requires a token; if none is given, one is generated and printed. On start it prints one line, `{ url, bridgeUrl, targets, defaultTarget, bridgePort }`, and writes `.ironbird/daemon.json` so later invocations find the daemon without loading the config; the file is removed on shutdown (only by the invocation that wrote it, so a `serve` that fails to bind leaves a running daemon's file alone). `daemon.json` records `bridgeUrl` and `artifactsPath`, the daemon's resolved artifacts directory, alongside `url`; client commands that write files, such as `scenario run`, use `artifactsPath`, so a non-default `artifactsDir` in the config works without the client loading it. With `--daemon <url>`, or with no `daemon.json`, they write under `.ironbird` in the working directory. `--port` and `--bridge-port` must differ (a fixed value for both is rejected as `INVALID_CONFIG` before either socket binds); pass `0` for either to let the OS pick, since two zeros never collide. Requests that carry an `Origin` header, or a `Host` that is neither loopback nor the daemon's bind address, are refused with 403, so a page in a local browser can't drive the daemon.
+Runs the daemon in the foreground. Loads the headless entry unless `--no-headless` is passed, accepts bridge connections, and runs `adb reverse tcp:<bridgePort> tcp:<bridgePort>` for each connected Android device when `adb` is on the path, logging and continuing when it is not. Binding a non-loopback `--host` requires a token; if none is given, one is generated and printed. On start it prints one line, `{ url, bridgeUrl, targets, defaultTarget, bridgePort }`, and writes `.ironbird/daemon.json` so later invocations find the daemon without loading the config; the file is removed on shutdown (only by the invocation that wrote it, so a `serve` that fails to bind leaves a running daemon's file alone). `daemon.json` records `bridgeUrl` and `artifactsPath`, the daemon's resolved artifacts directory, alongside `url`; client commands that write files, such as `scenario run`, use `artifactsPath`, so a non-default `artifactsDir` in the config works without the client loading it. With `--daemon <url>`, or with no `daemon.json`, they write under `.ironbird` in the working directory. `--port` and `--bridge-port` must differ (a fixed value for both is rejected as `INVALID_CONFIG` before either socket binds); pass `0` for either to let the OS pick, since two zeros never collide. Requests that carry an `Origin` header, or a `Host` that is neither loopback nor the daemon's bind address, are refused with 403, so a page in a local browser can't drive the daemon. `ironbird.config.ts` is read once, at start: restart `serve` after changing it. `reload` loads the headless entry again, never the config.
 
 ### status
 
@@ -215,7 +215,28 @@ Headless only; remote targets return `UNSUPPORTED`. `advance` prints a step resu
 ironbird reset
 ```
 
-Headless only. Disposes the headless app, recreates it with a fresh context, and prints `{ target, rev, path, value }`. Event sequence numbers restart at 1 after a reset, so call `events` without `--since` once before paging again.
+Headless only. Disposes the headless app, recreates it with a fresh context, and prints `{ target, rev, path, value }`. Event sequence numbers restart at 1 after a reset, so call `events` without `--since` once before paging again. A reset re-runs the code the daemon already loaded; after editing app code, use `reload`. After a failed `reload`, `reset` fails with the same `HEADLESS_LOAD_FAILED` until a `reload` succeeds.
+
+### reload
+
+```text
+ironbird reload [--timeout <duration>]
+```
+
+Loads the app's current code from a fresh start and prints `{ target, rev }`. Commands in flight on the target fail with `TARGET_DISCONNECTED`, and event sequence numbers restart, as after `reset`.
+
+On the headless target, it re-bundles the headless entry and boots it with a fresh clock, event log, and fakes; `ironbird.config.ts` is not read again. A bundling, import, or boot error fails with `HEADLESS_LOAD_FAILED`, exit 2, as does a load and boot that together take longer than `boot.timeoutMs`, and the old code does not come back: every later command on the headless target, `reset` included, fails with that error until a `reload` succeeds. Node keeps every module it evaluates for the daemon's life, so a daemon reloaded hundreds of times grows accordingly; restarting `serve` clears it.
+
+On a connected app, it asks the bridge to reload, which calls the app's `reload` option or else `DevSettings.reload()`, waits for the app to reconnect, and prints the reconnected target, which keeps the same id. `--timeout` bounds that wait (default `60s`); when it runs out, the command fails with `TARGET_DISCONNECTED`, exit 1. With another build of the same app connected on the same platform, the daemon can't tell which reconnection is the reloaded one, so it fails with `AMBIGUOUS_TARGET`, exit 2, before reloading anything. A target that doesn't declare the `reload` capability fails with `UNSUPPORTED`, exit 1, and no daemon or no such target exits 5.
+
+```sh
+ironbird reload
+ironbird reload --target ios --timeout 90s
+```
+
+```json
+{ "target": "ios", "rev": 3 }
+```
 
 ### screenshot
 
@@ -231,7 +252,7 @@ Captures the connected app: `xcrun simctl io <device> screenshot` for a simulato
 ironbird step <command> [payload] [--device <udid|serial>] [--path <path>] [--no-settle] [--settle-timeout <duration>]
 ```
 
-Remote targets only. Sends, settles, and captures a screenshot, then prints a step result plus `screenshot` and `settledBeforeCapture`. The screenshot is captured even when settling times out, so the agent can see what went wrong, and the CLI still exits 3. With `--no-settle` the capture happens right after the dispatch. The printed result is the step result with two extra fields: `screenshot: { path, device, capturedAt }` and `settledBeforeCapture`, true only when settling reached idle before the capture.
+Remote targets only. Sends, settles, and captures a screenshot, then prints a step result plus `screenshot` and `settledBeforeCapture`. The screenshot is captured even when settling times out, so the agent can see what went wrong, and the CLI still exits 3. With `--no-settle` the capture happens right after the dispatch. The printed result is the step result with two extra fields: `screenshot: { path, device, capturedAt }` and `settledBeforeCapture`, true only when settling reached idle before the capture. If the capture fails after the dispatch applied, the step fails with `SCREENSHOT_FAILED` and `details.applied: true`: the command already ran, so do not retry it; read the result with `ironbird state`. Without `applied`, nothing was applied.
 
 ### scenario run
 
@@ -239,13 +260,13 @@ Remote targets only. Sends, settles, and captures a screenshot, then prints a st
 ironbird scenario run <path...> [--bail] [--target <id>]
 ```
 
-Runs scenario files against one target and prints one scenario result per file. Each `path` is a file or a directory; a directory expands to its `*.yaml` and `*.yml` files in name order, without recursing. Every file is parsed before any scenario runs, so an authoring error costs nothing: an invalid file, or a path that does not exist, fails with `INVALID_SCENARIO` and exit code 2 before the daemon is contacted. `--target` is the global option; it overrides the scenario's own `target`, and with neither the daemon picks its default.
+Runs scenario files against one target and prints one scenario result per file. Each `path` is a file or a directory; a directory expands to its `*.yaml` and `*.yml` files in name order, without recursing. Every file is parsed before any scenario runs, so an authoring error costs nothing: an invalid file, a path that does not exist, or a path the CLI may not read fails with `INVALID_SCENARIO` and exit code 2 before the daemon is contacted. An unreadable path keeps the system error in its message (`Cannot read <file>: EACCES: permission denied, ...`) rather than being reported as missing. `--target` is the global option; it overrides the scenario's own `target`, and with neither the daemon picks its default.
 
 The first operation of every run is `describe`, and the target id in its reply pins the target for every later operation, including `screenshot`, whose default target selection differs from everything else's. A `describe` that fails ends the command with that error and its own exit code: 5 when the daemon is unreachable or has no such target, 2 for `UNAUTHORIZED`, 1 for `TARGET_DISCONNECTED`. The same errors from a later step fail that step like any other.
 
 Output is one `ScenarioResult` per file (see [Output shapes](#output-shapes)), as JSON lines when stdout is not a TTY or `--json` is passed, and otherwise as a `PASS` or `FAIL` line per scenario followed by the failed step with its `expected` and `actual` values or its error, and any artifacts that could not be written. The exit code is 2 if any file is invalid, the `describe` error's own code as above, 4 if any scenario failed, and 0 otherwise. `--bail` stops after the first failed scenario.
 
-Each file starts from a fresh app: right after `describe`, on a target that declares the `reset` capability (headless), the runner resets it before the first step, so files don't share state and a directory run does not depend on file order. On a remote app, which has no `reset`, the scenario runs against the app's current state; reload the app first for a fresh start.
+Each file starts from a fresh app: right after `describe`, on a target that declares the `reset` capability (headless), the runner resets it before the first step, so files don't share state and a directory run does not depend on file order. On a remote app, which has no `reset`, the scenario runs against the app's current state; run `ironbird reload --target <id>` first for a fresh start.
 
 ```sh
 ironbird scenario run ironbird/scenarios
@@ -308,13 +329,31 @@ npx react-native bundle --platform ios --dev false --entry-file index.js --bundl
 npx ironbird verify-bundle build/main.jsbundle
 ```
 
-### mcp (P1)
+### mcp
 
 ```text
-ironbird mcp [--daemon <url>]
+ironbird mcp [--daemon <url>] [--token <token>]
 ```
 
-Starts an MCP server over stdio that proxies to the daemon. Tools are listed [below](#mcp-tools-p1).
+Runs an MCP server for coding agents over stdio until stdin closes. `ironbird agent setup` registers it in `.mcp.json` as `{ "command": "npx", "args": ["ironbird", "mcp"] }`, so it runs in the project root. The server is named `ironbird` and reports the package version. Its tools are listed [below](#mcp-tools); [agents.md](agents.md) covers setup.
+
+The server needs no daemon to start. Each tool call finds the daemon the way other commands do: `--daemon`, then the nearest `.ironbird/daemon.json` walking up from the working directory, then `http://127.0.0.1:4567`, with `--token` or `IRONBIRD_TOKEN` for the token. So the server can start before `ironbird serve`, and a daemon restart needs no MCP restart. While no daemon answers, every tool fails with `NO_TARGET`, whose message says to run `ironbird serve`. Nothing but MCP messages is written to stdout; diagnostics go to stderr.
+
+### agent setup
+
+```text
+ironbird agent setup [--skills-dir <dir>]
+```
+
+Sets up coding agents in the project, the working directory, without a daemon: it copies the ironbird skill that ships with this CLI into `<skills-dir>/ironbird/` (default `.claude/skills`), replacing the files it owns and leaving any other files in that folder alone, and adds or replaces only the `mcpServers.ironbird` entry in `.mcp.json`, creating the file if needed:
+
+```json
+{ "mcpServers": { "ironbird": { "command": "npx", "args": ["ironbird", "mcp"] } } }
+```
+
+Other servers and keys are kept, and the file is written with two-space indentation and a trailing newline; when the entry is already identical, the file is left untouched. Running it again after an upgrade brings the skill up to date with the installed CLI. For Codex and other agents that read Agent Skills, pass their skills folder as `--skills-dir`; a relative path resolves against the working directory. See [agents.md](agents.md).
+
+Prints `{ skill: { dir, files }, mcp: { file, updated } }`: `dir` and `file` are absolute, `files` are the skill's files relative to `dir`, and `updated` is false when the entry was already identical. If `.mcp.json` exists but is not a JSON object, or its `mcpServers` is not an object, it fails with `INVALID_CONFIG`, details `{ file, issues }`, exit 2, and writes nothing, including the skill. A skill file or `.mcp.json` that can't be written fails with `INTERNAL`, details `{ file, message }`, exit 1; the skill is written before `.mcp.json`, so a skill folder that can't be written leaves `.mcp.json` untouched.
 
 ## Scenario files
 
@@ -391,22 +430,33 @@ A failing run of the scenario above against the headless target with the race pl
 
 `failedStep` carries `expected` and `actual` for a `wait` that timed out (`actual` is the last value read) and for an `expect` that did not hold, `actual: { settle }` for an unsettled step, and `error` for any other failure, including `INVALID_PAYLOAD`, `DISPATCH_FAILED`, `TARGET_DISCONNECTED`, and `NO_TARGET`.
 
-## MCP tools (P1)
+## MCP tools
 
-| Tool | Input | Returns |
-|---|---|---|
-| `ironbird_status` | none | Daemon and target status |
-| `ironbird_describe` | `target?` | Commands and fakes with JSON Schemas |
-| `ironbird_send` | `command`, `payload?`, `target?`, `path?`, `settle?` | Step result |
-| `ironbird_step` | `command`, `payload?`, `target?`, `path?`, `settle?` | Step result, plus the screenshot as image content |
-| `ironbird_state` | `path?`, `target?` | Value at the path |
-| `ironbird_wait` | `path`, one condition, `timeoutMs?`, `target?` | Value, or a `WAIT_TIMEOUT` error |
-| `ironbird_fake` | `fake`, `control`, `payload?`, `target?` | Step result |
-| `ironbird_events` | `since?`, `limit?`, `target?` | Events |
-| `ironbird_clock_advance` | `ms` | Step result plus `now` |
-| `ironbird_clock_now` | none | `{ now }` |
-| `ironbird_screenshot` | `target?`, `device?` | Image content |
-| `ironbird_run_scenario` | `file`, `target?` | Scenario result |
-| `ironbird_reset` | none | State |
+Each tool is one daemon operation, except `ironbird_run_scenario`, which runs the scenario runner inside the MCP server, as `scenario run` does in the CLI. App command schemas reach the agent as JSON Schemas in `ironbird_describe` results, never as tool input schemas, so the tool list is the same for every app.
 
-Operation failures come back as tool results with `isError: true` and the same error JSON the CLI prints. Durations such as `ms` and `timeoutMs` are milliseconds, as in the protocol; only the CLI accepts suffixes.
+| Tool | Input | Returns | Daemon operation |
+|---|---|---|---|
+| `ironbird_status` | none | `{ version, protocol, uptimeMs, targets }` | `status` |
+| `ironbird_describe` | `target?` | The `Description` plus `target`: app, commands and fakes with JSON Schemas, capabilities | `describe` |
+| `ironbird_send` | `command`, `payload?`, `target?`, `path?`, `settle?` | Step result | `dispatch` |
+| `ironbird_step` | `command`, `payload?`, `target?`, `path?`, `settle?`, `device?` | Step result plus `screenshot` and `settledBeforeCapture`, and the screenshot as image content | `step` |
+| `ironbird_state` | `path?`, `target?` | `{ target, rev, path, value }` | `getState` |
+| `ironbird_wait` | `path`, exactly one of `equals`, `notEquals`, `exists`, `matches`, `timeoutMs?` (default 5000), `target?` | `{ target, rev, path, value, waitedMs }`, or a `WAIT_TIMEOUT` error | `waitFor` |
+| `ironbird_settle` | `timeoutMs?`, `target?` | Settle result plus `target` | `settle` |
+| `ironbird_fake` | `fake`, `control`, `payload?`, `target?`, `path?`, `settle?` | Step result | `fakeControl` |
+| `ironbird_fake_calls` | `fake`, `since?`, `limit?`, `target?` | `{ target, fake, calls, nextSeq, truncated }` | `fakeCalls` |
+| `ironbird_events` | `since?`, `limit?`, `target?` | `{ target, events, nextSeq, truncated }` | `events` |
+| `ironbird_clock_advance` | `ms`, `path?`, `settle?`, `target?` | Step result plus `now` | `clockAdvance` |
+| `ironbird_clock_now` | `target?` | `{ target, now }` | `clockNow` |
+| `ironbird_screenshot` | `target?`, `device?` | `{ target, path, device, capturedAt }`, and the image as image content | `screenshot` |
+| `ironbird_run_scenario` | `path` (a file or a folder), `target?`, `bail?` | `{ results: ScenarioResult[] }`, one per file | the scenario runner, in process |
+| `ironbird_reset` | `target?` | `{ target, rev, path, value }` | `reset` |
+| `ironbird_reload` | `target?`, `timeoutMs?` | `{ target, rev }` | `reload` |
+
+- Inputs are Zod 4 objects, published to the agent as JSON Schemas. `settle` is `true` (the default), `false`, or `{ timeoutMs }`, as in the protocol. Durations are milliseconds. Defaults match the CLI: `payload` is `{}`, `path` is the whole state, and `ironbird_wait` gives up after 5000 ms. `ironbird_reload`'s `timeoutMs` is a positive integer of at most 2147483647 and applies to connected apps only. `ironbird_clock_advance` and `ironbird_clock_now` work only on a target that declares `clock` (headless); pass `target: 'headless'` when the daemon's default target is a device.
+- A successful result is one text block holding the JSON the CLI prints for the same operation: the daemon's result with `target` added when it lacks one, and `fake` added for `ironbird_fake_calls`. A step that did not settle is still a success; its `settle` says so, where the CLI would exit 3. `ironbird_step` and `ironbird_screenshot` add one image block, the PNG at the returned path, base64-encoded as `image/png`; the MCP server reads it from disk, so it must run on the daemon's machine. If `ironbird_step` can't read the file, a second text block says why instead, and the result stays a success because the step was already applied. If `ironbird_screenshot` can't read it, the call fails with `SCREENSHOT_FAILED` and `details: { tool: 'readImage', stderr }`, since the image was all it had to offer.
+- A failure is a result with `isError: true` and one text block holding the same `{ "error": { "code", "message", "details" } }` JSON the CLI prints. When the daemon fails `ironbird_step` with `SCREENSHOT_FAILED` and `details.applied: true`, the command was already applied and only the capture failed; a second text block says not to retry the step and to read the result with `ironbird_state`. Without `applied`, nothing was applied.
+- Input that fails a tool's schema, such as `ironbird_wait` with no condition or two, is rejected by the MCP SDK itself, before the daemon is contacted, as an `isError` result whose text begins `Input validation error`. It is the SDK's message, not the `{ "error": ... }` JSON, and carries no ironbird error code.
+- `ironbird_run_scenario` resolves `path` against the MCP server's working directory, the project root when started from `.mcp.json`, and behaves as `scenario run`: every file is validated before any runs, a headless target is reset before each file, `bail` stops after the first failed scenario, and each result names its artifacts folder. An invalid file, a missing or unreadable path, or a folder with no scenario files is an `isError` result with `INVALID_SCENARIO`, returned before the daemon is contacted. A scenario that runs and fails is a normal result with `passed: false`. A connected app runs against its current state, so reload it first. When the first `describe` of a file fails, the call returns that error, and the runs before it are only on disk.
+- Tool descriptions are written for agents and name the next useful call.
+

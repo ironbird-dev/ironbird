@@ -55,6 +55,15 @@ describe('createOperationQueue', () => {
     expect(ran).toBe(false);
   });
 
+  it('names a reload as the cause', async () => {
+    const queue = createOperationQueue('headless');
+    const stuck = queue.enqueue('dispatch', () => queue.raceAbandon('dispatch', new Promise<never>(() => {})));
+    await tick();
+    queue.abandon('reload');
+    expect(await failure(stuck)).toEqual({ code: 'TARGET_DISCONNECTED', message: 'Target was reloaded before dispatch completed', details: { target: 'headless', op: 'dispatch' } });
+    expect(queue.abandoned('waitFor').message).toBe('Target was reloaded before waitFor completed');
+  });
+
   it('raceAbandon lets a promise that wins on its own through unchanged', async () => {
     const queue = createOperationQueue('t');
     expect(await queue.raceAbandon('settle', Promise.resolve(42))).toBe(42);

@@ -41,6 +41,7 @@ const REQUIRES: Record<string, Capability> = {
   clockAdvance: 'clock',
   clockNow: 'clock',
   reset: 'reset',
+  reload: 'reload',
   fakeControl: 'fakes',
   fakeCalls: 'fakes',
   snapshotSave: 'persist',

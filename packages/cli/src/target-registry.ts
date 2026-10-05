@@ -1,8 +1,12 @@
 export type RemotePlatform = 'ios' | 'android';
 
 export interface TargetRegistry {
-  /** The lowest id reserved for this platform, or a fresh one: `ios`, then `ios-2`, and so on. */
-  claim(platform: RemotePlatform): string;
+  /**
+   * `preferred` when it is one of this platform's reserved ids and free, as for a reload's
+   * replacement; otherwise the lowest id reserved for this platform, or a fresh one: `ios`, then
+   * `ios-2`, and so on.
+   */
+  claim(platform: RemotePlatform, preferred?: string): string;
   /** Marks an id as free to be taken again by the next connection on its platform. */
   release(id: string): void;
 }
@@ -15,7 +19,11 @@ export function createTargetRegistry(): TargetRegistry {
   const assigned: Record<RemotePlatform, string[]> = { ios: [], android: [] };
   const free: Record<RemotePlatform, Set<string>> = { ios: new Set(), android: new Set() };
   return {
-    claim(platform) {
+    claim(platform, preferred) {
+      if (preferred !== undefined && free[platform].has(preferred)) {
+        free[platform].delete(preferred);
+        return preferred;
+      }
       const reserved = assigned[platform].find((id) => free[platform].has(id));
       if (reserved !== undefined) {
         free[platform].delete(reserved);

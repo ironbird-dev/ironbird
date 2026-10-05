@@ -10,7 +10,9 @@ import { counterDefinition } from '../test/helpers/counter-app';
 import { isLoopbackHost, startDaemon, type Daemon } from './daemon';
 import type { DaemonTarget } from './daemon-target';
 import { readDaemonInfo, removeDaemonInfo, writeDaemonInfo } from './daemon-info';
+import type { Exec } from './devices';
 import { createHeadlessTarget, type HeadlessTarget } from './headless-target';
+import { captureScreenshot } from './screenshot';
 
 let daemon: Daemon | undefined;
 let target: HeadlessTarget | undefined;
@@ -424,6 +426,27 @@ describe('startDaemon', () => {
     expect(Date.now() - startedAt).toBeLessThan(5_000);
   });
 
+  it('bounds a headless reload or reset by the boot timeout of the target, not the shorter request timeout', async () => {
+    const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+    let boots = 0;
+    // Every boot after the first, and every load, takes longer than the 50 ms request timeout but
+    // well within the 1 s boot timeout.
+    const slow = defineHeadless(async () => {
+      boots += 1;
+      if (boots > 1) await delay(150);
+      const app = createTarget({ commands: defineCommands({ 'x.go': z.object({}) }), dispatch: () => {}, getState: () => ({ boots }) });
+      return { target: app };
+    });
+    const loadDefinition = async (): Promise<typeof slow> => {
+      await delay(150);
+      return slow;
+    };
+    target = await createHeadlessTarget({ definition: slow, loadDefinition, appId: 'a', settleTimeoutMs: 100, bootTimeoutMs: 1_000, env: {}, log: () => {} });
+    daemon = await startDaemon({ host: '127.0.0.1', port: 0, version: '0.0.0-test', headless: target, defaultTarget: 'headless', requestTimeoutMs: 50, log: () => {} });
+    expect((await rpc(daemon, { op: 'reload' })).json).toEqual({ ok: true, target: 'headless', result: { rev: 0 } });
+    expect((await rpc(daemon, { op: 'reset' })).json).toMatchObject({ ok: true, target: 'headless', result: { rev: 0, value: { boots: 3 } } });
+  });
+
   it('close() is idempotent', async () => {
     const d = await boot();
     await d.close();
@@ -561,6 +584,66 @@ describe('screenshot and step', () => {
     expect(stepped.json).toMatchObject({ ok: false, error: { code: 'AMBIGUOUS_DEVICE' } });
     // Nothing was dispatched: a device problem must fail before the step is applied, not after.
     expect(remote.calls).toEqual([]);
+  });
+
+  it('marks a capture failure after the dispatch as applied, and a device failure before it as not', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    const failing = new IronbirdError('SCREENSHOT_FAILED', 'Screenshot of SIM-1 failed: boom', { tool: 'simctl', stderr: 'boom' });
+    const afterDispatch = fakeRemote('ios');
+    const failedCapture = await boot({
+      extra: {
+        targets: [afterDispatch],
+        artifactsPath: artifacts,
+        capture: {
+          resolveDevice: capture.resolveDevice,
+          capture: async (): Promise<never> => {
+            throw failing;
+          },
+        },
+      },
+    });
+    const stepped = await rpc(failedCapture, { op: 'step', params: { name: 'cart.addItem' } });
+    expect(stepped.json).toMatchObject({ ok: false, error: { code: 'SCREENSHOT_FAILED', details: { tool: 'simctl', stderr: 'boom', applied: true } } });
+    expect(afterDispatch.calls).toHaveLength(1);
+    // A plain `screenshot` applied nothing, so it never says so.
+    expect(((await rpc(failedCapture, { op: 'screenshot' })).json['error'] as { details: Record<string, unknown> }).details).not.toHaveProperty('applied');
+
+    // Listing devices (devices.ts) and resolving one both fail before the dispatch.
+    for (const resolveFailure of [
+      new IronbirdError('SCREENSHOT_FAILED', 'Cannot list ios devices: boom', { tool: 'simctl', stderr: 'boom' }),
+      new IronbirdError('SCREENSHOT_FAILED', 'resolveDevice timed out after 50 ms', { tool: 'resolveDevice', stderr: 'timed out after 50 ms' }),
+    ]) {
+      const remote = fakeRemote('ios');
+      const d = await boot({
+        extra: {
+          targets: [remote],
+          artifactsPath: artifacts,
+          capture: {
+            resolveDevice: async (): Promise<never> => {
+              throw resolveFailure;
+            },
+            capture: capture.capture,
+          },
+        },
+      });
+      const result = await rpc(d, { op: 'step', params: { name: 'cart.addItem' } });
+      expect(result.json).toMatchObject({ ok: false, error: { code: 'SCREENSHOT_FAILED', details: resolveFailure.details } });
+      expect((result.json['error'] as { details: Record<string, unknown> }).details).not.toHaveProperty('applied');
+      expect(remote.calls).toEqual([]);
+    }
+  });
+
+  it('marks a capture that cannot create its output directory after the dispatch as applied', async () => {
+    artifacts = await mkdtemp(path.join(tmpdir(), 'ironbird-daemon-'));
+    // A file where the screenshots directory should be, so the real capture fails before any tool runs.
+    await writeFile(path.join(artifacts, 'screenshots'), 'not a directory');
+    const remote = fakeRemote('ios');
+    const exec: Exec = async () => ({ stdout: Buffer.alloc(0), stderr: '' });
+    const d = await boot({ extra: { targets: [remote], artifactsPath: artifacts, capture: { resolveDevice: capture.resolveDevice, capture: (options) => captureScreenshot({ ...options, exec }) } } });
+    const stepped = await rpc(d, { op: 'step', params: { name: 'cart.addItem' } });
+    expect(stepped.status).toBe(200);
+    expect(stepped.json).toMatchObject({ ok: false, error: { code: 'SCREENSHOT_FAILED', details: { tool: 'simctl', applied: true } } });
+    expect(remote.calls).toHaveLength(1);
   });
 
   it('bounds the screenshot capture like every other target operation, instead of hanging forever', async () => {
@@ -729,5 +812,271 @@ describe('SSE target frames', () => {
 
     const after = await rpc(d, { op: 'status' });
     expect((after.json['result'] as { targets: Array<{ id: string }> }).targets.map((t) => t.id)).not.toContain('ios');
+  });
+});
+
+const RELOADABLE = { capabilities: ['settle', 'events', 'reload'] };
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Waits until the daemon lists `id` among its targets. */
+async function untilListed(d: Daemon, id: string): Promise<void> {
+  for (let i = 0; i < 400; i += 1) {
+    if (d.targets().some((t) => t.id === id)) return;
+    await pause(5);
+  }
+  throw new Error(`${id} never registered`);
+}
+
+/** Answers the first `op` request `client` receives after frame index `from`, once it arrives. */
+async function answer(client: BridgeClient, op: string, result: unknown, from = 0): Promise<void> {
+  await client.until(() => nextRequest(client, op, from) !== undefined);
+  client.send({ type: 'response', id: (nextRequest(client, op, from) as { id: string }).id, ok: true, result });
+}
+
+/** The reloaded app coming back: hello and describe, then the daemon's `getState`, answered with `rev`. */
+async function connectReplacement(url: string, rev: number): Promise<{ client: BridgeClient; targetId: string }> {
+  const replacement = await registerBridge(url, RELOADABLE);
+  await answer(replacement.client, 'getState', { rev, path: '', value: {} });
+  return replacement;
+}
+
+describe('remote reload', () => {
+  it('lands the replacement on the same id when it connects after the old socket closed, and reads rev from it', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    const old = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    await untilListed(d, 'ios');
+    const reloading = rpc(d, { op: 'reload', target: 'ios' });
+    await answer(old.client, 'reload', {}, 2);
+    old.client.socket.close(1000, 'reloading');
+    await old.client.until(() => !d.targets().some((t) => t.id === 'ios'));
+    const replacement = await connectReplacement(d.bridgeUrl as string, 7);
+    expect(replacement.targetId).toBe('ios');
+    expect((await reloading).json).toEqual({ ok: true, target: 'ios', result: { rev: 7 } });
+    // The connection itself still reports 0: it has sent no state notification yet.
+    expect(d.targets().find((t) => t.id === 'ios')?.rev).toBe(0);
+  });
+
+  it('lands the replacement on the same id when its hello arrives before the old socket closes', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    const old = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    await untilListed(d, 'ios');
+    const reloading = rpc(d, { op: 'reload', target: 'ios' });
+    await answer(old.client, 'reload', {}, 2);
+    const replacement = await connectReplacement(d.bridgeUrl as string, 3);
+    expect(replacement.targetId).toBe('ios');
+    await old.client.until(() => old.client.socket.readyState === WebSocket.CLOSED);
+    expect((await reloading).json).toEqual({ ok: true, target: 'ios', result: { rev: 3 } });
+    expect(d.targets().map((t) => t.id).sort()).toEqual(['headless', 'ios']);
+  });
+
+  it('completes when the old connection drops before replying', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    const old = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    await untilListed(d, 'ios');
+    const reloading = rpc(d, { op: 'reload', target: 'ios' });
+    await old.client.until(() => nextRequest(old.client, 'reload', 2) !== undefined);
+    old.client.socket.close();
+    await connectReplacement(d.bridgeUrl as string, 5);
+    expect((await reloading).json).toEqual({ ok: true, target: 'ios', result: { rev: 5 } });
+  });
+
+  it('waits past the request timeout for as long as timeoutMs allows, and the 60 s default applies before the request bound', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 }, requestTimeoutMs: 50 } });
+    const old = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    await untilListed(d, 'ios');
+    const explicit = rpc(d, { op: 'reload', target: 'ios', params: { timeoutMs: 2_000 } });
+    await answer(old.client, 'reload', {}, 2);
+    old.client.socket.close();
+    // Far past the 50 ms request timeout, which stands in for the default 30 s, and well within timeoutMs.
+    await pause(250);
+    const first = await connectReplacement(d.bridgeUrl as string, 1);
+    expect((await explicit).json).toEqual({ ok: true, target: 'ios', result: { rev: 1 } });
+
+    const byDefault = rpc(d, { op: 'reload', target: 'ios' });
+    await answer(first.client, 'reload', {}, 3);
+    first.client.socket.close();
+    await pause(250);
+    await connectReplacement(d.bridgeUrl as string, 2);
+    expect((await byDefault).json).toEqual({ ok: true, target: 'ios', result: { rev: 2 } });
+  });
+
+  it('fails with TARGET_DISCONNECTED when nothing reconnects within timeoutMs, and clears the pending replacement', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    const old = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    await untilListed(d, 'ios');
+    expect((await rpc(d, { op: 'reload', target: 'ios', params: { timeoutMs: 0 } })).json).toMatchObject({ ok: false, error: { code: 'INVALID_PAYLOAD', details: { name: 'reload' } } });
+    const reloading = rpc(d, { op: 'reload', target: 'ios', params: { timeoutMs: 150 } });
+    await answer(old.client, 'reload', {}, 2);
+    expect((await reloading).json).toEqual({
+      ok: false,
+      error: { code: 'TARGET_DISCONNECTED', message: 'ios did not reconnect within 150 ms of the reload', details: { target: 'ios', op: 'reload', timeoutMs: 150 } },
+    });
+    // The old connection never closed, and a later connection is not taken for its replacement.
+    const later = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    expect(later.targetId).toBe('ios-2');
+    expect(old.client.socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it('refuses with AMBIGUOUS_TARGET when another build of the same app is connected on the same platform, and sends nothing', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    const first = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    const second = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    await untilListed(d, 'ios');
+    await untilListed(d, 'ios-2');
+    expect((await rpc(d, { op: 'reload', target: 'ios' })).json).toMatchObject({ ok: false, error: { code: 'AMBIGUOUS_TARGET', details: { available: ['ios', 'ios-2'] } } });
+    expect(nextRequest(first.client, 'reload', 0)).toBeUndefined();
+    expect(nextRequest(second.client, 'reload', 0)).toBeUndefined();
+  });
+
+  it('answers UNSUPPORTED for an app without the reload capability, and sends nothing', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    const old = await registerBridge(d.bridgeUrl as string);
+    await untilListed(d, 'ios');
+    expect((await rpc(d, { op: 'reload', target: 'ios' })).json).toEqual({
+      ok: false,
+      error: { code: 'UNSUPPORTED', message: "Target ios doesn't support reload", details: { op: 'reload', target: 'ios' } },
+    });
+    expect(nextRequest(old.client, 'reload', 0)).toBeUndefined();
+    // The failed reload left no reservation: a later connection gets a normal claim.
+    const later = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    expect(later.targetId).toBe('ios-2');
+  });
+
+  it('runs a second reload of the same app after the first, against the replacement', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    const old = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    await untilListed(d, 'ios');
+    const first = rpc(d, { op: 'reload', target: 'ios' });
+    const second = rpc(d, { op: 'reload', target: 'ios' });
+    await answer(old.client, 'reload', {}, 2);
+    await pause(50);
+    expect(old.client.frames.filter((frame) => frame['op'] === 'reload')).toHaveLength(1);
+    old.client.socket.close();
+    const middle = await connectReplacement(d.bridgeUrl as string, 1);
+    await answer(middle.client, 'reload', {}, 3);
+    middle.client.socket.close();
+    await connectReplacement(d.bridgeUrl as string, 2);
+    const results = await Promise.all([first, second]);
+    expect(results.map((result) => result.json['target'])).toEqual(['ios', 'ios']);
+    expect(results.map((result) => (result.json['result'] as { rev: number }).rev).sort()).toEqual([1, 2]);
+  });
+
+  it('fails at timeoutMs when the app stays connected but never answers the reload, and leaves no reservation behind', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    const old = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    await untilListed(d, 'ios');
+    const startedAt = Date.now();
+    const reloading = rpc(d, { op: 'reload', target: 'ios', params: { timeoutMs: 150 } });
+    await old.client.until(() => nextRequest(old.client, 'reload', 2) !== undefined);
+    // No reply and no close: the reload's own deadline must end the wait, long before the 5,150 ms request bound.
+    expect((await reloading).json).toEqual({
+      ok: false,
+      error: { code: 'TARGET_DISCONNECTED', message: 'ios did not reconnect within 150 ms of the reload', details: { target: 'ios', op: 'reload', timeoutMs: 150 } },
+    });
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    const later = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    expect(later.targetId).toBe('ios-2');
+    expect(old.client.socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it('holds the id for one replacement at a time: a matching connection that arrives while the first is being read gets its own id', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    const old = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    await untilListed(d, 'ios');
+    const reloading = rpc(d, { op: 'reload', target: 'ios' });
+    await answer(old.client, 'reload', {}, 2);
+    // The first candidate registers; the daemon's getState to it stays unanswered for now.
+    const first = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    expect(first.targetId).toBe('ios');
+    await first.client.until(() => nextRequest(first.client, 'getState', 2) !== undefined);
+    const second = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    expect(second.targetId).toBe('ios-2');
+    expect(first.client.socket.readyState).toBe(WebSocket.OPEN);
+    await answer(first.client, 'getState', { rev: 4, path: '', value: {} }, 2);
+    expect((await reloading).json).toEqual({ ok: true, target: 'ios', result: { rev: 4 } });
+    await untilListed(d, 'ios-2');
+    expect(d.targets().map((t) => t.id).sort()).toEqual(['headless', 'ios', 'ios-2']);
+  });
+
+  it('gives the reservation to the next matching connection when the first candidate fails to describe itself', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    const old = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    await untilListed(d, 'ios');
+    const reloading = rpc(d, { op: 'reload', target: 'ios' });
+    await answer(old.client, 'reload', {}, 2);
+    const failing = await connectBridge(d.bridgeUrl as string);
+    failing.send(bridgeHello(RELOADABLE));
+    await failing.until(() => failing.frames.length >= 2);
+    expect(failing.frames[0]).toMatchObject({ targetId: 'ios' });
+    failing.send({ type: 'response', id: failing.frames[1]!['id'], ok: false, error: { code: 'INTERNAL', message: 'describe exploded' } });
+    await failing.until(() => failing.socket.readyState === WebSocket.CLOSED);
+    const replacement = await connectReplacement(d.bridgeUrl as string, 6);
+    expect(replacement.targetId).toBe('ios');
+    expect((await reloading).json).toEqual({ ok: true, target: 'ios', result: { rev: 6 } });
+  });
+
+  it('abandons a reload queued behind another once its own request times out, so it never reloads the app later', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 }, requestTimeoutMs: 50 } });
+    const old = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    await untilListed(d, 'ios');
+    // The bridge never answers the first reload, which holds the per-id queue until its 5,500 ms deadline.
+    const first = rpc(d, { op: 'reload', target: 'ios', params: { timeoutMs: 5_500 } });
+    await old.client.until(() => nextRequest(old.client, 'reload', 2) !== undefined);
+    // The second waits behind it; its request bound is max(50, 1 + 5,000) = 5,001 ms, which ends first.
+    const second = rpc(d, { op: 'reload', target: 'ios', params: { timeoutMs: 1 } });
+    expect((await second).json).toEqual({ ok: false, error: { code: 'TARGET_DISCONNECTED', message: 'Reload request timed out after 5001 ms', details: { target: 'ios', op: 'reload' } } });
+    expect((await first).json).toMatchObject({ ok: false, error: { code: 'TARGET_DISCONNECTED', details: { target: 'ios', op: 'reload', timeoutMs: 5_500 } } });
+    await pause(100);
+    // The abandoned second reload sent nothing once the first let it through, and reserved nothing.
+    expect(old.client.frames.filter((frame) => frame['op'] === 'reload')).toHaveLength(1);
+    const later = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    expect(later.targetId).toBe('ios-2');
+  }, 15_000);
+  it('fails at once with the error a still-connected bridge answers the reload with, even TARGET_DISCONNECTED, and leaves no reservation behind', async () => {
+    const d = await boot({ extra: { bridge: { port: 0 } } });
+    const old = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    await untilListed(d, 'ios');
+    // The default 60 s deadline: only the bridge's own answer can end this reload inside the test.
+    const reloading = rpc(d, { op: 'reload', target: 'ios' });
+    await old.client.until(() => nextRequest(old.client, 'reload', 2) !== undefined);
+    old.client.send({
+      type: 'response',
+      id: (nextRequest(old.client, 'reload', 2) as { id: string }).id,
+      ok: false,
+      error: { code: 'TARGET_DISCONNECTED', message: 'the app refused to reload', details: { target: 'ios', op: 'reload' } },
+    });
+    expect((await reloading).json).toEqual({ ok: false, error: { code: 'TARGET_DISCONNECTED', message: 'the app refused to reload', details: { target: 'ios', op: 'reload' } } });
+    expect(old.client.socket.readyState).toBe(WebSocket.OPEN);
+    const later = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+    expect(later.targetId).toBe('ios-2');
+  });
+
+  it('rejects a timeoutMs past the longest timer Node can arm, and arms the longest one without overflowing', async () => {
+    const warnings: string[] = [];
+    const onWarning = (warning: Error): void => {
+      warnings.push(warning.name);
+    };
+    process.on('warning', onWarning);
+    try {
+      const d = await boot({ extra: { bridge: { port: 0 } } });
+      const old = await registerBridge(d.bridgeUrl as string, RELOADABLE);
+      await untilListed(d, 'ios');
+      expect((await rpc(d, { op: 'reload', target: 'ios', params: { timeoutMs: 2_147_483_648 } })).json).toMatchObject({
+        ok: false,
+        error: { code: 'INVALID_PAYLOAD', details: { name: 'reload', issues: [{ path: ['timeoutMs'] }] } },
+      });
+      expect(nextRequest(old.client, 'reload', 0)).toBeUndefined();
+      // The largest accepted value arms its deadline and its request bound without either clamping to 1 ms.
+      const reloading = rpc(d, { op: 'reload', target: 'ios', params: { timeoutMs: 2_147_483_647 } });
+      await answer(old.client, 'reload', {}, 2);
+      old.client.socket.close();
+      await pause(50);
+      await connectReplacement(d.bridgeUrl as string, 8);
+      expect((await reloading).json).toEqual({ ok: true, target: 'ios', result: { rev: 8 } });
+      await pause(20);
+      expect(warnings).not.toContain('TimeoutOverflowWarning');
+    } finally {
+      process.off('warning', onWarning);
+    }
   });
 });

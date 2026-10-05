@@ -1,14 +1,16 @@
-import { IronbirdError, suggestNames, toErrorShape, type Description, type ErrorShape, type FakeCallsResult, type SettleResult, type StepResult } from '@ironbird/core';
+import { IronbirdError, messageOf, suggestNames, toErrorShape, type Description, type ErrorShape, type FakeCallsResult, type SettleResult, type StepResult } from '@ironbird/core';
 import { Command, CommanderError, InvalidArgumentError } from 'commander';
 import { createDaemonClient, resolveDaemon, type DaemonClient } from './client';
 import type { runServe } from './commands/serve';
+import type { McpServerOptions } from '../mcp/server';
 import { UsageError, parseDuration } from './durations';
 import { exitCodeForError, exitCodeForStep } from './exit-codes';
-import { createOutput, type Output } from './output';
+import { createOutput, withTarget, type Output } from './output';
 import { parseJsonOrString, parsePayload } from './values';
 import { formatScenarioResult } from '../scenario/format';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { findMarker } from '../verify-bundle';
 
 export interface ProgramIo {
@@ -21,6 +23,8 @@ export interface ProgramIo {
   signal?: AbortSignal;
   createClient?: (options: { url: string; token?: string }) => DaemonClient;
   serve?: typeof runServe;
+  /** Test hook replacing `runMcpStdio`, which would take over this process's stdin and stdout. */
+  mcp?: (options: McpServerOptions) => Promise<void>;
 }
 
 interface GlobalOptions {
@@ -93,11 +97,6 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
     const daemon = await resolveDaemon({ flag: opts.daemon, cwd: io.cwd, env: io.env });
     const client = (io.createClient ?? createDaemonClient)({ url: daemon.url, token: opts.token ?? daemon.token });
     return { output, client, target: opts.target, artifactsDir: daemon.artifactsDir, json };
-  };
-
-  const withTarget = (envelope: { target?: string; result: unknown }): Record<string, unknown> => {
-    const result = envelope.result as Record<string, unknown>;
-    return envelope.target === undefined || 'target' in result ? result : { target: envelope.target, ...result };
   };
 
   const wrap =
@@ -276,6 +275,16 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
   program.command('reset').description('Recreate the headless app with a fresh clock, recorder, and fakes').action(wrap(async (ctx) => ({ value: withTarget(await ctx.client.call('reset', {}, ctx.target)) })));
 
   program
+    .command('reload')
+    .description("Load the app's current code from a fresh start: re-bundle the headless entry, or reload a connected app from the bundler")
+    .option('--timeout <duration>', 'connected apps: how long to wait for the app to reconnect (default 60s)')
+    .action(
+      wrap(async (ctx, opts: { timeout?: string }) => ({
+        value: withTarget(await ctx.client.call('reload', opts.timeout === undefined ? {} : { timeoutMs: parseDuration(opts.timeout) }, ctx.target)),
+      })),
+    );
+
+  program
     .command('screenshot')
     .description('Capture the connected app through simctl or adb')
     .option('--device <id>', 'simulator udid or adb serial; default from config devices, else the only booted one')
@@ -352,6 +361,54 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
         }
         output.error(toErrorShape(error));
         exitCode = 1;
+      }
+    });
+
+  program
+    .command('mcp')
+    .description('Serve the ironbird MCP tools over stdio; the daemon is found on each tool call')
+    .action(async (_opts: unknown, command: Command) => {
+      const globals = command.optsWithGlobals<GlobalOptions>();
+      try {
+        // Loaded on demand: the MCP SDK and the scenario runner are needed only here.
+        const serve = io.mcp ?? (await import('../mcp/stdio')).runMcpStdio;
+        await serve({
+          version: io.version,
+          cwd: io.cwd,
+          // Resolved per tool call, like a CLI command per invocation, so the server can start
+          // before the daemon and survives a daemon restart.
+          resolve: async () => {
+            const daemon = await resolveDaemon({ flag: globals.daemon, cwd: io.cwd, env: io.env });
+            return { client: (io.createClient ?? createDaemonClient)({ url: daemon.url, token: globals.token ?? daemon.token }), artifactsDir: daemon.artifactsDir };
+          },
+        });
+        exitCode = 0;
+      } catch (error) {
+        // Never stdout: it belongs to the MCP client.
+        io.stderr(`ironbird mcp: ${messageOf(error)}\n`);
+        exitCode = 1;
+      }
+    });
+
+  const agent = program.command('agent').description('Set up coding agents');
+  agent
+    .command('setup')
+    .description('Install the ironbird skill and register the MCP server in .mcp.json; needs no daemon')
+    .option('--skills-dir <dir>', 'the folder your agent reads Agent Skills from', '.claude/skills')
+    .action(async (opts: { skillsDir: string }, command: Command) => {
+      const globals = command.optsWithGlobals<GlobalOptions>();
+      const output = createOutput({ json: Boolean(globals.json) || !io.isTTY, write: io.stdout });
+      try {
+        const { agentSetup, findPackageRoot } = await import('../agent/setup');
+        // The skill ships next to `dist/` in the installed package; this module runs from a chunk
+        // in `dist/` there, and from `src/cli/` in this repository's tests.
+        const packageRoot = await findPackageRoot(path.dirname(fileURLToPath(import.meta.url)));
+        output.result(await agentSetup({ cwd: io.cwd, skillsDir: opts.skillsDir, packageRoot }));
+        exitCode = 0;
+      } catch (error) {
+        const shape = toErrorShape(error);
+        output.error(shape);
+        exitCode = exitCodeForError(shape.code);
       }
     });
 

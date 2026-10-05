@@ -1,6 +1,9 @@
 import { IronbirdError } from '@ironbird/core';
 
-export type AbandonCause = 'reset' | 'disposed' | 'disconnected';
+export type AbandonCause = 'reset' | 'reload' | 'disposed' | 'disconnected';
+
+/** How each cause reads in the error: "Target was reloaded before dispatch completed". */
+const PAST_TENSE: Record<AbandonCause, string> = { reset: 'reset', reload: 'reloaded', disposed: 'disposed', disconnected: 'disconnected' };
 
 export interface OperationQueue {
   /**
@@ -41,7 +44,7 @@ export function createOperationQueue(target: string): OperationQueue {
   const waiting = new Set<Entry>();
   const inFlight = new Set<Entry>();
 
-  const error = (op: string, cause: AbandonCause): IronbirdError => new IronbirdError('TARGET_DISCONNECTED', `Target was ${cause} before ${op} completed`, { target, op });
+  const error = (op: string, cause: AbandonCause): IronbirdError => new IronbirdError('TARGET_DISCONNECTED', `Target was ${PAST_TENSE[cause]} before ${op} completed`, { target, op });
 
   return {
     get epoch() {

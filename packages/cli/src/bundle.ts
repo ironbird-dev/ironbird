@@ -65,9 +65,9 @@ let loadSequence = 0;
 /**
  * Bundles `entryPath` with esbuild and imports the result as a fresh ES module.
  *
- * Each call evaluates a fresh module instance that Node keeps for the life of the process;
- * callers load an entry once per process (the daemon does this at start, and `reset` re-runs
- * the factory without reloading).
+ * Each call evaluates a fresh module instance that Node keeps for the life of the process. The
+ * daemon loads the headless entry once at start and again on every `reload`, each time under a new
+ * label; `reset` re-runs the factory it already has without loading anything.
  */
 export async function loadTypeScriptModule(entryPath: string, options: LoadModuleOptions): Promise<{ exports: Record<string, unknown>; bundlePath: string }> {
   const { outDir, label, forbidden = [], shims = {}, errorCode = 'HEADLESS_LOAD_FAILED' } = options;

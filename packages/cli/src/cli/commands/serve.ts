@@ -1,4 +1,4 @@
-import { IronbirdError, isHeadlessDefinition, toErrorShape } from '@ironbird/core';
+import { IronbirdError, isHeadlessDefinition, toErrorShape, type HeadlessDefinition } from '@ironbird/core';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { loadTypeScriptModule } from '../../bundle';
@@ -70,12 +70,21 @@ export async function runServe(options: ServeOptions, io: ServeIo): Promise<numb
     }
 
     if (options.headless && config.headlessPath) {
-      const loaded = await loadTypeScriptModule(config.headlessPath, { outDir: path.join(config.artifactsPath, 'cache'), label: 'headless', forbidden: ['react-native'] });
-      const definition = loaded.exports['default'];
-      if (!isHeadlessDefinition(definition)) {
-        throw new IronbirdError('HEADLESS_LOAD_FAILED', `${path.relative(io.cwd, config.headlessPath)} must default-export defineHeadless(...)`, { entry: config.headlessPath, message: 'default export is not a headless definition' });
-      }
-      target = await createHeadlessTarget({ definition, appId: config.appId, clockStart: config.clock.start, settleTimeoutMs: config.settle.timeoutMs, env: io.env, log, entryPath: config.headlessPath, bootTimeoutMs: config.boot.timeoutMs });
+      const entry = config.headlessPath;
+      const outDir = path.join(config.artifactsPath, 'cache');
+      let loads = 0;
+      // `reload` calls this again. Each load bundles under a fresh label, `headless-<n>`, and
+      // evaluates a new module instance, so it always runs the entry as it is on disk now.
+      const loadDefinition = async (): Promise<HeadlessDefinition> => {
+        loads += 1;
+        const loaded = await loadTypeScriptModule(entry, { outDir, label: `headless-${loads}`, forbidden: ['react-native'] });
+        const definition = loaded.exports['default'];
+        if (!isHeadlessDefinition(definition)) {
+          throw new IronbirdError('HEADLESS_LOAD_FAILED', `${path.relative(io.cwd, entry)} must default-export defineHeadless(...)`, { entry, message: 'default export is not a headless definition' });
+        }
+        return definition;
+      };
+      target = await createHeadlessTarget({ definition: await loadDefinition(), loadDefinition, appId: config.appId, clockStart: config.clock.start, settleTimeoutMs: config.settle.timeoutMs, env: io.env, log, entryPath: entry, bootTimeoutMs: config.boot.timeoutMs });
     } else if (options.headless && !config.headlessPath) {
       log('No headless entry in config; running remote-only');
     }

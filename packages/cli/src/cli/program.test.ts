@@ -1,9 +1,10 @@
 import { IronbirdError } from '@ironbird/core';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DaemonClient } from './client';
+import type { McpServerOptions } from '../mcp/server';
 import { buildProgram } from './program';
 
 interface Call {
@@ -270,6 +271,33 @@ describe('fake', () => {
   });
 });
 
+describe('reload', () => {
+  it('prints the target and rev, and passes --timeout in milliseconds', async () => {
+    const h = harness({ reload: (params: Record<string, unknown>) => ({ rev: params['timeoutMs'] === undefined ? 0 : 4 }) });
+    expect(await h.run(['reload'])).toBe(0);
+    expect(h.calls[0]).toEqual({ op: 'reload', target: undefined, params: {} });
+    expect(h.out()).toEqual({ target: 'headless', rev: 0 });
+    h.stdout.length = 0;
+    expect(await h.run(['reload', '--timeout', '90s', '--target', 'ios'])).toBe(0);
+    expect(h.calls[1]).toEqual({ op: 'reload', target: 'ios', params: { timeoutMs: 90_000 } });
+    expect(h.out()).toEqual({ target: 'ios', rev: 4 });
+    expect(await h.run(['reload', '--timeout', 'soon'])).toBe(2);
+    expect(h.calls).toHaveLength(2);
+  });
+
+  it.each([
+    ['HEADLESS_LOAD_FAILED', 2],
+    ['AMBIGUOUS_TARGET', 2],
+    ['TARGET_DISCONNECTED', 1],
+    ['UNSUPPORTED', 1],
+    ['NO_TARGET', 5],
+  ] as const)('exits by the error table when reload fails with %s', async (code, exit) => {
+    const h = harness({ reload: new IronbirdError(code, `reload failed with ${code}`) });
+    expect(await h.run(['reload'])).toBe(exit);
+    expect(h.out()).toEqual({ error: { code, message: `reload failed with ${code}` } });
+  });
+});
+
 describe('verify-bundle', () => {
   it('exits 0 for clean output, 1 listing files that carry the marker, and 2 for a missing path', async () => {
     const temp = await mkdtemp(path.join(tmpdir(), 'ironbird-verify-cli-'));
@@ -359,5 +387,94 @@ describe('scenario run', () => {
     h.stdout.length = 0;
     expect(await h.run(['scenario', 'run', 'scenarios/a-passes.yml', '--json'])).toBe(0);
     expect(JSON.parse(h.stdout[0] ?? '')).toMatchObject({ scenario: 'A passes', passed: true });
+  });
+});
+
+describe('mcp', () => {
+  function mcpHarness(serve: (options: McpServerOptions) => Promise<void>) {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const created: Array<{ url: string; token?: string }> = [];
+    const { run } = buildProgram({
+      cwd: '/tmp/nowhere',
+      env: {},
+      isTTY: false,
+      stdout: (t) => stdout.push(t),
+      stderr: (t) => stderr.push(t),
+      version: '0.0.0-test',
+      createClient: (options) => {
+        created.push(options);
+        return { url: options.url } as DaemonClient;
+      },
+      mcp: serve,
+      signal: AbortSignal.abort(),
+    });
+    return { run, stdout, stderr, created };
+  }
+
+  it('serves with the package version and working directory, and resolves the daemon on every tool call, never at start', async () => {
+    let served: McpServerOptions | undefined;
+    const h = mcpHarness(async (options) => {
+      served = options;
+    });
+    expect(await h.run(['mcp', '--daemon', 'http://127.0.0.1:9999', '--token', 'secret'])).toBe(0);
+    expect(h.stdout).toEqual([]);
+    if (!served) throw new Error('mcp was not served');
+    expect(served).toMatchObject({ version: '0.0.0-test', cwd: '/tmp/nowhere' });
+    expect(h.created).toEqual([]);
+    const first = await served.resolve();
+    await served.resolve();
+    expect(h.created).toEqual([
+      { url: 'http://127.0.0.1:9999', token: 'secret' },
+      { url: 'http://127.0.0.1:9999', token: 'secret' },
+    ]);
+    expect(first.artifactsDir).toBe(path.resolve('/tmp/nowhere', '.ironbird'));
+  });
+
+  it('reports a start-up failure on stderr, never stdout, and exits 1', async () => {
+    const h = mcpHarness(async () => {
+      throw new Error('stdin is not readable');
+    });
+    expect(await h.run(['mcp'])).toBe(1);
+    expect(h.stdout).toEqual([]);
+    expect(h.stderr.join('')).toContain('ironbird mcp: stdin is not readable');
+  });
+});
+
+describe('agent setup', () => {
+  let dir: string;
+  const packaged = path.resolve(__dirname, '../../skills/ironbird');
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-agent-cli-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('installs the packaged skill and registers the server without a daemon', async () => {
+    const h = harness({}, { cwd: dir });
+    expect(await h.run(['agent', 'setup'])).toBe(0);
+    expect(h.calls).toEqual([]);
+    expect(h.out()).toEqual({
+      skill: { dir: path.join(dir, '.claude/skills/ironbird'), files: ['SKILL.md', 'references/scenarios.md'] },
+      mcp: { file: path.join(dir, '.mcp.json'), updated: true },
+    });
+    expect(await readFile(path.join(dir, '.claude/skills/ironbird/SKILL.md'), 'utf8')).toBe(await readFile(path.join(packaged, 'SKILL.md'), 'utf8'));
+    expect(JSON.parse(await readFile(path.join(dir, '.mcp.json'), 'utf8'))).toEqual({ mcpServers: { ironbird: { command: 'npx', args: ['ironbird', 'mcp'] } } });
+  });
+
+  it('takes --skills-dir', async () => {
+    const h = harness({}, { cwd: dir });
+    expect(await h.run(['agent', 'setup', '--skills-dir', '.agents/skills'])).toBe(0);
+    expect(h.out()).toMatchObject({ skill: { dir: path.join(dir, '.agents/skills/ironbird') } });
+  });
+
+  it('exits 2 with INVALID_CONFIG and writes nothing when .mcp.json is not an object', async () => {
+    await writeFile(path.join(dir, '.mcp.json'), '[]');
+    const h = harness({}, { cwd: dir });
+    expect(await h.run(['agent', 'setup'])).toBe(2);
+    expect(h.out()).toMatchObject({ error: { code: 'INVALID_CONFIG', details: { file: path.join(dir, '.mcp.json') } } });
+    await expect(stat(path.join(dir, '.claude'))).rejects.toThrow();
   });
 });

@@ -6,6 +6,9 @@ import { readDaemonInfo } from '../../daemon-info';
 import { isLoopback, runServe } from './serve';
 
 const example = path.resolve(__dirname, '../../../../../examples/checkout');
+// Temporary apps live inside packages/cli so the bundled entry's bare imports (@ironbird/core, zod)
+// resolve from this package's node_modules, as they would from an app's.
+const cliRoot = path.resolve(__dirname, '../../..');
 
 interface Run {
   stdout: string[];
@@ -75,6 +78,55 @@ describe('runServe', () => {
     const run = start(temp);
     expect(await run.exit).toBe(2);
     expect(run.stdout[0]).toContain('defineHeadless');
+  });
+
+  it('reload picks up an edited headless entry, and a broken edit fails every operation, reset included, until a good reload', async () => {
+    temp = await mkdtemp(path.join(cliRoot, 'test', 'reload-'));
+    const entry = path.join(temp, 'headless.ts');
+    const version = (n: number): string =>
+      [
+        "import { createTarget, defineCommands, defineHeadless } from '@ironbird/core';",
+        "import { z } from 'zod';",
+        'export default defineHeadless(() => {',
+        `  const target = createTarget({ commands: defineCommands({ 'noop.run': z.object({}) }), dispatch: () => {}, getState: () => ({ version: ${n} }) });`,
+        '  return { target };',
+        '});',
+        '',
+      ].join('\n');
+    await writeFile(path.join(temp, 'ironbird.config.ts'), `export default { headless: './headless.ts', appId: 'com.example.reload' };`);
+    await writeFile(entry, version(1));
+    const run = start(temp);
+    const line = await firstLine(run);
+    const rpc = async (body: Record<string, unknown>): Promise<Record<string, unknown>> =>
+      (await (await fetch(`${line['url'] as string}/v1/rpc`, { method: 'POST', body: JSON.stringify(body) })).json()) as Record<string, unknown>;
+
+    expect(await rpc({ op: 'getState' })).toMatchObject({ ok: true, target: 'headless', result: { value: { version: 1 } } });
+    expect(await rpc({ op: 'describe' })).toMatchObject({ ok: true, result: { capabilities: expect.arrayContaining(['reset', 'reload']) } });
+
+    // reset re-runs the code already loaded; only reload reads the edit.
+    await writeFile(entry, version(2));
+    expect(await rpc({ op: 'reset' })).toMatchObject({ ok: true, result: { value: { version: 1 } } });
+    expect(await rpc({ op: 'reload' })).toEqual({ ok: true, target: 'headless', result: { rev: 0 } });
+    expect(await rpc({ op: 'getState' })).toMatchObject({ ok: true, result: { value: { version: 2 } } });
+
+    await writeFile(entry, 'export default defineHeadless(() => {\n');
+    const broken = await rpc({ op: 'reload' });
+    expect(broken).toMatchObject({ ok: false, error: { code: 'HEADLESS_LOAD_FAILED', details: { entry } } });
+    for (const body of [{ op: 'getState' }, { op: 'describe' }, { op: 'dispatch', params: { name: 'noop.run' } }, { op: 'reset' }]) {
+      expect(await rpc(body)).toEqual({ ok: false, error: broken['error'] });
+    }
+
+    // An entry that bundles but no longer default-exports a definition is a failed reload too.
+    await writeFile(entry, 'export default { nope: true };\n');
+    const notADefinition = await rpc({ op: 'reload' });
+    expect(notADefinition).toMatchObject({ ok: false, error: { code: 'HEADLESS_LOAD_FAILED', message: 'headless.ts must default-export defineHeadless(...)', details: { entry } } });
+    expect(await rpc({ op: 'reset' })).toEqual({ ok: false, error: notADefinition['error'] });
+
+    await writeFile(entry, version(3));
+    expect(await rpc({ op: 'reload' })).toEqual({ ok: true, target: 'headless', result: { rev: 0 } });
+    expect(await rpc({ op: 'getState' })).toMatchObject({ ok: true, result: { value: { version: 3 } } });
+    run.stop();
+    expect(await run.exit).toBe(0);
   });
 
   it('runs remote-only with --no-headless and generates a token for a non-loopback host', async () => {

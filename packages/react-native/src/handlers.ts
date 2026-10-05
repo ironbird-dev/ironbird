@@ -32,6 +32,11 @@ export interface HandlerContext {
   targetId: () => string;
   /** Called once per path whose value was replaced by a placeholder (see serializeState). */
   warn: (path: string, valueKind: string) => void;
+  /**
+   * Restarts the app's JavaScript; `startBridge` passes the app's `reload` option, or
+   * `DevSettings.reload` when the runtime has it. Without either the bridge neither declares `reload` nor answers it.
+   */
+  reload?: () => void;
 }
 
 export type Handler = (params: Record<string, unknown>) => Promise<unknown>;
@@ -41,9 +46,9 @@ type Params = Record<string, unknown>;
 const str = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
 const num = (value: unknown, fallback: number): number => (typeof value === 'number' && Number.isFinite(value) ? value : fallback);
 
-/** What a remote target declares: never `clock` or `reset` (protocol.md §5). */
-export function capabilitiesOf(target: Target, fakes: FakeInstance[]): Capability[] {
-  return ['settle', 'events', ...(fakes.length > 0 ? (['fakes'] as const) : []), ...target.capabilities];
+/** What a remote target declares: never `clock` or `reset` (protocol.md §5), and `reload` only when the runtime can reload itself. */
+export function capabilitiesOf(target: Target, fakes: FakeInstance[], reload?: () => void): Capability[] {
+  return ['settle', 'events', ...(fakes.length > 0 ? (['fakes'] as const) : []), ...(reload ? (['reload'] as const) : []), ...target.capabilities];
 }
 
 export function createHandlers(ctx: HandlerContext): Record<string, Handler> {
@@ -128,7 +133,7 @@ export function createHandlers(ctx: HandlerContext): Record<string, Handler> {
       for (const fake of ctx.fakes) {
         fakes[fake.name] = { ...(fake.description === undefined ? {} : { description: fake.description }), controls: fake.controls.describe() };
       }
-      return { app: ctx.app, commands: ctx.target.commands.describe(), fakes, capabilities: capabilitiesOf(ctx.target, ctx.fakes) };
+      return { app: ctx.app, commands: ctx.target.commands.describe(), fakes, capabilities: capabilitiesOf(ctx.target, ctx.fakes, ctx.reload) };
     },
     dispatch: (params) => step(params, () => ctx.target.dispatch(str(params['name']), params['payload'])),
     getState: async (params) => {
@@ -156,5 +161,13 @@ export function createHandlers(ctx: HandlerContext): Record<string, Handler> {
     clockAdvance: async () => unsupported('clockAdvance'),
     clockNow: async () => unsupported('clockNow'),
     reset: async () => unsupported('reset'),
+    reload: async () => {
+      const reload = ctx.reload;
+      if (!reload) return unsupported('reload');
+      // The reply must leave before the JavaScript context goes away. The connection sends it as
+      // soon as this promise resolves, a microtask later; the reload waits for the next tick.
+      ctx.clock.setTimeout(() => reload(), 0, 'ironbird.reload');
+      return {};
+    },
   };
 }

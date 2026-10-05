@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft; signatures will change during M0–M2 |
-| Last updated | 2026-09-25 |
+| Last updated | 2026-09-29 |
 | Related | [protocol.md](protocol.md) for wire types and error codes · [cli.md](cli.md) for the CLI |
 
 Priority markers match [spec.md](spec.md): **P0** ships in 0.1, **P1** is planned for 0.1 if milestones hold. Sections marked **M1** or **M2** describe APIs planned for those milestones ([roadmap.md](roadmap.md)); they are not in the repository yet.
@@ -79,7 +79,7 @@ interface Target<S = unknown> {
 
 `TargetDefinition` is exported alongside `createTarget`. `persist` and `restore` ship today: a definition that provides either gets the matching method and capability on the `Target`. What is P1 is the pair of protocol operations that use them, `snapshotSave` and `snapshotLoad`; see [protocol.md §4.1](protocol.md#41-target-operations).
 
-`capabilities` lists only what the `Target` itself provides. The daemon and bridge add `settle`, `events`, `fakes`, `clock`, and `reset` as appropriate when they describe the target; see [protocol.md §5](protocol.md#5-types). A subscriber that throws is skipped with a `console.warn`; it never prevents later subscribers from running or the dispatch from completing.
+`capabilities` lists only what the `Target` itself provides. The daemon and bridge add `settle`, `events`, `fakes`, `clock`, `reset`, and `reload` as appropriate when they describe the target; see [protocol.md §5](protocol.md#5-types). A subscriber that throws is skipped with a `console.warn`; it never prevents later subscribers from running or the dispatch from completing.
 
 Example with an XState actor, adapted by hand (the `@ironbird/xstate` adapter does this for you):
 
@@ -373,6 +373,7 @@ interface BridgeOptions {
   settle?: { frames?: number; timeoutMs?: number };             // defaults 2 and 5000
   reconnect?: { initialDelayMs?: number; maxDelayMs?: number }; // defaults 500 and 5000
   allowInNonDevBuilds?: boolean;                                // default false
+  reload?: () => void | Promise<void>;                          // default DevSettings.reload, when it exists
   logger?: (level: 'debug' | 'info' | 'warn' | 'error', message: string) => void;
 }
 
@@ -392,6 +393,7 @@ Behavior:
 - Every incoming payload is validated against the app's own registry before dispatch; malformed frames are dropped and logged.
 - Recorded events are forwarded as they happen; state revisions are coalesced to one notification per 100 ms window; serialization warnings are sent once per path per connection.
 - `clockAdvance`, `clockNow`, and `reset` answer `UNSUPPORTED`, and the bridge never declares the `clock` or `reset` capability.
+- The bridge declares the `reload` capability when the `reload` option is given or `DevSettings.reload` from `react-native` is a function, and answers a `reload` request with `{}`, then calls the option (or `DevSettings.reload()` when there is no option) on the next tick of its clock, so the reply leaves before the JavaScript context goes away. A throw or a rejection from the option is logged as a warning and otherwise ignored, since the reply has already been sent. The app restarts from the bundler and the bridge reconnects as it does after any reload; `ironbird reload` waits for that and keeps the same target id. An app running in Expo Go must pass `reload: () => reloadAppAsync()`, with `reloadAppAsync` from `expo`: under Expo Go 57, `DevSettings.reload` restarts the JavaScript without Expo Go's native modules, so the app fails to boot and never reconnects.
 - iOS Simulator reaches the daemon at `localhost`. Android emulators need `adb reverse tcp:4568 tcp:4568`, which `ironbird serve` runs automatically when `adb` is available. Physical devices use the host's LAN address, and the daemon must be started with `--host` and a token.
 
 Wiring, using the layout from [architecture.md §5](architecture.md#5-integrating-an-app). The tracker and recorder are created in `instance.ts`, which only the app loads, with `enabled: __DEV__` so release builds carry neither:
@@ -468,7 +470,7 @@ useEffect(() => {
 
 ## @ironbird/cli
 
-The binary is documented in [cli.md](cli.md). The package also exports the pieces the binary is built from, for embedding a daemon in another process: `loadConfig`, `loadTypeScriptModule`, `createHeadlessTarget`, `startDaemon`, `readDaemonInfo` / `writeDaemonInfo` / `removeDaemonInfo`, `buildProgram`, `runServe`, `isLoopbackHost`, `parseCondition` / `conditionHolds`, and the scenario runner: `parseScenario` and `loadScenarioFiles` turn a file (or a directory of them) into a validated `Scenario`, made of `ScenarioStep`s and reporting any authoring error as a `ScenarioIssue`; `runScenario` runs one `Scenario` against a `DaemonClient` and returns its `ScenarioResult`, per its `RunScenarioOptions`, whose `reset` resets a target that declares the `reset` capability before the first step (design D14; `scenario run` always sets it).
+The binary is documented in [cli.md](cli.md). The package also exports the pieces the binary is built from, for embedding a daemon in another process: `loadConfig`, `loadTypeScriptModule`, `createHeadlessTarget`, `startDaemon`, `readDaemonInfo` / `writeDaemonInfo` / `removeDaemonInfo`, `buildProgram`, `runServe`, `isLoopbackHost`, `parseCondition` / `conditionHolds`, and the scenario runner: `parseScenario` and `loadScenarioFiles` turn a file (or a directory of them) into a validated `Scenario`, made of `ScenarioStep`s and reporting any authoring error as a `ScenarioIssue`; `runScenario` runs one `Scenario` against a `DaemonClient` and returns its `ScenarioResult`, per its `RunScenarioOptions`, whose `reset` resets a target that declares the `reset` capability before the first step (design D14; `scenario run` always sets it). `createHeadlessTarget` takes an optional `loadDefinition`, which the `reload` operation calls to load the headless entry again (`runServe` passes one that re-bundles the configured entry under a fresh label); a target created without it doesn't declare `reload`. For agents, `createMcpServer` builds the `ironbird mcp` server, an `McpServer` from `@modelcontextprotocol/server` with the sixteen tools in [cli.md](cli.md#mcp-tools), from `McpServerOptions`: its `version`, the `cwd` that scenario paths resolve against, a `resolve` called on every tool call that returns a `DaemonClient` and the artifacts directory, and an optional `readImage` for screenshots. `agentSetup` does what `ironbird agent setup` does, given `AgentSetupOptions` (`cwd`, `skillsDir?`, and the `packageRoot` holding `skills/ironbird/`), and returns an `AgentSetupResult`.
 
 ### defineConfig (P0)
 
@@ -486,7 +488,7 @@ export default defineConfig({
   bridge: { port: 4568 },
   clock: { start: '2026-01-01T00:00:00.000Z' },
   settle: { timeoutMs: 5000 },                // headless settle; remote settle is set in startBridge
-  boot: { timeoutMs: 30000 },                 // how long the headless factory may take before HEADLESS_LOAD_FAILED
+  boot: { timeoutMs: 30000 },                 // how long the headless factory, or a reload's load and factory together, may take before HEADLESS_LOAD_FAILED
   scenarios: 'ironbird/scenarios',
   artifactsDir: '.ironbird',
   devices: { ios: 'booted' },                 // simctl device, or adb serial under `android`

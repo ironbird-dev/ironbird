@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-09-26 |
+| Last updated | 2026-10-03 |
 | Related | [spec.md](spec.md) (requirement and question IDs) · [testing-strategy.md](testing-strategy.md) |
 
 Estimates assume focused effort and describe a sequence, not calendar dates. Each milestone ends with a short demo and a go/no-go decision against its exit criteria.
@@ -83,7 +83,7 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 
 ## M3: Agent interface
 
-**Scope:** R13, R14, R17. Resolve Q3.
+**Scope:** R13, R14. Resolve Q3. R17 moved to M5 (M3 design D3).
 
 - `ironbird mcp`, with tools mirroring the CLI and screenshots returned as image content
 - An agent skill that teaches the loop: describe the app, act headlessly, reproduce with a scenario, then escalate to a device check with evidence
@@ -92,7 +92,9 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 **Exit criteria**
 
 - [ ] In 5 fresh sessions, an agent given the skill and the report "orders sometimes complete with a zero total" reproduces the bug with a scenario, fixes it, and verifies the fix headlessly and on iOS with evidence, succeeding in at least 4 sessions without human steering
-- [ ] Every "verified" claim from those sessions is spot-checked, and the false-claim rate is recorded as a baseline
+- [x] Every "verified" claim from those sessions is spot-checked, and the false-claim rate is recorded as a baseline
+
+Gate failed on 2026-10-03 after two batches; see docs/evals/m3-agent-interface.md. Criterion 1 is not met on the controller's strict reading, recorded verbatim: "the bug report is "orders sometimes complete with a zero total"; an order that passes through completed with totalCents 0 (even transiently, until a late confirmation) or that emits order_completed analytics with 0 still exhibits the reported bug. The frozen grader's "fixed" check (§7.3) judged the final state only, which is a grader gap. Under the strict reading, the M3 gate is NOT MET." Strict tallies: batch g1 1/5, batch g2 2/5. The frozen grader read g1 3/5 and g2 2/5 as graded; with the interference ruling (g2-3 to g2-5 invalid: another project's UI tests took over the shared simulator) it would have read g2 4/5 and passed. False-claim baseline: 0/89 judged on the final state, 9/89 on the strict reading.
 
 ## M4: Testing package
 
@@ -109,11 +111,12 @@ M0 and M1 together are the feasibility proof. If either gate fails, fix the desi
 
 ## M5: Adapters and 0.1 release
 
-**Scope:** R15, R19, R20. Close Q8.
+**Scope:** R15, R17, R19, R20. Close Q8.
 
 - `@ironbird/xstate` and `@ironbird/redux`
 - `examples/bare-redux`: a bare React Native app using Redux
 - `doctor` and snapshots
+- `watch` (R17), moved from M3
 - Publish 0.1.0 through the pipeline built in M0
 
 **Exit criteria**
