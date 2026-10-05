@@ -201,10 +201,12 @@ describe('bridge against daemon', () => {
         text += decoder.decode(value, { stream: true });
       }
     };
-    await readUntil(': connected');
+    // Wait for the initial state frame before dispatching: `: connected` is written before the
+    // backlog read crosses the bridge, so a dispatch sent on it could land before the state
+    // subscription and make the initial frame carry rev 1.
+    await readUntil('event: state\ndata: {"rev":0}\n\n');
     await rpc(d, { op: 'dispatch', params: { name: 'counter.add', payload: { by: 1 }, settle: false } });
-    await readUntil('event: state');
-    expect(text).toContain('data: {"rev":1}');
+    await readUntil('event: state\ndata: {"rev":1}\n\n');
     a.recorder.record('analytics', 'opened');
     await readUntil('"name":"opened"');
     handle.stop();
