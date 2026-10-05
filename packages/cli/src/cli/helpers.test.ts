@@ -40,6 +40,8 @@ describe('exit codes', () => {
     expect(exitCodeForError('DISPATCH_FAILED')).toBe(1);
     expect(exitCodeForError('INTERNAL')).toBe(1);
     expect(exitCodeForError('INVARIANT_FAILED')).toBe(1);
+    expect(exitCodeForError('INVALID_SNAPSHOT')).toBe(1);
+    expect(exitCodeForError('APP_MISMATCH')).toBe(2);
     expect(exitCodeForError('AMBIGUOUS_TARGET')).toBe(2);
     expect(exitCodeForError('HEADLESS_LOAD_FAILED')).toBe(2);
     expect(exitCodeForError('INVALID_CONFIG')).toBe(2);

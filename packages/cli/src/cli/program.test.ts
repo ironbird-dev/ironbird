@@ -22,7 +22,7 @@ interface StreamFrame {
   data: unknown;
 }
 
-function harness(responses: Record<string, Responder>, options: { isTTY?: boolean; streamFrames?: StreamFrame[]; createClient?: () => DaemonClient; cwd?: string } = {}) {
+function harness(responses: Record<string, Responder>, options: { isTTY?: boolean; streamFrames?: StreamFrame[]; createClient?: () => DaemonClient; cwd?: string; signal?: AbortSignal } = {}) {
   const calls: Call[] = [];
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -52,7 +52,7 @@ function harness(responses: Record<string, Responder>, options: { isTTY?: boolea
     stderr: (t) => stderr.push(t),
     version: '0.0.0-test',
     createClient: options.createClient ?? (() => client),
-    signal: AbortSignal.abort(),
+    signal: options.signal ?? AbortSignal.abort(),
   });
   return { run, calls, stdout, stderr, out: () => JSON.parse(stdout.join('')) as Record<string, unknown> };
 }
@@ -546,5 +546,63 @@ describe('doctor', () => {
   it('prints indented JSON in a TTY', async () => {
     const { text } = await doctor([], fakeEnvironment(), true);
     expect(text.startsWith('{\n  "checks": [')).toBe(true);
+  });
+});
+
+describe('snapshot', () => {
+  let dir: string;
+  const status = (targets: Array<{ id: string; appId: string }>) => ({
+    version: '1',
+    protocol: 1,
+    uptimeMs: 1,
+    targets: targets.map((t) => ({ ...t, platform: 'ios', connectedAt: 0, rev: 4 })),
+  });
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-snapshot-cli-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('save writes { app, target, rev, snapshot } with the app from status, and prints where', async () => {
+    const h = harness({ snapshotSave: { rev: 4, snapshot: { notes: ['milk'] } }, status: status([{ id: 'ios', appId: 'com.example.notes' }]) }, { cwd: dir });
+    expect(await h.run(['snapshot', 'save', 'notes.json', '--target', 'ios'])).toBe(0);
+    expect(h.calls.map((call) => [call.op, call.target])).toEqual([
+      ['snapshotSave', 'ios'],
+      ['status', undefined],
+    ]);
+    expect(h.out()).toEqual({ target: 'ios', app: 'com.example.notes', rev: 4, file: path.join(dir, 'notes.json') });
+    expect(JSON.parse(await readFile(path.join(dir, 'notes.json'), 'utf8'))).toEqual({ app: 'com.example.notes', target: 'ios', rev: 4, snapshot: { notes: ['milk'] } });
+  });
+
+  it('save fails with TARGET_DISCONNECTED and writes nothing when the target left before status', async () => {
+    const h = harness({ snapshotSave: { rev: 4, snapshot: {} }, status: status([]) }, { cwd: dir });
+    expect(await h.run(['snapshot', 'save', 'notes.json'])).toBe(1);
+    expect(h.out()).toMatchObject({ error: { code: 'TARGET_DISCONNECTED', details: { target: 'headless', op: 'snapshotSave' } } });
+    await expect(stat(path.join(dir, 'notes.json'))).rejects.toThrow();
+  });
+
+  it('load validates the file before sending anything, then sends its snapshot and app', async () => {
+    await writeFile(path.join(dir, 'bad.json'), '{"app":"","target":1,"rev":-1}');
+    const h = harness({ snapshotLoad: { rev: 9, path: '', value: { notes: [] } } }, { cwd: dir });
+    expect(await h.run(['snapshot', 'load', 'bad.json'])).toBe(1);
+    expect(h.calls).toEqual([]);
+    expect(h.out()).toMatchObject({ error: { code: 'INVALID_PAYLOAD', details: { name: 'snapshotLoad', issues: [{ path: ['app'] }, { path: ['target'] }, { path: ['rev'] }, { path: ['snapshot'] }] } } });
+    h.stdout.length = 0;
+    await writeFile(path.join(dir, 'good.json'), JSON.stringify({ app: 'com.example.notes', target: 'ios', rev: 3, snapshot: { notes: [] } }));
+    expect(await h.run(['snapshot', 'load', 'good.json'])).toBe(0);
+    expect(h.calls).toEqual([{ op: 'snapshotLoad', target: undefined, params: { snapshot: { notes: [] }, app: 'com.example.notes' } }]);
+    expect(h.out()).toEqual({ target: 'headless', rev: 9, path: '', value: { notes: [] } });
+  });
+
+  it('exits 2 when the file cannot be read or written', async () => {
+    const h = harness({ snapshotSave: { rev: 1, snapshot: {} }, status: status([{ id: 'headless', appId: 'com.example.notes' }]) }, { cwd: dir });
+    expect(await h.run(['snapshot', 'load', 'missing.json'])).toBe(2);
+    expect(h.stderr.join('')).toContain(`Cannot read ${path.join(dir, 'missing.json')}`);
+    expect(await h.run(['snapshot', 'save', 'no/such/dir/notes.json'])).toBe(2);
+    expect(h.stderr.join('')).toContain(`Cannot write ${path.join(dir, 'no/such/dir/notes.json')}`);
+    expect(h.stdout).toEqual([]);
   });
 });

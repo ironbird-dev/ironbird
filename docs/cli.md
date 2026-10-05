@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-09-29 |
+| Last updated | 2026-10-04 |
 | Related | [protocol.md](protocol.md) · [api.md](api.md) |
 
 The `ironbird` binary ships in `@ironbird/cli` and requires Node 22 or newer. The unscoped `ironbird` package exposes the same binary, so `npx ironbird <command>` works without a local install. Every command except `serve`, `doctor`, `verify-bundle`, `mcp`, and `agent setup` talks to a running daemon. `mcp` starts without one and finds it on each tool call.
@@ -27,7 +27,7 @@ Payloads are JSON, and an omitted payload means `{}`. Condition values for `--eq
 | Code | Meaning | Typical causes |
 |---|---|---|
 | 0 | Success, including headless steps that end quiescent | |
-| 1 | Operation failed | `INVALID_PAYLOAD`, `UNKNOWN_COMMAND`, `UNKNOWN_FAKE`, `UNKNOWN_CONTROL`, `DISPATCH_FAILED`, `UNSUPPORTED`, `SCREENSHOT_FAILED`, `TARGET_DISCONNECTED`, `CLOCK_RUNAWAY`, `INTERNAL` |
+| 1 | Operation failed | `INVALID_PAYLOAD`, `INVALID_SNAPSHOT`, `UNKNOWN_COMMAND`, `UNKNOWN_FAKE`, `UNKNOWN_CONTROL`, `DISPATCH_FAILED`, `UNSUPPORTED`, `SCREENSHOT_FAILED`, `TARGET_DISCONNECTED`, `CLOCK_RUNAWAY`, `INTERNAL` |
 | 2 | Usage or configuration error | Bad arguments, `AMBIGUOUS_TARGET`, `AMBIGUOUS_DEVICE`, `HEADLESS_LOAD_FAILED`, `INVALID_CONFIG`, `INVALID_SCENARIO`, `UNAUTHORIZED`, `PROTOCOL_MISMATCH`, `APP_MISMATCH` |
 | 3 | Applied, but not settled within the timeout | See `settle` in the result |
 | 4 | Condition or assertion not met | `WAIT_TIMEOUT`, a failed scenario step |
@@ -288,11 +288,23 @@ Every run, passed or failed, writes a directory under the daemon's artifacts dir
 
 "During the run" means after the run's first `describe`, or after the last `reset` step, which restarts the event and call logs. Collection is best effort: a file that cannot be gathered, such as the state after a `TARGET_DISCONNECTED`, is left out and named in `artifactErrors`.
 
-### snapshot (P1)
+### snapshot
 
 ```text
 ironbird snapshot save <file>
 ironbird snapshot load <file>
+```
+
+For targets that declare `persist` and `restore`; others fail with `UNSUPPORTED`.
+
+`save` asks the target for its persisted state and writes `{ "app", "target", "rev", "snapshot" }` to `<file>` as JSON, with `app` from the target's `status` entry, then prints `{ target, app, rev, file }` with `file` absolute. A state that can't be saved losslessly, such as one holding a `Map`, a `Date`, a class instance, or a cycle, fails with `INVALID_SNAPSHOT` naming the first such path, and nothing is written. A file that can't be written exits 2.
+
+`load` reads `<file>` and checks that it is a JSON object with a non-empty string `app`, a string `target`, a non-negative integer `rev`, and a `snapshot`; only then does it send `snapshotLoad` with the file's `snapshot` and `app`. A file that isn't JSON or doesn't have that shape fails with `INVALID_PAYLOAD` and details `{ name: "snapshotLoad", issues }`, listing every problem, before anything is sent; a file that can't be read exits 2. The target refuses a snapshot saved from another app with `APP_MISMATCH` and one its own validation rejects with `INVALID_SNAPSHOT`. `target` in the file is informational: a snapshot can be loaded into another target of the same app. It prints `{ target, rev, path: "", value }`, the whole state after the load.
+
+```sh
+ironbird snapshot save todos.json
+ironbird send todos.clear
+ironbird snapshot load todos.json
 ```
 
 ### watch (P1)
