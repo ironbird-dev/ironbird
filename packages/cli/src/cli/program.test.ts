@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DaemonClient } from './client';
 import type { McpServerOptions } from '../mcp/server';
 import { buildProgram } from './program';
+import type { DoctorEnvironment } from '../doctor/environment';
+import { FAKE_VERSION, execFailure, fakeEnvironment } from '../doctor/fake-environment';
 
 interface Call {
   op: string;
@@ -476,5 +478,73 @@ describe('agent setup', () => {
     expect(await h.run(['agent', 'setup'])).toBe(2);
     expect(h.out()).toMatchObject({ error: { code: 'INVALID_CONFIG', details: { file: path.join(dir, '.mcp.json') } } });
     await expect(stat(path.join(dir, '.claude'))).rejects.toThrow();
+  });
+});
+
+describe('doctor', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-doctor-cli-'));
+    await writeFile(path.join(dir, 'ironbird.config.ts'), `export default { appId: 'com.example.doctor' };\n`);
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const doctor = async (argv: string[], environment: Partial<DoctorEnvironment>, isTTY = false): Promise<{ code: number; text: string }> => {
+    const stdout: string[] = [];
+    const { run } = buildProgram({
+      cwd: dir,
+      env: {},
+      isTTY,
+      stdout: (text) => stdout.push(text),
+      stderr: () => {},
+      version: FAKE_VERSION,
+      createClient: () => {
+        throw new Error('doctor must not talk to a daemon');
+      },
+      doctor: environment,
+      signal: AbortSignal.abort(),
+    });
+    const code = await run(['doctor', ...argv]);
+    return { code, text: stdout.join('') };
+  };
+
+  it('prints every check as one JSON line without a daemon, and exits 0 when the required checks pass', async () => {
+    const { code, text } = await doctor([], fakeEnvironment());
+    expect(code).toBe(0);
+    expect(text.endsWith('\n')).toBe(true);
+    expect(text.trim().split('\n')).toHaveLength(1);
+    const report = JSON.parse(text) as { checks: Array<Record<string, unknown>> };
+    expect(report.checks.map((check) => check['id'])).toEqual(['node', 'config', 'headless', 'port', 'gitignore', 'versions', 'simctl', 'adb']);
+    expect(Object.keys(report.checks[0] ?? {})).toEqual(['id', 'ok', 'required', 'detail']);
+  });
+
+  it('exits 1 when a required check fails', async () => {
+    const { code, text } = await doctor([], fakeEnvironment({ nodeVersion: '20.11.1' }));
+    expect(code).toBe(1);
+    expect((JSON.parse(text) as { checks: Array<{ id: string; ok: boolean; fix?: string }> }).checks[0]).toMatchObject({ id: 'node', ok: false, fix: 'Install Node 22 or newer, for example the current LTS from nodejs.org' });
+  });
+
+  it('exits 0 when only optional checks fail', async () => {
+    const env = fakeEnvironment({
+      platform: 'linux',
+      exec: async (file) => {
+        if (file === 'adb') throw execFailure('ENOENT');
+        return { stdout: Buffer.from(''), stderr: '' };
+      },
+    });
+    expect((await doctor([], env)).code).toBe(0);
+  });
+
+  it('honors --config', async () => {
+    const { code, text } = await doctor(['--config', 'missing.config.ts'], fakeEnvironment());
+    expect(code).toBe(1);
+    expect((JSON.parse(text) as { checks: Array<{ id: string; detail: string }> }).checks[1]).toMatchObject({ id: 'config', detail: 'missing.config.ts does not exist' });
+  });
+
+  it('prints indented JSON in a TTY', async () => {
+    const { text } = await doctor([], fakeEnvironment(), true);
+    expect(text.startsWith('{\n  "checks": [')).toBe(true);
   });
 });

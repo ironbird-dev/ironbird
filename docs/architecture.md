@@ -214,7 +214,7 @@ When `--target` is omitted, operations use `defaultTarget` from config, which is
 | `@ironbird/core` in a release bundle | Expected, because app code imports its `Clock`; core has no I/O, no network code, and no bridge marker, and its tracker and recorder are created with `enabled: __DEV__` |
 | Code injection through the agent surface | No evaluation operations exist; only declared commands and controls, validated inside the app ([ADR-0001](adr/0001-commands-only-agent-surface.md)) |
 | Malformed or hostile daemon messages | The bridge validates message shapes and payloads and rejects unknown operations |
-| Sensitive data in artifacts | State, events, and screenshots may contain personal data; `.ironbird/` is gitignored by the setup template, and `doctor` warns if it isn't |
+| Sensitive data in artifacts | State, events, and screenshots may contain personal data; `.ironbird/` is gitignored by the setup template, and `ironbird doctor` fails its required `gitignore` check if it isn't |
 
 ## 10. Performance budgets
 

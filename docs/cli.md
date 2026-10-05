@@ -303,13 +303,45 @@ ironbird watch [--path <path>]
 
 Streams `{ rev, patch }` JSON lines, where `patch` is a JSON Patch (RFC 6902) against the previous state, until interrupted.
 
-### doctor (P1)
+### doctor
 
 ```text
-ironbird doctor
+ironbird doctor [--config <file>]
 ```
 
-Checks the Node version, config validity, headless entry load (printing the import chain on failure), daemon port availability, `xcrun simctl` and `adb` availability, booted devices, and whether `.ironbird/` is gitignored.
+Checks that the project and this machine are ready for ironbird, without a daemon. Prints `{ checks: [{ id, ok, required, detail, fix? }] }`, one entry per check in the order below, and exits 0 when every required check passes and 1 otherwise; optional checks never change the exit code. `detail` is one line saying what was found, and `fix`, present on most failures, says what to do. Text from outside ironbird, such as tool output, device names, and package fields, is flattened onto that line, with control characters replaced by spaces, and capped at 200 characters; a config's issues are listed in full.
+
+| id | Required | Passes when |
+|---|---|---|
+| `node` | yes | Node is 22 or newer |
+| `config` | yes | The config file exists and validates. A missing file fails with a fix naming the file to create; an invalid one lists its `INVALID_CONFIG` issues |
+| `headless` | yes | The configured headless entry loads and default-exports `defineHeadless(...)`. A remote-only app, with no `headless` in its config, passes with detail `not configured`. A `react-native` import anywhere in the headless graph fails with the import chain |
+| `port` | yes | The daemon port is free or held by an ironbird daemon, and the bridge port is free. The bridge port isn't checked while an ironbird daemon holds the daemon port, and port `0` always passes |
+| `gitignore` | yes | The artifacts directory, `.ironbird/` by default, is ignored by git, is outside the repository, or the project isn't in a git repository. Without git installed, a project with no `.git` in its directory or any above it passes as not a repository, and one with a `.git` fails, since the ignore status can't be checked |
+| `versions` | yes | Every installed `@ironbird/*` package, the `ironbird` package, and the running CLI have the same version |
+| `simctl` | no | This is macOS and `xcrun simctl` works; `detail` lists booted simulators |
+| `adb` | no | `adb` is on the path; `detail` lists connected devices |
+
+The config is found as for other commands: `--config`, else the nearest `ironbird.config.ts` walking up from the working directory. When there is none, the later checks use the defaults (ports 4567 and 4568, `.ironbird/`); when it can't be loaded, `headless` and `port` fail as skipped. The config and the headless entry are bundled into a fresh temporary directory under `.ironbird/`, removed afterwards, so `doctor` never writes to a running daemon's `.ironbird/cache` or `daemon.json`. Loading the headless entry runs its top-level code but never calls `create`. If `doctor` can't create or remove that directory, it reports the problem on `config` (and `headless`) as a failed check, and the checks that need the config are skipped. A check that throws unexpectedly fails with `check failed unexpectedly: <message>`, and the other checks still run.
+
+A port in use is identified by sending `status` to `POST /v1/rpc` with a 1 s timeout: an `{ ok: true, result: { version, protocol } }` answer, or a 401 `UNAUTHORIZED` envelope from a daemon that requires a token, counts as ironbird. `doctor` sends no token. Packages are released at one version, so a `versions` failure means an install that mixes releases or a CLI run from outside the project, such as a global install.
+
+```json
+{
+  "checks": [
+    { "id": "node", "ok": true, "required": true, "detail": "Node 22.12.0" },
+    { "id": "config", "ok": true, "required": true, "detail": "ironbird.config.ts is valid" },
+    { "id": "headless", "ok": false, "required": true, "detail": "react-native is imported in the headless graph: headless.ts > pricing.ts > react-native", "fix": "Headless code runs in Node, so nothing it imports may import react-native: move that import out of this chain, for example behind a port with a fake" },
+    { "id": "port", "ok": true, "required": true, "detail": "daemon port 4567 on 127.0.0.1 is free; bridge port 4568 is free" },
+    { "id": "gitignore", "ok": true, "required": true, "detail": ".ironbird/ is ignored by git" },
+    { "id": "versions", "ok": true, "required": true, "detail": "@ironbird/cli 0.1.0, @ironbird/core 0.1.0, @ironbird/react-native 0.1.0, this CLI 0.1.0" },
+    { "id": "simctl", "ok": true, "required": false, "detail": "xcrun simctl is available; booted: iPhone 17 (9DEB1E0D-3DEF-4B99-ACFC-593ABDCAF6E6)" },
+    { "id": "adb", "ok": false, "required": false, "detail": "adb is not on the PATH", "fix": "Install the Android SDK Platform-Tools and add them to your PATH" }
+  ]
+}
+```
+
+This report exits 1, because `headless` is required.
 
 ### verify-bundle
 

@@ -3,6 +3,7 @@ import { Command, CommanderError, InvalidArgumentError } from 'commander';
 import { createDaemonClient, resolveDaemon, type DaemonClient } from './client';
 import type { runServe } from './commands/serve';
 import type { McpServerOptions } from '../mcp/server';
+import type { DoctorEnvironment } from '../doctor/environment';
 import { UsageError, parseDuration } from './durations';
 import { exitCodeForError, exitCodeForStep } from './exit-codes';
 import { createOutput, withTarget, type Output } from './output';
@@ -25,6 +26,8 @@ export interface ProgramIo {
   serve?: typeof runServe;
   /** Test hook replacing `runMcpStdio`, which would take over this process's stdin and stdout. */
   mcp?: (options: McpServerOptions) => Promise<void>;
+  /** Test hook replacing parts of the environment `doctor` probes: ports, host tools, installed packages. */
+  doctor?: Partial<DoctorEnvironment>;
 }
 
 interface GlobalOptions {
@@ -334,6 +337,26 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
         return { exit: failed ? 4 : 0 };
       }),
     );
+
+  program
+    .command('doctor')
+    .description('Check Node, the config, the headless entry, ports, .gitignore, package versions, and device tools; needs no daemon')
+    .action(async (_opts: unknown, command: Command) => {
+      const globals = command.optsWithGlobals<GlobalOptions>();
+      const output = createOutput({ json: Boolean(globals.json) || !io.isTTY, write: io.stdout });
+      try {
+        // Loaded on demand: the checks pull in esbuild and the config schema, which the client
+        // commands never need.
+        const { doctorExitCode, runDoctor } = await import('../doctor/run');
+        const report = await runDoctor({ cwd: io.cwd, configPath: globals.config, version: io.version, environment: io.doctor });
+        output.result(report);
+        exitCode = doctorExitCode(report);
+      } catch (error) {
+        // Only an internal fault gets here: every check reports its own failure in the report.
+        output.error(toErrorShape(error));
+        exitCode = 1;
+      }
+    });
 
   program
     .command('verify-bundle <path...>')
