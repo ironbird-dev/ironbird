@@ -111,6 +111,10 @@ describe('probeHttp', () => {
     expect(await probeHttp(`http://127.0.0.1:${port}/v1/rpc`, 100)).toEqual({ kind: 'timeout' });
   });
 
+  it('returns a probe result instead of throwing for an invalid timeout', async () => {
+    expect(await probeHttp('http://127.0.0.1:1/v1/rpc', -1)).toEqual({ kind: 'unreachable', code: 'ERR_OUT_OF_RANGE' });
+  });
+
   it('reports a closed port as unreachable', async () => {
     const port = await freePort();
     expect(await probeHttp(`http://127.0.0.1:${port}/v1/rpc`, 1_000)).toEqual({ kind: 'unreachable', code: 'ECONNREFUSED' });

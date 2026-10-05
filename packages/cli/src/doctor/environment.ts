@@ -36,8 +36,9 @@ export interface DoctorEnvironment {
  * then stalls is a timeout rather than a hang. Never throws.
  */
 export async function probeHttp(url: string, timeoutMs: number): Promise<HttpProbe> {
-  const signal = AbortSignal.timeout(timeoutMs);
+  let signal: AbortSignal | undefined;
   try {
+    signal = AbortSignal.timeout(timeoutMs); // throws a RangeError for a negative or non-finite duration
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -48,8 +49,8 @@ export async function probeHttp(url: string, timeoutMs: number): Promise<HttpPro
     return { kind: 'response', status: response.status, body: await response.text() };
   } catch (error) {
     // A stalled body rejects with AbortError rather than TimeoutError, so the signal is the authority.
-    if (signal.aborted || (error as { name?: unknown }).name === 'TimeoutError') return { kind: 'timeout' };
-    const code = (error as { cause?: { code?: unknown } }).cause?.code;
+    if (signal?.aborted === true || (error as { name?: unknown }).name === 'TimeoutError') return { kind: 'timeout' };
+    const code = (error as { cause?: { code?: unknown } }).cause?.code ?? (error as { code?: unknown }).code;
     return { kind: 'unreachable', code: typeof code === 'string' ? code : messageOf(error) };
   }
 }
