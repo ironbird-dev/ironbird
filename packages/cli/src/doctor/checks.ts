@@ -158,13 +158,17 @@ export function failureText(error: unknown): string {
  * it, git reports a `.ironbird/` pattern as not matching while the directory doesn't exist yet, as
  * in a fresh clone.
  */
-export async function checkGitignore(paths: { rootDir: string; artifactsPath: string }, env: Pick<DoctorEnvironment, 'exec'>): Promise<DoctorCheck> {
+export async function checkGitignore(paths: { rootDir: string; artifactsPath: string }, env: Pick<DoctorEnvironment, 'exec' | 'hasGitEntry'>): Promise<DoctorCheck> {
   const { rootDir, artifactsPath } = paths;
-  const gitFix = `Run git status in ${rootDir} and fix what it reports`;
+  const gitFix = `Run git status in ${oneLine(rootDir)} and fix what it reports`;
   try {
     await env.exec('git', ['-C', rootDir, 'rev-parse', '--show-toplevel']);
   } catch (error) {
-    if (codeOf(error) === 'ENOENT') return passCheck('gitignore', true, 'git is not installed, so there is nothing to check');
+    if (codeOf(error) === 'ENOENT') {
+      // Without git there is no asking it, so look for a repository the way git would.
+      if (!(await env.hasGitEntry(rootDir))) return passCheck('gitignore', true, 'not a git repository');
+      return failCheck('gitignore', true, "git is not installed, so .ironbird/ ignore status can't be checked", 'Install git, or add .ironbird/ to .gitignore');
+    }
     if (failureText(error).includes('not a git repository')) return passCheck('gitignore', true, 'not in a git repository');
     return failCheck('gitignore', true, `git rev-parse failed: ${failureText(error)}`, gitFix);
   }
@@ -174,7 +178,7 @@ export async function checkGitignore(paths: { rootDir: string; artifactsPath: st
     await env.exec('git', ['-C', rootDir, 'check-ignore', '-q', '--', relative]);
     return passCheck('gitignore', true, `${shown} is ignored by git`);
   } catch (error) {
-    if (codeOf(error) === 1) return failCheck('gitignore', true, `${shown} is not ignored by git, so state, events, and screenshots could be committed`, `Add ${shown} to ${path.join(rootDir, '.gitignore')}`);
+    if (codeOf(error) === 1) return failCheck('gitignore', true, `${shown} is not ignored by git, so state, events, and screenshots could be committed`, `Add ${shown} to ${oneLine(path.join(rootDir, '.gitignore'))}`);
     if (failureText(error).includes('outside repository')) return passCheck('gitignore', true, `${shown} is outside the git repository`);
     return failCheck('gitignore', true, `git check-ignore failed: ${failureText(error)}`, gitFix);
   }
@@ -210,7 +214,7 @@ export function newestVersion(versions: string[]): string | undefined {
 export async function checkVersions(rootDir: string, runningVersion: string, env: Pick<DoctorEnvironment, 'listInstalledPackages'>): Promise<DoctorCheck> {
   const installed = await env.listInstalledPackages(rootDir);
   if (installed.length === 0) {
-    return failCheck('versions', true, `No ironbird packages are installed in ${rootDir} or above it`, `Install @ironbird/core and @ironbird/react-native, and @ironbird/cli as a dev dependency, all at ${runningVersion}`);
+    return failCheck('versions', true, `No ironbird packages are installed in ${oneLine(rootDir)} or above it`, `Install @ironbird/core and @ironbird/react-native, and @ironbird/cli as a dev dependency, all at ${runningVersion}`);
   }
   const entries: Array<{ name: string; version: string | undefined }> = [...installed.map(({ name, version }) => ({ name, version })), { name: 'this CLI', version: runningVersion }];
   const detail = entries.map(({ name, version }) => `${oneLine(name)} ${version === undefined ? '(no readable version)' : oneLine(version)}`).join(', ');

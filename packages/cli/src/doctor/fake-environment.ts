@@ -12,6 +12,7 @@ export interface FakeLog {
   http: Array<{ url: string; timeoutMs: number }>;
   bind: Array<{ host: string; port: number }>;
   packages: string[];
+  gitEntry: string[];
 }
 
 /** A host tool failure shaped like `systemExec`'s: `code` is the exit status, or `'ENOENT'` for a missing binary. */
@@ -34,7 +35,7 @@ function output(file: string, args: string[]): string {
  * `overrides` to make one probe misbehave; overridden members do not write to `log`.
  */
 export function fakeEnvironment(overrides: Partial<DoctorEnvironment> = {}): DoctorEnvironment & { log: FakeLog } {
-  const log: FakeLog = { exec: [], http: [], bind: [], packages: [] };
+  const log: FakeLog = { exec: [], http: [], bind: [], packages: [], gitEntry: [] };
   const exec: Exec = async (file, args) => {
     log.exec.push([file, ...args]);
     return { stdout: Buffer.from(output(file, args)), stderr: '' };
@@ -54,6 +55,10 @@ export function fakeEnvironment(overrides: Partial<DoctorEnvironment> = {}): Doc
     listInstalledPackages: async (fromDir) => {
       log.packages.push(fromDir);
       return ['@ironbird/cli', '@ironbird/core', '@ironbird/react-native'].map((name) => ({ name, version: FAKE_VERSION, dir: `${fromDir}/node_modules/${name}` }));
+    },
+    hasGitEntry: async (fromDir) => {
+      log.gitEntry.push(fromDir);
+      return false;
     },
     ...overrides,
     log,

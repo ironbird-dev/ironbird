@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer } from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -21,7 +21,7 @@ import {
   newestVersion,
   statusUrl,
 } from './checks';
-import { systemEnvironment, type HttpProbe, type InstalledPackage } from './environment';
+import { hasGitEntry, systemEnvironment, type HttpProbe, type InstalledPackage } from './environment';
 import { FAKE_UDID, execFailure, fakeEnvironment } from './fake-environment';
 
 const STATUS_BODY = JSON.stringify({ ok: true, result: { version: '0.1.0', protocol: 1, uptimeMs: 5, targets: [] } });
@@ -229,6 +229,7 @@ describe('checkGitignore', () => {
       if (args.includes('check-ignore')) handlers.checkIgnore?.();
       return { stdout: Buffer.from(''), stderr: '' };
     };
+  const noGitEntry = async (): Promise<boolean> => false;
   const failsWith = (code: number | string, stderr = '') => (): never => {
     throw execFailure(code, stderr);
   };
@@ -243,7 +244,7 @@ describe('checkGitignore', () => {
   });
 
   it('fails with a fix naming the .gitignore to edit when git does not ignore it', async () => {
-    expect(await checkGitignore(paths, { exec: git({ checkIgnore: failsWith(1) }) })).toEqual({
+    expect(await checkGitignore(paths, { exec: git({ checkIgnore: failsWith(1) }), hasGitEntry: noGitEntry })).toEqual({
       id: 'gitignore',
       ok: false,
       required: true,
@@ -259,22 +260,41 @@ describe('checkGitignore', () => {
   });
 
   it('passes outside a git repository, without git, and for an artifacts directory outside the repository', async () => {
-    expect(await checkGitignore(paths, { exec: git({ revParse: failsWith(128, 'fatal: not a git repository (or any of the parent directories): .git\n') }) })).toEqual({
+    expect(await checkGitignore(paths, { exec: git({ revParse: failsWith(128, 'fatal: not a git repository (or any of the parent directories): .git\n') }), hasGitEntry: noGitEntry })).toEqual({
       id: 'gitignore',
       ok: true,
       required: true,
       detail: 'not in a git repository',
     });
-    expect((await checkGitignore(paths, { exec: git({ revParse: failsWith('ENOENT') }) })).detail).toBe('git is not installed, so there is nothing to check');
+    expect(await checkGitignore(paths, { exec: git({ revParse: failsWith('ENOENT') }), hasGitEntry: noGitEntry })).toEqual({ id: 'gitignore', ok: true, required: true, detail: 'not a git repository' });
     const outside = await checkGitignore(
       { rootDir: root, artifactsPath: '/elsewhere/artifacts' },
-      { exec: git({ checkIgnore: failsWith(128, "fatal: ../../elsewhere/artifacts/: '../../elsewhere/artifacts/' is outside repository at '/work'\n") }) },
+      { exec: git({ checkIgnore: failsWith(128, "fatal: ../../elsewhere/artifacts/: '../../elsewhere/artifacts/' is outside repository at '/work'\n") }), hasGitEntry: noGitEntry },
     );
     expect(outside).toEqual({ id: 'gitignore', ok: true, required: true, detail: '../../elsewhere/artifacts/ is outside the git repository' });
   });
 
+  it('fails without git when a .git entry exists in the project or above it, because the ignore status cannot be checked', async () => {
+    const asked: string[] = [];
+    const check = await checkGitignore(paths, {
+      exec: git({ revParse: failsWith('ENOENT') }),
+      hasGitEntry: async (fromDir) => {
+        asked.push(fromDir);
+        return true;
+      },
+    });
+    expect(check).toEqual({
+      id: 'gitignore',
+      ok: false,
+      required: true,
+      detail: "git is not installed, so .ironbird/ ignore status can't be checked",
+      fix: 'Install git, or add .ironbird/ to .gitignore',
+    });
+    expect(asked).toEqual([root]);
+  });
+
   it('fails when git fails for another reason, quoting it', async () => {
-    expect(await checkGitignore(paths, { exec: git({ revParse: failsWith(128, 'fatal: detected dubious ownership in repository at /work/app\n') }) })).toEqual({
+    expect(await checkGitignore(paths, { exec: git({ revParse: failsWith(128, 'fatal: detected dubious ownership in repository at /work/app\n') }), hasGitEntry: noGitEntry })).toEqual({
       id: 'gitignore',
       ok: false,
       required: true,
@@ -295,7 +315,7 @@ describe('checkGitignore with real git', () => {
     const dir = await repo();
     await systemExec('git', ['-C', dir, 'init', '-q']);
     await writeFile(path.join(dir, '.gitignore'), '.ironbird/\n');
-    expect(await checkGitignore({ rootDir: dir, artifactsPath: path.join(dir, '.ironbird') }, { exec: systemExec })).toEqual({
+    expect(await checkGitignore({ rootDir: dir, artifactsPath: path.join(dir, '.ironbird') }, { exec: systemExec, hasGitEntry })).toEqual({
       id: 'gitignore',
       ok: true,
       required: true,
@@ -306,9 +326,24 @@ describe('checkGitignore with real git', () => {
   it('fails a repository that does not ignore it, and passes a directory that is not a repository', async () => {
     const dir = await repo();
     await systemExec('git', ['-C', dir, 'init', '-q']);
-    expect(await checkGitignore({ rootDir: dir, artifactsPath: path.join(dir, '.ironbird') }, { exec: systemExec })).toMatchObject({ ok: false, fix: `Add .ironbird/ to ${path.join(dir, '.gitignore')}` });
+    expect(await checkGitignore({ rootDir: dir, artifactsPath: path.join(dir, '.ironbird') }, { exec: systemExec, hasGitEntry })).toMatchObject({ ok: false, fix: `Add .ironbird/ to ${path.join(dir, '.gitignore')}` });
     const plain = await repo();
-    expect(await checkGitignore({ rootDir: plain, artifactsPath: path.join(plain, '.ironbird') }, { exec: systemExec })).toMatchObject({ ok: true, detail: 'not in a git repository' });
+    expect(await checkGitignore({ rootDir: plain, artifactsPath: path.join(plain, '.ironbird') }, { exec: systemExec, hasGitEntry })).toMatchObject({ ok: true, detail: 'not in a git repository' });
+  });
+});
+
+describe('hasGitEntry', () => {
+  it('finds a .git directory or file in the directory or an ancestor', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'ironbird-doctor-gitentry-'));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    const nested = path.join(dir, 'a', 'b');
+    await mkdir(nested, { recursive: true });
+    await writeFile(path.join(dir, '.git'), 'gitdir: /elsewhere\n');
+    expect(await hasGitEntry(nested)).toBe(true);
+    await rm(path.join(dir, '.git'));
+    await mkdir(path.join(dir, 'a', '.git'));
+    expect(await hasGitEntry(nested)).toBe(true);
+    expect(await hasGitEntry(path.join(dir, 'a', '.git'))).toBe(true);
   });
 });
 

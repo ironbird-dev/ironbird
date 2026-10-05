@@ -28,6 +28,8 @@ export interface DoctorEnvironment {
   probeHttp(url: string, timeoutMs: number): Promise<HttpProbe>;
   tryBind(host: string, port: number): Promise<BindProbe>;
   listInstalledPackages(fromDir: string): Promise<InstalledPackage[]>;
+  /** Whether `fromDir` or any directory above it holds a `.git` entry, a directory or a file (worktrees and submodules use a file). */
+  hasGitEntry(fromDir: string): Promise<boolean>;
 }
 
 /**
@@ -110,6 +112,17 @@ export async function listInstalledPackages(fromDir: string): Promise<InstalledP
   return [...found.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
+/** Looks for `.git` the way git does, without running git: for when git is not installed. */
+export async function hasGitEntry(fromDir: string): Promise<boolean> {
+  let dir = path.resolve(fromDir);
+  for (;;) {
+    if (await exists(path.join(dir, '.git'))) return true;
+    const parent = path.dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
+
 export function systemEnvironment(): DoctorEnvironment {
-  return { nodeVersion: process.versions.node, platform: process.platform, exec: systemExec, probeHttp, tryBind, listInstalledPackages };
+  return { nodeVersion: process.versions.node, platform: process.platform, exec: systemExec, probeHttp, tryBind, listInstalledPackages, hasGitEntry };
 }
