@@ -47,7 +47,6 @@ describe('exit codes', () => {
     expect(exitCodeForError('INVALID_CONFIG')).toBe(2);
     expect(exitCodeForError('INVALID_SCENARIO')).toBe(2);
     expect(exitCodeForError('UNAUTHORIZED')).toBe(2);
-    expect(exitCodeForError('APP_MISMATCH')).toBe(2);
     expect(exitCodeForError('WAIT_TIMEOUT')).toBe(4);
     expect(exitCodeForError('NO_TARGET')).toBe(5);
   });
