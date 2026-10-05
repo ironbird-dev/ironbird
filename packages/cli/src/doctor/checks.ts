@@ -139,7 +139,7 @@ const codeOf = (error: unknown): unknown => (error as { code?: unknown }).code;
 const MAX_ONE_LINE_LENGTH = 200;
 
 /** External text (host tool output, package.json fields, device names) onto one line: control characters become spaces and the length is capped, so `detail` stays one line. */
-function oneLine(text: string): string {
+export function oneLine(text: string): string {
   // eslint-disable-next-line no-control-regex
   const clean = text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').trim();
   return clean.length > MAX_ONE_LINE_LENGTH ? `${clean.slice(0, MAX_ONE_LINE_LENGTH)}...` : clean;
