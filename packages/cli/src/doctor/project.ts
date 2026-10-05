@@ -1,4 +1,4 @@
-import { isHeadlessDefinition, isIronbirdError, messageOf } from '@ironbird/core';
+import { IronbirdError, isHeadlessDefinition, isIronbirdError, messageOf } from '@ironbird/core';
 import { access, mkdir, mkdtemp, rm, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { loadTypeScriptModule } from '../bundle';
@@ -24,6 +24,10 @@ const exists = (file: string): Promise<boolean> =>
     () => false,
   );
 
+type RemoveDir = (dir: string) => Promise<void>;
+
+const removeRecursively: RemoveDir = (dir) => rm(dir, { recursive: true, force: true });
+
 interface Scratch {
   dir: string;
   remove(): Promise<void>;
@@ -34,9 +38,10 @@ interface Scratch {
  * `.ironbird/cache`, so bare imports in the emitted bundles resolve from the same `node_modules`
  * (esbuild leaves packages external), but it is never `.ironbird/cache` itself, which a running
  * daemon owns (M5 design §6). `remove` deletes it, and `.ironbird/` as well when this run created
- * it, using `rmdir` so a directory something else has written into since is left alone.
+ * it, using `rmdir` so a directory something else has written into since is left alone. A failure
+ * to delete the scratch directory is an internal fault, not a failed check: it throws.
  */
-async function createScratch(rootDir: string): Promise<Scratch> {
+async function createScratch(rootDir: string, removeDir: RemoveDir): Promise<Scratch> {
   const parent = path.join(rootDir, '.ironbird');
   const created = await mkdir(parent, { recursive: true });
   const removeParent = async (): Promise<void> => {
@@ -52,8 +57,17 @@ async function createScratch(rootDir: string): Promise<Scratch> {
   return {
     dir,
     async remove() {
-      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+      let failure: unknown;
+      try {
+        await removeDir(dir);
+      } catch (error) {
+        failure = error;
+      }
       await removeParent();
+      if (failure !== undefined) {
+        const message = messageOf(failure);
+        throw new IronbirdError('INTERNAL', `Could not remove doctor scratch directory ${dir}: ${message}`, { dir, message });
+      }
     },
   };
 }
@@ -104,9 +118,10 @@ async function checkHeadless(config: ResolvedConfig, cwd: string, scratchDir: st
 /**
  * The `config` and `headless` checks (M5 design §6). The config is found as every command finds it:
  * `configPath` (`--config`), else the nearest config file walking up from `cwd`. Unlike `loadConfig`,
- * a missing file fails here; the later checks then use the defaults, rooted at `cwd`.
+ * a missing file fails here; the later checks then use the defaults, rooted at `cwd`. `removeDir` is
+ * a test seam for the scratch-directory cleanup.
  */
-export async function checkProject(options: { cwd: string; configPath?: string | undefined }): Promise<ProjectChecks> {
+export async function checkProject(options: { cwd: string; configPath?: string | undefined; removeDir?: RemoveDir }): Promise<ProjectChecks> {
   const cwd = path.resolve(options.cwd);
   const file = options.configPath === undefined ? await findConfigFile(cwd) : path.resolve(cwd, options.configPath);
   if (file === undefined || !(await exists(file))) {
@@ -117,7 +132,7 @@ export async function checkProject(options: { cwd: string; configPath?: string |
   const skippedHeadless = failCheck('headless', true, SKIPPED_DETAIL, SKIPPED_FIX);
   let scratch: Scratch;
   try {
-    scratch = await createScratch(rootDir);
+    scratch = await createScratch(rootDir, options.removeDir ?? removeRecursively);
   } catch (error) {
     const parent = path.join(rootDir, '.ironbird');
     return {
@@ -131,7 +146,7 @@ export async function checkProject(options: { cwd: string; configPath?: string |
     try {
       config = await loadConfig({ cwd, configPath: file, cacheDir: scratch.dir });
     } catch (error) {
-      return { config: failCheck('config', true, `${oneLine(shown)} is invalid: ${oneLine(issuesOf(error))}`, `Fix ${shown}; see ${CONFIG_DOCS_URL}`), headless: skippedHeadless, outcome: { status: 'invalid', rootDir } };
+      return { config: failCheck('config', true, `${oneLine(shown)} is invalid: ${oneLine(issuesOf(error), { max: Infinity })}`, `Fix ${shown}; see ${CONFIG_DOCS_URL}`), headless: skippedHeadless, outcome: { status: 'invalid', rootDir } };
     }
     return { config: passCheck('config', true, `${oneLine(shown)} is valid`), headless: await checkHeadless(config, cwd, scratch.dir), outcome: { status: 'loaded', rootDir, config } };
   } finally {

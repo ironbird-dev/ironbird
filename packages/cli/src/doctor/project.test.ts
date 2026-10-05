@@ -1,3 +1,4 @@
+import { isIronbirdError } from '@ironbird/core';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -118,6 +119,30 @@ describe('checkProject', () => {
     expect(headless.fix).toBeUndefined();
   });
 
+  it('lists every INVALID_CONFIG issue on one line, without truncating', async () => {
+    const keys = Array.from({ length: 30 }, (_, index) => `unknownKey${index}: 1`).join(', ');
+    await write('ironbird.config.ts', `export default { ${keys} };\n`);
+    const { config } = await checkProject({ cwd: dir });
+    expect(config.ok).toBe(false);
+    expect(config.detail.length).toBeGreaterThan(500);
+    expect(config.detail).not.toMatch(/[\r\n]|\.\.\.$/);
+    for (let index = 0; index < 30; index += 1) expect(config.detail).toContain(`"unknownKey${index}"`);
+  });
+
+  it('throws an INTERNAL error when the scratch directory cannot be removed', async () => {
+    await write('ironbird.config.ts', `export default { appId: 'com.example.doctor' };\n`);
+    let scratch = '';
+    const removeDir = async (target: string): Promise<void> => {
+      scratch = target;
+      throw new Error('disk on fire');
+    };
+    const error = await checkProject({ cwd: dir, removeDir }).catch((caught: unknown) => caught);
+    expect(isIronbirdError(error)).toBe(true);
+    expect(error).toMatchObject({ code: 'INTERNAL', message: `Could not remove doctor scratch directory ${scratch}: disk on fire`, details: { dir: scratch, message: 'disk on fire' } });
+    expect(path.dirname(scratch)).toBe(path.join(dir, '.ironbird'));
+    await rm(scratch, { recursive: true, force: true });
+  });
+
   it('keeps a multi-line load failure on one line', async () => {
     await write('ironbird.config.ts', WITH_HEADLESS);
     await write('src/headless.ts', `throw new Error('first line\\nsecond line');\n`);
@@ -128,7 +153,7 @@ describe('checkProject', () => {
   });
 
   it("bundles where the daemon would, so bare imports resolve from the app's node_modules, and leaves no .ironbird behind", async () => {
-    await rm(path.join(FIXTURE, '.ironbird'), { recursive: true, force: true });
+    expect(await absent(path.join(FIXTURE, '.ironbird'))).toBe(true);
     const result = await checkProject({ cwd: FIXTURE });
     expect(result.config).toMatchObject({ ok: true });
     expect(result.headless).toEqual({ id: 'headless', ok: true, required: true, detail: 'headless.ts loads' });
