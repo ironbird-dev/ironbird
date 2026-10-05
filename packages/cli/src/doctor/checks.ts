@@ -27,8 +27,11 @@ export function failCheck(id: DoctorCheckId, required: boolean, detail: string, 
   return fix === undefined ? { id, ok: false, required, detail } : { id, ok: false, required, detail, fix };
 }
 
+/** `22.12.0`, `v22.12.0`, or a prerelease like `v24.0.0-nightly2025`; anything else is unreadable. */
+const VERSION_PATTERN = /^v?(\d+)\.\d+\.\d+(?:[-+][^\r\n]*)?$/;
+
 export function checkNode(version: string): DoctorCheck {
-  const major = Number.parseInt(version.replace(/^v/, '').split('.')[0] ?? '', 10);
+  const major = Number.parseInt(VERSION_PATTERN.exec(version)?.[1] ?? '', 10);
   if (Number.isInteger(major) && major >= MIN_NODE_MAJOR) return passCheck('node', true, `Node ${version}`);
   return failCheck('node', true, `Node ${version}; ironbird needs Node ${MIN_NODE_MAJOR} or newer`, `Install Node ${MIN_NODE_MAJOR} or newer, for example the current LTS from nodejs.org`);
 }
@@ -45,6 +48,15 @@ const LOOPBACK_FOR_WILDCARD: Record<string, string> = { '0.0.0.0': '127.0.0.1', 
 export function statusUrl(host: string, port: number): string {
   const target = LOOPBACK_FOR_WILDCARD[host] ?? host;
   return `http://${target.includes(':') ? `[${target}]` : target}:${port}/v1/rpc`;
+}
+
+const MAX_REPORTED_VERSION_LENGTH = 40;
+
+/** A version taken from an HTTP answer is untrusted: drop control characters and cap the length so `detail` stays one line. */
+function reportable(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  const clean = text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '');
+  return clean.length > MAX_REPORTED_VERSION_LENGTH ? `${clean.slice(0, MAX_REPORTED_VERSION_LENGTH)}...` : clean;
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -67,7 +79,7 @@ export function identifyDaemon(probe: HttpProbe): string | undefined {
   if (probe.status === 200 && body['ok'] === true && isObject(result)) {
     const version = result['version'];
     const protocol = result['protocol'];
-    if (typeof version === 'string' && typeof protocol === 'number') return `an ironbird daemon (version ${version}, protocol ${protocol})`;
+    if (typeof version === 'string' && typeof protocol === 'number') return `an ironbird daemon (version ${reportable(version)}, protocol ${protocol})`;
   }
   if (probe.status === 401 && body['ok'] === false && isObject(error) && error['code'] === 'UNAUTHORIZED') return 'an ironbird daemon that requires a token';
   return undefined;

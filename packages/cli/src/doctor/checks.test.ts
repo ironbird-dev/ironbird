@@ -33,6 +33,11 @@ describe('checkNode', () => {
     });
     expect(checkNode('banana').ok).toBe(false);
   });
+
+  it('fails a version string that only starts with a number', () => {
+    for (const version of ['22garbage', '22', '22.0', 'v22.x.y', '22.0.0 extra', '22.0.0\nx', '', 'vv22.0.0']) expect(checkNode(version).ok, version).toBe(false);
+    expect(checkNode('v24.0.0-nightly20251001').ok).toBe(true);
+  });
 });
 
 describe('identifyDaemon', () => {
@@ -49,6 +54,15 @@ describe('identifyDaemon', () => {
       { kind: 'unreachable', code: 'ECONNREFUSED' },
     ];
     for (const probe of others) expect(identifyDaemon(probe)).toBeUndefined();
+  });
+});
+
+describe('identifyDaemon detail', () => {
+  it('keeps the reported version on one line and bounded', () => {
+    const body = (version: string): string => JSON.stringify({ ok: true, result: { version, protocol: 1 } });
+    expect(identifyDaemon({ kind: 'response', status: 200, body: body('1.0.0\nFAKE: all good\r\u0007') })).toBe('an ironbird daemon (version 1.0.0FAKE: all good, protocol 1)');
+    const long = identifyDaemon({ kind: 'response', status: 200, body: body('9'.repeat(500)) }) ?? '';
+    expect(long).toBe(`an ironbird daemon (version ${'9'.repeat(40)}..., protocol 1)`);
   });
 });
 
