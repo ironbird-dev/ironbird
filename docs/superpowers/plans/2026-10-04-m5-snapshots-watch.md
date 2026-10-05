@@ -45,7 +45,7 @@ From [AGENTS.md](../../../AGENTS.md):
 From the spec and the contract:
 
 - One new error code, `INVALID_SNAPSHOT`, additive, details exactly `{ path, reason }`; `path` is a dot path (the protocol's convention, §1) and `''` at the root or when the failure isn't tied to a path. CLI exit code 1, listed next to `INVALID_PAYLOAD` in cli.md. `PROTOCOL_VERSION` stays `1`; no ADR (D12, §7).
-- `serializeSnapshot(value)` is exported from `@ironbird/core`, returns JSON-safe data or throws `INVALID_SNAPSHOT` naming the first lossy path, and never substitutes placeholders. It rejects functions, symbols, `BigInt`, `NaN`, ±`Infinity`, `Map`, `Set`, `Date`, any other non-plain object (class instances, boxed primitives, typed arrays), cycles, `undefined` or holes in arrays, and throwing getters; `undefined` object properties are omitted; `reason` is the kind, such as `Map` or `cycle` (§4).
+- `serializeSnapshot(value)` is exported from `@ironbird/core`, returns JSON-safe data or throws `INVALID_SNAPSHOT` naming the first lossy path, and never substitutes placeholders. It rejects functions, symbols, `BigInt`, `NaN`, ±`Infinity`, `Map`, `Set`, `Date`, any other non-plain object (class instances, boxed primitives, typed arrays), cycles, `undefined` or holes in arrays, and throwing getters; it also rejects what JSON would drop silently, enumerable non-index properties on arrays (`array-property`, path such as `items.extra`) and enumerable symbol-keyed properties (`symbol-key`, path such as `meta.Symbol(tag)`); `undefined` object properties are omitted; `reason` is the kind, such as `Map` or `cycle` (§4).
 - `createTarget` converts any non-`IronbirdError` a `Target`'s `restore` throws into `INVALID_SNAPSHOT` with `{ path: '', reason: <message> }` (§4).
 - `snapshotLoad` params are `snapshot`, `app?`. The applying target checks `app` against its own app id and fails `APP_MISMATCH` with `{ expected, received }` before applying anything; a missing `app` skips the check. `snapshotLoad` stays in the per-target mutating queue (§4).
 - `ironbird snapshot save <file>` writes `{ app, target, rev, snapshot }` with `app` from the target's `status` entry. `ironbird snapshot load <file>` validates the file before sending anything; a file that isn't JSON or doesn't match fails `INVALID_PAYLOAD` with `{ name: 'snapshotLoad', issues }`; it sends `snapshot` and the file's `app`. The file's `target` is informational (§4).
@@ -174,6 +174,20 @@ function holey(): number[] {
   return list;
 }
 
+/** An array with an enumerable own property that isn't an index; JSON.stringify would drop it. */
+function withExtra(): number[] {
+  const list = [1, 2];
+  (list as unknown as Record<string, unknown>)['extra'] = 'x';
+  return list;
+}
+
+/** An array with an enumerable symbol-keyed property; JSON.stringify would drop it. */
+function withSymbolKey(): number[] {
+  const list = [1];
+  (list as unknown as Record<symbol, unknown>)[Symbol('tag')] = 'x';
+  return list;
+}
+
 describe('serializeSnapshot', () => {
   it('returns plain JSON data and omits undefined object properties', () => {
     expect(serializeSnapshot({ a: 1, b: 'x', c: null, d: [1, 'y', null, { e: true }], f: undefined, g: { h: undefined } })).toEqual({ a: 1, b: 'x', c: null, d: [1, 'y', null, { e: true }], g: {} });
@@ -199,6 +213,9 @@ describe('serializeSnapshot', () => {
     ['an Array subclass', { bag: Bag.from([1]) }, 'bag', 'Bag'],
     ['undefined in an array', { list: [1, undefined] }, 'list.1', 'undefined'],
     ['a hole in an array', { list: holey() }, 'list.1', 'hole'],
+    ['a non-index property on an array', { items: withExtra() }, 'items.extra', 'array-property'],
+    ['a symbol-keyed property on an array', { items: withSymbolKey() }, 'items.Symbol(tag)', 'symbol-key'],
+    ['a symbol-keyed property on an object', { meta: { ok: 1, [Symbol('tag')]: 1 } }, 'meta.Symbol(tag)', 'symbol-key'],
     ['undefined at the root', undefined, '', 'undefined'],
     ['a Map at the root', new Map(), '', 'Map'],
   ])('rejects %s, naming its path and kind', (_label, value, path, reason) => {
@@ -212,6 +229,19 @@ describe('serializeSnapshot', () => {
       details: { path: 'a.m', reason: 'Map' },
     });
     expect(rejection(new Set())).toMatchObject({ message: "Snapshot can't be saved losslessly: Set at <root>" });
+  });
+
+  it('reports array items before an array\'s extra properties, and ignores non-enumerable extras', () => {
+    // Object.keys order: indices first, then string keys, then (Reflect.ownKeys) symbols.
+    const both = withExtra();
+    both[1] = Number.NaN;
+    expect(rejection({ items: both })).toMatchObject({ details: { path: 'items.1', reason: 'NaN' } });
+    const hidden = [1, 2];
+    Object.defineProperty(hidden, 'extra', { value: 'x', enumerable: false });
+    Object.defineProperty(hidden, Symbol('tag'), { value: 'x', enumerable: false });
+    const meta = { a: 1 };
+    Object.defineProperty(meta, Symbol('tag'), { value: 'x', enumerable: false });
+    expect(serializeSnapshot({ hidden, meta })).toEqual({ hidden: [1, 2], meta: { a: 1 } });
   });
 
   it('rejects a cycle but accepts the same object reached twice', () => {
@@ -398,15 +428,36 @@ export function serializeSnapshot(value: unknown): unknown {
     Object.defineProperty(out, key, { value: item, writable: true, enumerable: true, configurable: true });
   };
 
+  // A canonical array index: `0` or a decimal without a leading zero, below the array's length.
+  const isIndex = (key: string, length: number): boolean => /^(?:0|[1-9]\d*)$/.test(key) && Number(key) < length;
+
+  // Enumerable own data that JSON.stringify drops silently: on an array, any string key that isn't an
+  // index (`items.extra`); on an array or a plain object, any symbol key (`meta.Symbol(tag)`). They
+  // are reported after the keys JSON keeps, in Reflect.ownKeys order. Non-enumerable keys are
+  // ignored, as JSON ignores them.
+  const failDropped = (dropped: ReadonlyArray<string | symbol>, path: string[]): void => {
+    const key = dropped[0];
+    if (key === undefined) return;
+    if (typeof key === 'symbol') fail([...path, String(key)], 'symbol-key');
+    else fail([...path, key], 'array-property');
+  };
+
   const visitObject = (object: object, path: string[]): unknown => {
     if (ancestors.has(object)) return fail(path, 'cycle');
     let proto: object | null;
     let isArray: boolean;
     let keys: string[];
+    let dropped: Array<string | symbol>;
     try {
       proto = Object.getPrototypeOf(object) as object | null;
       isArray = Array.isArray(object);
-      keys = isArray ? [] : Object.keys(object);
+      const own = Object.keys(object);
+      const length = isArray ? (object as unknown[]).length : 0;
+      keys = isArray ? [] : own;
+      dropped = [
+        ...(isArray ? own.filter((key) => !isIndex(key, length)) : []),
+        ...Object.getOwnPropertySymbols(object).filter((key) => Object.prototype.propertyIsEnumerable.call(object, key)),
+      ];
     } catch {
       // A revoked Proxy, or one whose traps throw, can't be inspected at all.
       return fail(path, 'unreadable');
@@ -424,6 +475,7 @@ export function serializeSnapshot(value: unknown): unknown {
           if (item === undefined) return fail(childPath, 'undefined');
           items.push(item);
         }
+        failDropped(dropped, path);
         return items;
       } finally {
         ancestors.delete(object);
@@ -438,6 +490,7 @@ export function serializeSnapshot(value: unknown): unknown {
         const item = visit(read(object, key, childPath), childPath);
         if (item !== undefined) setOwn(out, key, item);
       }
+      failDropped(dropped, path);
       return out;
     } finally {
       ancestors.delete(object);
@@ -566,7 +619,7 @@ In `docs/protocol.md`:
 4. Append to §7 (after the paragraph ending `Each affected path produces one \`UNSERIALIZABLE_STATE\` warning per connection.`):
 
 ```md
-Snapshots are the exception. `snapshotSave` serializes strictly and never substitutes a placeholder, because a placeholder would load back as corrupt state: functions, symbols, `BigInt`, `NaN`, `Infinity`, `-Infinity`, `Map`, `Set`, `Date`, any other non-plain object (class instances, boxed primitives, typed arrays), cycles, `undefined` or holes in arrays, throwing getters, and objects that can't be inspected each fail the save with `INVALID_SNAPSHOT` and `{ path, reason }` for the first one found. `undefined` object properties are omitted, as in JSON. Plain objects with a `null` prototype are accepted.
+Snapshots are the exception. `snapshotSave` serializes strictly and never substitutes a placeholder, because a placeholder would load back as corrupt state: functions, symbols, `BigInt`, `NaN`, `Infinity`, `-Infinity`, `Map`, `Set`, `Date`, any other non-plain object (class instances, boxed primitives, typed arrays), cycles, `undefined` or holes in arrays, enumerable array properties other than indices (such as `items.extra`), enumerable symbol-keyed properties, throwing getters, and objects that can't be inspected each fail the save with `INVALID_SNAPSHOT` and `{ path, reason }` for the first one found. `undefined` object properties are omitted, as in JSON. Plain objects with a `null` prototype are accepted.
 ```
 
 In `docs/api.md`:
@@ -593,7 +646,7 @@ Create `.changeset/m5-snapshot-core.md`:
 ---
 "@ironbird/core": patch
 ---
-Snapshots. New error code `INVALID_SNAPSHOT` with details `{ path, reason }`. New `serializeSnapshot(value)`, which returns JSON-safe data or throws `INVALID_SNAPSHOT` naming the first value it can't save losslessly (functions, symbols, `BigInt`, `NaN`, `Infinity`, `Map`, `Set`, `Date`, other non-plain objects, cycles, `undefined` or holes in arrays, throwing getters) instead of substituting a placeholder, and `parseSnapshotLoadParams(params, appId)`, which checks `snapshotLoad`'s optional `app` (`APP_MISMATCH` on another app's id) and its `snapshot` before anything is applied. A plain error thrown by a `Target`'s `persist` or `restore` now surfaces as `INVALID_SNAPSHOT` with `{ path: '', reason }` instead of an unclassified error; an `IronbirdError` passes through.
+Snapshots. New error code `INVALID_SNAPSHOT` with details `{ path, reason }`. New `serializeSnapshot(value)`, which returns JSON-safe data or throws `INVALID_SNAPSHOT` naming the first value it can't save losslessly (functions, symbols, `BigInt`, `NaN`, `Infinity`, `Map`, `Set`, `Date`, other non-plain objects, cycles, `undefined` or holes in arrays, array properties other than indices, symbol-keyed properties, throwing getters) instead of substituting a placeholder, and `parseSnapshotLoadParams(params, appId)`, which checks `snapshotLoad`'s optional `app` (`APP_MISMATCH` on another app's id) and its `snapshot` before anything is applied. A plain error thrown by a `Target`'s `persist` or `restore` now surfaces as `INVALID_SNAPSHOT` with `{ path: '', reason }` instead of an unclassified error; an `IronbirdError` passes through.
 ```
 
 - [ ] **Step 9: Commit**
@@ -2687,7 +2740,7 @@ This plan moves no roadmap exit criterion directly; it delivers R15 and R17, two
 | # | Spec or contract says | This plan does | Why |
 |---|---|---|---|
 | 1 | The contract sketches `serializeSnapshot(value): { ok: true, value } \| { ok: false, path, reason }` "or the exact name the spec gives"; spec §4 says it "returns JSON-safe data or throws `INVALID_SNAPSHOT`" | Follows the spec: returns the data or throws | The spec is authoritative (contract header); the name is unchanged, and plan 1 consumes only the error code |
-| 2 | §5: after a read, "reads again if any frame seen since the read started carries a `rev` different from the one the read returned" | Reads again after **any** frame seen during a read, and reads on every frame that arrives while idle | Revisions restart on `reset`/`reload` and coalesce at 10 frames per second, so a reset plus *n* quick dispatches can land on the revision just read with another state (common with `scenario run`, which resets). Re-reading costs one `getState` whose empty patch prints nothing, and it can never miss a change. Every line still carries the revision its read returned |
+| 2 | §5 originally said a read is repeated only when a frame seen during it carries a `rev` different from the one the read returned | Reads again after **any** frame seen during a read, and reads on every frame that arrives while idle. Spec §5 was updated to this rule after the codex plan review (finding 5) | Revisions restart on `reset`/`reload` and coalesce at 10 frames per second, so a reset plus *n* quick dispatches can land on the revision just read with another state (common with `scenario run`, which resets). Re-reading costs one `getState` whose empty patch prints nothing, and it can never miss a change. Every line still carries the revision its read returned |
 | 3 | §5 names `reset` moving the revision backwards but no notification for it | The headless target calls its state listeners with the new revision after a successful `reset` or `reload` (Task 2), documented in protocol.md §2.2 and §4.1 | Without it `watch` keeps showing the old session until the next change. Additive: one more `state` frame |
 | 4 | §4 converts `restore` errors only | `createTarget` also converts a plain error from `persist` into `INVALID_SNAPSHOT` `{ path: '', reason }` | Otherwise the daemon reports it as `INTERNAL`, "a bug in ironbird", for an app-side failure (Review Focus 2) |
 | 5 | §4: "any other error" a `restore` throws becomes `INVALID_SNAPSHOT` | Any `IronbirdError` passes through unchanged; everything else is converted | The adapters throw `INVALID_SNAPSHOT` with a real path; rewrapping would lose it. An app that throws another coded error meant it |
@@ -2698,7 +2751,7 @@ This plan moves no roadmap exit criterion directly; it delivers R15 and R17, two
 | 10 | §5 doesn't say what `watch` does when a read fails, or when the stream ends with no error frame | A failed read prints `{ error }` and exits with its code, like an error frame; a stream the daemon ends without an error frame lets the read in flight print and exits 0, as `events --follow` does; a stream that fails to open rejects and the CLI prints the error | Consistency with `events --follow`, and the last line is always final (Review Focus 5) |
 | 11 | §5 doesn't say which target `watch` follows without `--target` | It pins the target id from the envelope of its first call (`events` with `limit: 0`) for the stream and every read | The stream and the reads must follow the same target even if another app connects meanwhile |
 | 12 | §4 doesn't fix the path format in `INVALID_SNAPSHOT` details | Dot path (`a.b.0`), `''` at the root, as everywhere else in the protocol; the message says `<root>` | Protocol §1 convention; JSON Pointer stays specific to `watch` patches |
-| 13 | §4's rejection list doesn't mention `-0`, symbol-keyed or non-enumerable properties, null-prototype objects, Array subclasses, or unreadable proxies | `-0` is accepted (JSON writes `0`); symbol keys and non-enumerable properties are ignored, as JSON does; null-prototype objects are plain; an Array subclass is rejected by its class name; a revoked proxy is `unreadable` | Matches what JSON itself carries; an Array subclass is "any other non-plain object" |
+| 13 | §4's rejection list doesn't mention `-0`, symbol-keyed, non-index array, or non-enumerable properties, null-prototype objects, Array subclasses, or unreadable proxies | `-0` is accepted (JSON writes `0`); an enumerable non-index property on an array is rejected as `array-property` at its path (`items.extra`), and an enumerable symbol-keyed property on an array or plain object as `symbol-key` (`meta.Symbol(tag)`), each after the keys JSON keeps; non-enumerable properties are ignored, as JSON does; null-prototype objects are plain; an Array subclass is rejected by its class name; a revoked proxy is `unreadable` | §4 requires the first lossy path to be rejected, and JSON drops enumerable array extras and symbol keys silently, so accepting them would save a snapshot that loads back without that data (codex plan review, finding 3). Non-enumerable keys aren't data. An Array subclass is "any other non-plain object" |
 | 14 | Spec doesn't place the new code in `ERROR_CODES` | After `INVALID_SCENARIO`, making 22 codes | Groups the `INVALID_*` codes; order has no wire meaning |
 | 15 | D10 gives every package a `minor` changeset for 0.1.0 | This plan's changesets are `patch` | Plan 5 owns the 0.1.0 `minor` changesets (contract); a `minor` there supersedes these in the Version Packages PR |
 | 16 | Spec doesn't say what `watch` does against a daemon that predates the barrier | It waits for the first state change before its first line; no timeout | Daemon and CLI ship from one package; plan 3's `doctor` `versions` check catches skew |
