@@ -90,6 +90,33 @@ export default tseslint.config(
     },
   },
   {
+    // The adapters run in Node and Hermes. At runtime they import only @ironbird/core and, for
+    // @ironbird/xstate, the xstate peer; redux and zod are type imports (M5 design D3). Library code
+    // takes no time from globals (AGENTS.md rule 9). This block covers packages/xstate too.
+    files: ['packages/redux/src/**/*.ts', 'packages/xstate/src/**/*.ts'],
+    ignores: ['packages/redux/src/**/*.test.ts', 'packages/xstate/src/**/*.test.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            { name: 'zod', allowTypeImports: true, message: 'Adapters reach zod only through the schemas the app passes (M5 design D3).' },
+            { name: 'redux', allowTypeImports: true, message: '@ironbird/redux imports redux for types only (M5 design D3).' },
+            { name: '@reduxjs/toolkit', message: 'The adapter works with any Redux 5 store; Redux Toolkit is a test dependency only.' },
+          ],
+          patterns: [
+            {
+              group: ['node:*', 'react-native', 'react-native/*', 'react', 'react/*', 'fs', 'path', 'os', 'http', 'https', 'net', 'child_process', 'url', 'util', 'events', 'stream', 'crypto', 'worker_threads'],
+              message: 'Adapters run in Hermes too.',
+            },
+          ],
+        },
+      ],
+      'no-restricted-globals': ['error', ...coreForbiddenTimers],
+      'no-restricted-properties': ['error', { object: 'Date', property: 'now', message: 'Adapters take no time from globals (AGENTS.md rule 9).' }],
+    },
+  },
+  {
     // @ironbird/testing reaches the CLI only through the dual-format runner subpath, and its
     // library code imports no test framework, so it behaves the same under Vitest and Jest
     // (M4 design D1, D9).
