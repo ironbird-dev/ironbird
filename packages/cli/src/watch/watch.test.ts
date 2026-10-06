@@ -276,6 +276,21 @@ describe('runWatch', () => {
     expect(w.lines).toEqual([{ rev: 1, patch: [{ op: 'add', path: '', value: { n: 1 } }] }]);
   });
 
+  it('ends with 0 when interrupted during a read still in flight after the daemon ends the stream', { timeout: 1_000 }, async () => {
+    const d = fakeDaemon();
+    const w = watch(d);
+    await tick();
+    d.frame('state', { rev: 1 });
+    d.end();
+    await tick();
+    w.controller.abort();
+    expect(await w.done).toBe(0);
+    expect(d.signals[1]?.aborted).toBe(true);
+    d.reads[0]!.resolve({ rev: 1, path: '', value: { n: 1 } });
+    await tick();
+    expect(w.lines).toEqual([]);
+  });
+
   it('rejects when the stream fails to open', async () => {
     const d = fakeDaemon({ streamError: new IronbirdError('UNAUTHORIZED', 'Token missing or wrong for this daemon') });
     await expect(watch(d).done).rejects.toMatchObject({ code: 'UNAUTHORIZED' });

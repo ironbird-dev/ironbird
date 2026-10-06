@@ -46,9 +46,14 @@ export async function runWatch(options: WatchOptions): Promise<number> {
   const stream = new AbortController();
   let stopped = false;
   let exit = 0;
+  let halt: () => void = () => {};
+  const halted = new Promise<void>((resolve) => {
+    halt = resolve;
+  });
   const stop = (): void => {
     stopped = true;
     stream.abort();
+    halt();
   };
   const fail = (shape: ErrorShape): void => {
     if (stopped) return;
@@ -109,16 +114,20 @@ export async function runWatch(options: WatchOptions): Promise<number> {
   if (signal.aborted) stop();
   else signal.addEventListener('abort', stop, { once: true });
   try {
-    await client.stream({ target, since: cursor.result.nextSeq, signal: stream.signal, onMessage });
-  } catch (error) {
-    if (!stopped) {
-      stop();
-      throw error;
+    try {
+      await client.stream({ target, since: cursor.result.nextSeq, signal: stream.signal, onMessage });
+    } catch (error) {
+      if (!stopped) {
+        stop();
+        throw error;
+      }
     }
+    // The daemon ended the stream without an error frame (it shut down): let a read in flight
+    // print. SIGINT still ends the watch meanwhile; it cancels the read, and the race returns at
+    // once even with a client that ignores the signal.
+    if (!stopped) await Promise.race([pumping, halted]);
   } finally {
     signal.removeEventListener('abort', stop);
   }
-  // The daemon ended the stream without an error frame (it shut down): let a read in flight print.
-  if (!stopped) await pumping;
   return exit;
 }

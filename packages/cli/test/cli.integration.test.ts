@@ -150,6 +150,8 @@ describe('ironbird CLI against the example app', () => {
 });
 
 describe('ironbird watch against a daemon that never answers', () => {
+  // Every wait is bounded (10 s for the request, 5 s for the exit, 2 s to reap) within this timeout,
+  // so the finally block always closes the server and reaps the child.
   it('exits 0 on SIGINT while its first request is still pending', { timeout: 20_000 }, async () => {
     let received!: () => void;
     const requested = new Promise<void>((resolve) => {
@@ -165,19 +167,22 @@ describe('ironbird watch against a daemon that never answers', () => {
       stdout += chunk;
     });
     const exitCode = new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
-    const exitWithin = async (ms: number): Promise<number | null | 'timeout'> => {
+    const within = async <T>(promise: Promise<T>, ms: number): Promise<T | 'timeout'> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<'timeout'>((resolve) => {
         timer = setTimeout(() => resolve('timeout'), ms);
       });
       try {
-        return await Promise.race([exitCode, timeout]);
+        return await Promise.race([promise, timeout]);
       } finally {
         clearTimeout(timer);
       }
     };
+    const exitWithin = (ms: number): Promise<number | null | 'timeout'> => within(exitCode, ms);
     try {
-      await requested;
+      // The child may exit, or never connect, before its first request: fail instead of waiting forever.
+      const first = await within(Promise.race([requested.then(() => 'requested' as const), exitCode.then((code) => `exited with ${code}`)]), 10_000);
+      expect(first).toBe('requested');
       child.kill('SIGINT');
       expect(await exitWithin(5_000)).toBe(0);
       expect(stdout).toBe('');
