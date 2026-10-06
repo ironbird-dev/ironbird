@@ -1,11 +1,12 @@
 import { isIronbirdError } from '@ironbird/core';
 import { modelTest, type ModelStep } from '@ironbird/testing';
 import { describe, expect, it } from 'vitest';
-import { MAX_TODOS, todoApp, type TodosState } from './sample-app';
+import { todoApp, type TodosState } from './sample-app';
 
 const STEPS: ModelStep[] = ['todos/add', 'todos/toggle', 'todos/clearDone'];
 const CAP = 'the list holds at most three to-dos';
-const INVARIANTS = { [CAP]: (state: TodosState) => state.items.length <= MAX_TODOS };
+// The contract's literal three, independent of the sample's MAX_TODOS, so changing the sample's cap fails these tests.
+const INVARIANTS = { [CAP]: (state: TodosState) => state.items.length <= 3 };
 
 describe('@ironbird/redux under modelTest', () => {
   it('holds the cap over generated sequences', async () => {
@@ -22,6 +23,6 @@ describe('@ironbird/redux under modelTest', () => {
     expect(isIronbirdError(error) ? error.code : error).toBe('INVARIANT_FAILED');
     const details = (error as { details: { invariant: string; steps: Array<{ send: string }> } }).details;
     expect(details.invariant).toBe(CAP);
-    expect(details.steps.map((step) => step.send)).toEqual(Array.from({ length: MAX_TODOS + 1 }, () => 'todos/add'));
+    expect(details.steps.map((step) => step.send)).toEqual(['todos/add', 'todos/add', 'todos/add', 'todos/add']);
   });
 });

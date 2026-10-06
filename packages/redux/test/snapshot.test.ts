@@ -27,6 +27,8 @@ describe('@ironbird/redux snapshots through the headless target', () => {
     try {
       await target.send('todos/add', { text: 'milk' });
       const before = await target.state();
+      // The target shows the projection (`state.todos`), not the root state.
+      expect(before).toEqual({ items: [{ text: 'milk', done: false }] });
       const error = await target.client.rpc('snapshotLoad', { snapshot: { todos: { items: 'none' }, meta: { version: 1 } } }).then(
         () => undefined,
         (caught: unknown) => caught,
