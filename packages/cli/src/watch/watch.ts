@@ -24,7 +24,21 @@ export interface WatchOptions {
  */
 export async function runWatch(options: WatchOptions): Promise<number> {
   const { client, path, signal, write } = options;
-  const cursor = await client.call<{ nextSeq: number }>('events', { limit: 0 }, options.target);
+  if (signal.aborted) return 0;
+  // The client can't cancel an RPC, so race the cursor read against SIGINT: an interrupt while the
+  // daemon is slow to answer still ends the watch at once with exit 0.
+  let onAbort: () => void = () => {};
+  const interrupted = new Promise<undefined>((resolve) => {
+    onAbort = () => resolve(undefined);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  let cursor: { target?: string; result: { nextSeq: number } } | undefined;
+  try {
+    cursor = await Promise.race([client.call<{ nextSeq: number }>('events', { limit: 0 }, options.target), interrupted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+  if (cursor === undefined) return 0;
   const target = options.target ?? cursor.target;
   const stream = new AbortController();
   let stopped = false;

@@ -13,7 +13,7 @@ interface PendingRead {
 }
 
 /** A scripted daemon: the test emits stream frames and settles each getState read by hand. */
-function fakeDaemon(options: { streamError?: unknown } = {}) {
+function fakeDaemon(options: { streamError?: unknown; stallEvents?: boolean } = {}) {
   const calls: Array<{ op: string; params: Record<string, unknown>; target: string | undefined }> = [];
   const reads: PendingRead[] = [];
   let onMessage: ((kind: Kind, data: unknown) => void) | undefined;
@@ -22,6 +22,7 @@ function fakeDaemon(options: { streamError?: unknown } = {}) {
     url: 'http://fake',
     call<T>(op: string, params: Record<string, unknown> = {}, target?: string): Promise<{ target?: string; result: T }> {
       calls.push({ op, params, target });
+      if (op === 'events' && options.stallEvents) return new Promise(() => {});
       if (op === 'events') return Promise.resolve({ target: target ?? 'headless', result: { events: [], nextSeq: 7, truncated: false } as T });
       if (op === 'getState') {
         return new Promise((resolve, reject) => {
@@ -213,6 +214,42 @@ describe('runWatch', () => {
     expect(await w.done).toBe(0);
     await tick();
     expect(w.lines).toEqual([]);
+  });
+
+  it('prints the error of a repeat read that fails after the daemon ends the stream, and exits with its code', async () => {
+    const d = fakeDaemon();
+    const w = watch(d);
+    await tick();
+    d.frame('state', { rev: 1 });
+    d.frame('state', { rev: 2 });
+    d.end();
+    d.reads[0]!.resolve({ rev: 1, path: '', value: { n: 1 } });
+    await tick();
+    expect(d.reads).toHaveLength(2);
+    d.reads[1]!.reject(new IronbirdError('NO_TARGET', 'Daemon unreachable at http://fake; run ironbird serve', { url: 'http://fake' }));
+    expect(await w.done).toBe(5);
+    expect(w.lines).toEqual([
+      { rev: 1, patch: [{ op: 'add', path: '', value: { n: 1 } }] },
+      { error: { code: 'NO_TARGET', message: 'Daemon unreachable at http://fake; run ironbird serve', details: { url: 'http://fake' } } },
+    ]);
+  });
+
+  it('ends with 0 when interrupted while the cursor read is still pending', { timeout: 1_000 }, async () => {
+    const d = fakeDaemon({ stallEvents: true });
+    const w = watch(d);
+    await tick();
+    w.controller.abort();
+    expect(await w.done).toBe(0);
+    expect(d.calls.map((call) => call.op)).toEqual(['events']);
+    expect(w.lines).toEqual([]);
+  });
+
+  it('ends with 0 without calling the daemon when already interrupted', async () => {
+    const d = fakeDaemon();
+    const lines: string[] = [];
+    expect(await runWatch({ client: d.client, target: undefined, path: '', signal: AbortSignal.abort(), write: (line) => lines.push(line) })).toBe(0);
+    expect(d.calls).toEqual([]);
+    expect(lines).toEqual([]);
   });
 
   it('lets a read in flight print when the daemon ends the stream, then returns 0', async () => {

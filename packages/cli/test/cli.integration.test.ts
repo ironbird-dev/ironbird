@@ -98,7 +98,9 @@ describe('ironbird CLI against the example app', () => {
     expect(settle.json).toMatchObject({ target: 'headless', idle: true });
   });
 
-  it('watch prints the first value and each change as JSON lines, and exits 0 on SIGINT', async () => {
+  // The waits below are bounded (two 10 s polls, 5 s for the exit, 2 s to reap) and fit in this timeout,
+  // so the finally block always runs before the test is abandoned.
+  it('watch prints the first value and each change as JSON lines, and exits 0 on SIGINT', { timeout: 30_000 }, async () => {
     await ironbird('reset');
     const child = spawn('node', [bin, 'watch', '--path', 'cart.items'], { cwd: example, env, stdio: ['ignore', 'pipe', 'inherit'] });
     const lines: Array<{ rev: number; patch: Array<{ op: string; path: string; value?: unknown }> }> = [];
@@ -112,16 +114,35 @@ describe('ironbird CLI against the example app', () => {
       }
     });
     const exitCode = new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
+    const exitWithin = async (ms: number): Promise<number | null | 'timeout'> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), ms);
+      });
+      try {
+        return await Promise.race([exitCode, timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
     const until = async (ready: () => boolean, what: string): Promise<void> => {
       for (let i = 0; i < 1_000 && !ready(); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
       if (!ready()) throw new Error(`timed out waiting for ${what}`);
     };
-    await until(() => lines.length === 1, 'the first line');
-    expect(lines[0]).toEqual({ rev: 0, patch: [{ op: 'add', path: '', value: [] }] });
-    await ironbird('send', 'cart.addItem', '{"sku":"cut-45","qty":1}');
-    await until(() => lines.length === 2, 'the change');
-    expect(lines[1]?.patch).toEqual([{ op: 'add', path: '/0', value: expect.objectContaining({ sku: 'cut-45' }) }]);
-    child.kill('SIGINT');
-    expect(await exitCode).toBe(0);
+    try {
+      await until(() => lines.length === 1, 'the first line');
+      expect(lines[0]).toEqual({ rev: 0, patch: [{ op: 'add', path: '', value: [] }] });
+      await ironbird('send', 'cart.addItem', '{"sku":"cut-45","qty":1}');
+      await until(() => lines.length === 2, 'the change');
+      expect(lines[1]?.patch).toEqual([{ op: 'add', path: '/0', value: expect.objectContaining({ sku: 'cut-45' }) }]);
+      child.kill('SIGINT');
+      expect(await exitWithin(5_000)).toBe(0);
+    } finally {
+      // Whatever failed above, don't leave a watch process running into the rest of the serial suite.
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+        await exitWithin(2_000);
+      }
+    }
   });
 });
