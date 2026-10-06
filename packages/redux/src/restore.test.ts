@@ -19,9 +19,16 @@ describe('withIronbirdRestore', () => {
     expect(reducer({ count: 1 }, { type: RESTORE_ACTION_TYPE, payload: restored } as never)).toBe(restored);
   });
 
+  it('hands an action of the reserved type without a payload to the wrapped reducer', () => {
+    const reducer = withIronbirdRestore(counter);
+    const state = { count: 3 };
+    expect(reducer(state, { type: RESTORE_ACTION_TYPE } as never)).toBe(state);
+  });
+
   it('recognizes only its own action type', () => {
     expect(isRestoreAction({ type: RESTORE_ACTION_TYPE, payload: 1 })).toBe(true);
     expect(isRestoreAction({ type: 'restore' })).toBe(false);
+    expect(isRestoreAction({ type: RESTORE_ACTION_TYPE })).toBe(false);
     expect(isRestoreAction(null)).toBe(false);
     expect(isRestoreAction('x')).toBe(false);
   });

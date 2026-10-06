@@ -8,7 +8,7 @@ export interface RestoreAction extends Action<typeof RESTORE_ACTION_TYPE> {
 }
 
 export function isRestoreAction(action: unknown): action is RestoreAction {
-  return typeof action === 'object' && action !== null && (action as { type?: unknown }).type === RESTORE_ACTION_TYPE;
+  return typeof action === 'object' && action !== null && (action as { type?: unknown }).type === RESTORE_ACTION_TYPE && 'payload' in action;
 }
 
 /**

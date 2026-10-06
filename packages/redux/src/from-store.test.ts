@@ -24,9 +24,11 @@ describe('fromStore', () => {
   it('rejects an invalid payload and an unknown command before the store sees them', async () => {
     const store = wrappedStore();
     const before = store.getState();
+    const dispatch = vi.spyOn(store, 'dispatch');
     const target = fromStore(store, { commands: storeCommands });
     expect((await failure(target.dispatch('todos/add', { text: '' }))).code).toBe('INVALID_PAYLOAD');
     expect((await failure(target.dispatch('todos/remove', {}))).code).toBe('UNKNOWN_COMMAND');
+    expect(dispatch).not.toHaveBeenCalled();
     expect(store.getState()).toBe(before);
   });
 
