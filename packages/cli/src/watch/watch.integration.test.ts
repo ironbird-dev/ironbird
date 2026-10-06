@@ -1,7 +1,7 @@
 import { IronbirdError, createTarget, defineCommands, defineHeadless } from '@ironbird/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { createDaemonClient, type DaemonClient } from '../cli/client';
+import { createDaemonClient, type CallOptions, type DaemonClient } from '../cli/client';
 import { startDaemon } from '../daemon';
 import type { DaemonTarget } from '../daemon-target';
 import { createHeadlessTarget } from '../headless-target';
@@ -86,16 +86,16 @@ function observed(client: DaemonClient, hooks: { beforeRead?: (n: number) => Pro
   let reads = 0;
   const wrapped: DaemonClient = {
     url: client.url,
-    async call<T>(op: string, params?: Record<string, unknown>, target?: string): Promise<{ target?: string; result: T }> {
-      if (op !== 'getState') return client.call<T>(op, params, target);
+    async call<T>(op: string, params?: Record<string, unknown>, target?: string, options?: CallOptions): Promise<{ target?: string; result: T }> {
+      if (op !== 'getState') return client.call<T>(op, params, target, options);
       reads += 1;
       const n = reads;
       await hooks.beforeRead?.(n);
-      const result = await client.call<T>(op, params, target);
+      const result = await client.call<T>(op, params, target, options);
       await hooks.afterRead?.(n);
       return result;
     },
-    rpc: <T>(op: string, params?: Record<string, unknown>, target?: string): Promise<T> => client.rpc<T>(op, params, target),
+    rpc: <T>(op: string, params?: Record<string, unknown>, target?: string, options?: CallOptions): Promise<T> => client.rpc<T>(op, params, target, options),
     stream: (options) =>
       client.stream({
         ...options,

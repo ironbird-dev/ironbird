@@ -15,13 +15,15 @@ interface PendingRead {
 /** A scripted daemon: the test emits stream frames and settles each getState read by hand. */
 function fakeDaemon(options: { streamError?: unknown; stallEvents?: boolean } = {}) {
   const calls: Array<{ op: string; params: Record<string, unknown>; target: string | undefined }> = [];
+  const signals: Array<AbortSignal | undefined> = [];
   const reads: PendingRead[] = [];
   let onMessage: ((kind: Kind, data: unknown) => void) | undefined;
   let endStream: () => void = () => {};
   const client: DaemonClient = {
     url: 'http://fake',
-    call<T>(op: string, params: Record<string, unknown> = {}, target?: string): Promise<{ target?: string; result: T }> {
+    call<T>(op: string, params: Record<string, unknown> = {}, target?: string, callOptions: { signal?: AbortSignal } = {}): Promise<{ target?: string; result: T }> {
       calls.push({ op, params, target });
+      signals.push(callOptions.signal);
       if (op === 'events' && options.stallEvents) return new Promise(() => {});
       if (op === 'events') return Promise.resolve({ target: target ?? 'headless', result: { events: [], nextSeq: 7, truncated: false } as T });
       if (op === 'getState') {
@@ -44,7 +46,7 @@ function fakeDaemon(options: { streamError?: unknown; stallEvents?: boolean } = 
       });
     },
   };
-  return { client, calls, reads, frame: (kind: Kind, data: unknown) => onMessage?.(kind, data), end: () => endStream() };
+  return { client, calls, signals, reads, frame: (kind: Kind, data: unknown) => onMessage?.(kind, data), end: () => endStream() };
 }
 
 function watch(daemon: ReturnType<typeof fakeDaemon>, path = '', target?: string) {
@@ -242,6 +244,17 @@ describe('runWatch', () => {
     expect(await w.done).toBe(0);
     expect(d.calls.map((call) => call.op)).toEqual(['events']);
     expect(w.lines).toEqual([]);
+  });
+
+  it('cancels its requests in flight when interrupted', async () => {
+    const d = fakeDaemon();
+    const w = watch(d);
+    await tick();
+    d.frame('state', { rev: 1 });
+    expect(d.signals.map((signal) => signal?.aborted)).toEqual([false, false]);
+    w.controller.abort();
+    expect(await w.done).toBe(0);
+    expect(d.signals.map((signal) => signal?.aborted)).toEqual([true, true]);
   });
 
   it('ends with 0 without calling the daemon when already interrupted', async () => {

@@ -1,5 +1,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -143,6 +145,49 @@ describe('ironbird CLI against the example app', () => {
         child.kill('SIGKILL');
         await exitWithin(2_000);
       }
+    }
+  });
+});
+
+describe('ironbird watch against a daemon that never answers', () => {
+  it('exits 0 on SIGINT while its first request is still pending', { timeout: 20_000 }, async () => {
+    let received!: () => void;
+    const requested = new Promise<void>((resolve) => {
+      received = resolve;
+    });
+    const stalled = createServer(() => received());
+    await new Promise<void>((resolve) => stalled.listen(0, '127.0.0.1', resolve));
+    const url = `http://127.0.0.1:${(stalled.address() as AddressInfo).port}`;
+    const child = spawn('node', [bin, 'watch', '--daemon', url], { cwd: example, env, stdio: ['ignore', 'pipe', 'inherit'] });
+    let stdout = '';
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    const exitCode = new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
+    const exitWithin = async (ms: number): Promise<number | null | 'timeout'> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), ms);
+      });
+      try {
+        return await Promise.race([exitCode, timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    try {
+      await requested;
+      child.kill('SIGINT');
+      expect(await exitWithin(5_000)).toBe(0);
+      expect(stdout).toBe('');
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+        await exitWithin(2_000);
+      }
+      stalled.closeAllConnections();
+      await new Promise<void>((resolve) => stalled.close(() => resolve()));
     }
   });
 });

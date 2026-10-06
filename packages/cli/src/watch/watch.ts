@@ -25,8 +25,8 @@ export interface WatchOptions {
 export async function runWatch(options: WatchOptions): Promise<number> {
   const { client, path, signal, write } = options;
   if (signal.aborted) return 0;
-  // The client can't cancel an RPC, so race the cursor read against SIGINT: an interrupt while the
-  // daemon is slow to answer still ends the watch at once with exit 0.
+  // SIGINT cancels the cursor read, and the race ends the watch at once with exit 0 even with a
+  // client that ignores the signal.
   let onAbort: () => void = () => {};
   const interrupted = new Promise<undefined>((resolve) => {
     onAbort = () => resolve(undefined);
@@ -34,7 +34,10 @@ export async function runWatch(options: WatchOptions): Promise<number> {
   });
   let cursor: { target?: string; result: { nextSeq: number } } | undefined;
   try {
-    cursor = await Promise.race([client.call<{ nextSeq: number }>('events', { limit: 0 }, options.target), interrupted]);
+    cursor = await Promise.race([client.call<{ nextSeq: number }>('events', { limit: 0 }, options.target, { signal }), interrupted]);
+  } catch (error) {
+    if (signal.aborted) return 0;
+    throw error;
   } finally {
     signal.removeEventListener('abort', onAbort);
   }
@@ -61,7 +64,8 @@ export async function runWatch(options: WatchOptions): Promise<number> {
   let pumping: Promise<void> = Promise.resolve();
 
   const readOnce = async (): Promise<void> => {
-    const { result } = await client.call<{ rev: number; value?: unknown }>('getState', { path }, target);
+    // Stopping cancels a read in flight, so a stalled target can't keep the process alive.
+    const { result } = await client.call<{ rev: number; value?: unknown }>('getState', { path }, target, { signal: stream.signal });
     if (stopped) return;
     // JSON drops an `undefined` value, so a missing path arrives without the property.
     const next: Presence = Object.prototype.hasOwnProperty.call(result, 'value') ? { present: true, value: result.value } : { present: false };
@@ -108,7 +112,7 @@ export async function runWatch(options: WatchOptions): Promise<number> {
     await client.stream({ target, since: cursor.result.nextSeq, signal: stream.signal, onMessage });
   } catch (error) {
     if (!stopped) {
-      stopped = true;
+      stop();
       throw error;
     }
   } finally {

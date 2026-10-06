@@ -4,9 +4,14 @@ import { readDaemonInfo } from '../daemon-info';
 
 export interface DaemonClient {
   readonly url: string;
-  call<T = unknown>(op: string, params?: Record<string, unknown>, target?: string): Promise<{ target?: string; result: T }>;
-  rpc<T = unknown>(op: string, params?: Record<string, unknown>, target?: string): Promise<T>;
+  /** Aborting `options.signal` cancels the request, which then rejects with the signal's reason. */
+  call<T = unknown>(op: string, params?: Record<string, unknown>, target?: string, options?: CallOptions): Promise<{ target?: string; result: T }>;
+  rpc<T = unknown>(op: string, params?: Record<string, unknown>, target?: string, options?: CallOptions): Promise<T>;
   stream(options: { target?: string; since?: number; signal: AbortSignal; onMessage: (kind: 'event' | 'state' | 'target' | 'error', data: unknown) => void }): Promise<void>;
+}
+
+export interface CallOptions {
+  signal?: AbortSignal;
 }
 
 export const DEFAULT_DAEMON_URL = 'http://127.0.0.1:4567';
@@ -37,11 +42,13 @@ export function createDaemonClient(options: { url: string; token?: string; fetch
 
   const client: DaemonClient = {
     url,
-    async call<T>(op: string, params: Record<string, unknown> = {}, target?: string): Promise<{ target?: string; result: T }> {
+    async call<T>(op: string, params: Record<string, unknown> = {}, target?: string, callOptions: CallOptions = {}): Promise<{ target?: string; result: T }> {
+      const { signal } = callOptions;
       let response: Response;
       try {
-        response = await doFetch(`${url}/v1/rpc`, { method: 'POST', headers: headers(), body: JSON.stringify({ op, target, params }) });
+        response = await doFetch(`${url}/v1/rpc`, { method: 'POST', headers: headers(), body: JSON.stringify({ op, target, params }), ...(signal ? { signal } : {}) });
       } catch {
+        if (signal?.aborted) throw signal.reason;
         throw unreachable();
       }
       const status = response.status;
@@ -49,6 +56,7 @@ export function createDaemonClient(options: { url: string; token?: string; fetch
       try {
         bodyText = await response.text();
       } catch {
+        if (signal?.aborted) throw signal.reason;
         throw new IronbirdError('TARGET_DISCONNECTED', `Daemon at ${url} closed the connection before the response completed`, { target, op });
       }
       let parsed: unknown;
@@ -70,8 +78,8 @@ export function createDaemonClient(options: { url: string; token?: string; fetch
       if (envelope.ok === true) return envelope.target === undefined ? { result: envelope.result as T } : { target: envelope.target, result: envelope.result as T };
       throw unexpectedResponse(status, bodyText);
     },
-    async rpc<T>(op: string, params: Record<string, unknown> = {}, target?: string): Promise<T> {
-      return (await client.call<T>(op, params, target)).result;
+    async rpc<T>(op: string, params: Record<string, unknown> = {}, target?: string, callOptions?: CallOptions): Promise<T> {
+      return (await client.call<T>(op, params, target, callOptions)).result;
     },
     async stream({ target, since = 0, signal, onMessage }) {
       const query = new URLSearchParams({ ...(target ? { target } : {}), since: String(since) });
