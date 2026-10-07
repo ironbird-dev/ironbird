@@ -42,14 +42,20 @@ export function fromActor<R extends CommandRegistry, TLogic extends AnyStateMach
   // honest. The error callback matters: XState rethrows an actor's error from a timer whenever any
   // observer lacks one, so a next-only observer here would turn every actor error into an uncaught
   // exception, even in an app that handles it. The target treats the error as a state change, and
-  // the next dispatch fails with it.
-  const changed = (): void => {
-    const next = current.getSnapshot();
-    if (next === last) return;
-    last = next;
-    notify();
+  // the next dispatch fails with it. `stop()` emits `complete` without `next` while the status
+  // becomes 'stopped', so `complete` runs the same check. Each observer reads the actor it is
+  // subscribed to and ignores the notification once that actor is no longer the current one.
+  const observe = (source: Actor<TLogic>): void => {
+    const changed = (): void => {
+      if (source !== current) return;
+      const next = source.getSnapshot();
+      if (next === last) return;
+      last = next;
+      notify();
+    };
+    source.subscribe({ next: changed, error: changed, complete: changed });
   };
-  current.subscribe({ next: changed, error: changed });
+  observe(current);
 
   const toEvent = options.toEvent ?? ((command: CommandOf<R>) => defaultEvent(command) as EventFromLogic<TLogic>);
   const select = options.select ?? defaultSelect;

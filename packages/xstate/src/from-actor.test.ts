@@ -80,6 +80,18 @@ describe('fromActor', () => {
     expect(listener).toHaveBeenCalledTimes(2);
   });
 
+  it('moves the revision once when the actor is stopped outside the target', () => {
+    const actor = started();
+    const target = fromActor(actor, { commands: counterCommands, select: (snapshot) => snapshot.status });
+    const listener = vi.fn();
+    target.subscribe(listener);
+    expect(target.getState()).toBe('active');
+    actor.stop();
+    expect(target.revision()).toBe(1);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(target.getState()).toBe('stopped');
+  });
+
   it('fails DISPATCH_FAILED on a stopped actor', async () => {
     const actor = started();
     const target = fromActor(actor, { commands: counterCommands });
