@@ -1,5 +1,5 @@
 import { isIronbirdError } from '@ironbird/core';
-import { modelTest, type ModelStep } from '@ironbird/testing';
+import { createTestTarget, modelTest, type ModelStep } from '@ironbird/testing';
 import { describe, expect, it } from 'vitest';
 import { todoApp, type TodosState } from './sample-app';
 
@@ -24,5 +24,19 @@ describe('@ironbird/redux under modelTest', () => {
     const details = (error as { details: { invariant: string; steps: Array<{ send: string }> } }).details;
     expect(details.invariant).toBe(CAP);
     expect(details.steps.map((step) => step.send)).toEqual(['todos/add', 'todos/add', 'todos/add', 'todos/add']);
+  });
+
+  // An at-most-three invariant is also satisfied by a stricter cap, so pin the cap from both sides.
+  it('applies exactly three adds and ignores the fourth', async () => {
+    const target = await createTestTarget({ headless: todoApp });
+    try {
+      for (const text of ['a', 'b', 'c']) await target.send('todos/add', { text });
+      expect(((await target.state()) as TodosState).items.map((item) => item.text)).toEqual(['a', 'b', 'c']);
+      await target.send('todos/add', { text: 'd' });
+      expect(((await target.state()) as TodosState).items).toHaveLength(3);
+      expect(((await target.state()) as TodosState).items.map((item) => item.text)).toEqual(['a', 'b', 'c']);
+    } finally {
+      await target.dispose();
+    }
   });
 });
