@@ -633,32 +633,109 @@ A fast-check arbitrary for the JSON Schema `describe()` reports for a payload, t
 
 `description`, `title`, `default`, `examples`, `$schema`, `deprecated`, and `readOnly` are ignored. Any other keyword, such as `pattern` (`.regex`), `format` (`z.email()`), `multipleOf`, `propertyNames` (`z.record`), `prefixItems` (`z.tuple`), or `$ref`, and a schema with no type at all (`z.unknown()`, `z.date()`), throws `INVALID_PAYLOAD` with details `{ name, issues: [{ path, message }] }`, where `name` is `options.name` (the command, or `<fake>.<control>`; default `payload`) and `path` is the schema path, such as `['properties', 'sku', 'pattern']`. Pass a `payload` override for that step instead: the generator never guesses.
 
-## Adapters (P1)
+## Adapters
 
-### @ironbird/xstate
-
-```ts
-function fromActor<R extends CommandRegistry>(
-  actor: AnyActorRef,
-  options: {
-    commands: R;
-    toEvent?: (command: CommandOf<R>) => EventObject;   // default: { type: name, ...payload }
-    select?: (snapshot: AnyMachineSnapshot) => unknown; // default: { value, context }
-  },
-): Target;
-```
-
-Supports `persist` through `getPersistedSnapshot()`. `restore` requires recreating the actor, so the adapter exposes it only when given an actor factory.
+`@ironbird/redux` and `@ironbird/xstate` turn a state container into a core `Target`, so the daemon, the bridge, `@ironbird/testing`, and snapshots work with it unchanged. Both run in Node and Hermes and ship ESM and CommonJS builds with type declarations. Each lists `@ironbird/core`, `zod` ^4.2, and its library as peers. At runtime they import only `@ironbird/core`, plus `createActor` from `xstate`. Commands go through the registry first, so `toAction` and `toEvent` only ever see validated payloads.
 
 ### @ironbird/redux
 
 ```ts
-function fromStore<R extends CommandRegistry, S>(
-  store: Store<S>,
-  options: {
-    commands: R;
-    toAction?: (command: CommandOf<R>) => UnknownAction; // default: { type: name, payload }
-    select?: (state: S) => unknown;                      // default: identity
-  },
+function fromStore<R extends CommandRegistry, S, A extends Action = UnknownAction>(
+  store: Store<S, A>,
+  options: FromStoreOptions<R, S, A>,
 ): Target;
+
+interface FromStoreOptions<R extends CommandRegistry, S, A extends Action = UnknownAction> {
+  commands: R;
+  toAction?: (command: CommandOf<R>) => A; // default: { type: name, payload }
+  select?: (state: S) => unknown;          // default: the whole state
+  restore?: { schema: z.ZodType<S> };      // requires withIronbirdRestore
+}
+
+function withIronbirdRestore<S, A extends Action, P = S>(reducer: Reducer<S, A, P>): Reducer<S, A, P>;
 ```
+
+```ts
+import { fromStore, withIronbirdRestore } from '@ironbird/redux';
+import { configureStore } from '@reduxjs/toolkit';
+
+export const store = configureStore({ reducer: withIronbirdRestore(rootReducer) });
+
+// Command names match the slices' action types (`todos/add`), so the default toAction fits.
+export const target = fromStore(store, { commands, select: (state) => state.todos, restore: { schema: rootStateSchema } });
+```
+
+- The default `toAction` produces the shape Redux Toolkit's action creators produce, so commands named after slice action types need no mapping.
+- `select` shapes what `getState`, `waitFor`, and `watch` see. `persist` always returns the **root** state, `store.getState()`, because a projection can't rebuild the root reducer's state.
+- The revision moves whenever the root state changes, including through dispatches made outside ironbird. A dispatch no reducer handles leaves it as it was.
+- `restore` exists only with `restore: { schema }`, a Zod schema for the root state, and it requires the root reducer to be wrapped with `withIronbirdRestore`. The snapshot is parsed with `schema` first: a failure throws `INVALID_SNAPSHOT` with the first issue's `{ path, reason }` (a dot-separated path, `''` for the root) and leaves the store untouched. The adapter then dispatches one internal action, `@@ironbird/restore`, which the wrapper answers by returning the parsed value as the new state. If the store's state afterwards isn't that value, the reducer isn't wrapped, and the load fails `INVALID_SNAPSHOT` with `{ path: '', reason: 'the root reducer is not wrapped with withIronbirdRestore' }`.
+- A command whose `toAction` returns the internal restore action fails `DISPATCH_FAILED`. Only a schema-checked snapshot may replace the state.
+- Without `restore`, the target's capabilities are `['persist']`.
+
+### @ironbird/xstate
+
+```ts
+function fromActor<R extends CommandRegistry, TLogic extends AnyStateMachine>(
+  actor: Actor<TLogic>,
+  options: FromActorOptions<R, TLogic>,
+): ActorTarget<TLogic>;
+
+interface FromActorOptions<R extends CommandRegistry, TLogic extends AnyStateMachine> {
+  commands: R;
+  toEvent?: (command: CommandOf<R>) => EventFromLogic<TLogic>; // default: { ...payload, type: name }
+  select?: (snapshot: SnapshotFrom<TLogic>) => unknown;         // default: { value, context }
+  restore?: {
+    snapshotSchema: z.ZodType;
+    actorOptions?: Omit<ActorOptions<TLogic>, 'snapshot' | 'state'>;
+  };
+}
+
+type ActorTarget<TLogic extends AnyStateMachine> = Target & {
+  /** The live actor; a restore replaces it. */
+  actor(): Actor<TLogic>;
+};
+```
+
+```ts
+import { fromActor } from '@ironbird/xstate';
+import { defineHeadless } from '@ironbird/core';
+import { createActor } from 'xstate';
+import { z } from 'zod';
+
+export default defineHeadless(({ clock }) => {
+  const actorOptions = { clock }; // delayed transitions run on the headless clock
+  const target = fromActor(createActor(checkoutMachine, actorOptions).start(), {
+    commands,
+    restore: {
+      snapshotSchema: z.looseObject({ status: z.literal('active'), value: z.string(), context: checkoutContextSchema }),
+      actorOptions,
+    },
+  });
+  return {
+    target,
+    dispose: () => {
+      target.actor().stop();
+    },
+  };
+});
+```
+
+- Pass a started **root** actor.
+- The default event is the payload's keys plus `type: name`, with `type` applied last, so a payload key named `type` never renames the event. A payload that isn't an object is sent as `{ type: name, payload }`.
+- The revision moves whenever the actor's snapshot changes, including through events sent outside ironbird and delayed transitions. An event no state handles leaves it as it was.
+- `dispatch` fails `DISPATCH_FAILED` with `the actor is <status>` when the actor isn't active. It fails with `the actor failed: <message>` when the event puts the actor in error.
+- The adapter observes the actor with an error callback, so an actor error never escapes through it as an uncaught exception. The error moves the revision, and the next dispatch reports it. XState rethrows an actor's error from a timer only when some observer lacks an error callback.
+- `persist` returns `actor().getPersistedSnapshot()`. That value carries `undefined` properties, which `snapshotSave`'s strict serializer omits.
+- `restore` exists only with `restore: { snapshotSchema, actorOptions? }`. It runs synchronously after validation, so no event reaches either actor in between:
+  1. Parse the snapshot with `snapshotSchema`. On failure, it throws `INVALID_SNAPSHOT` with the first issue's `{ path, reason }`, and nothing has changed.
+  2. Build and start the replacement: `createActor(actor().logic, { ...actorOptions, snapshot })`. If that throws or the actor's status is `error`, the replacement is stopped and the call throws `INVALID_SNAPSHOT` with `{ path: '', reason: 'actor failed to start: <message>' }`. The old actor stays live and subscribed.
+  3. On success, the adapter moves its subscription to the replacement, stops the old actor, makes `actor()` return the replacement, and notifies once.
+- Write `snapshotSchema` with `z.looseObject`, or declare `children` and `historyValue`. `z.object` strips the keys it doesn't declare, and XState can't restore a snapshot without `children`; that fails at step 2.
+- Pass the options the original actor was created with as `actorOptions`, especially `clock` in a headless definition. The replacement doesn't inherit them.
+
+Consequences of a restore:
+- App code holding the old actor reference sees a stopped actor. Read `actor()` instead, and read it again when the target notifies, for example to re-render. While the old actor's observers run their `complete` callbacks, `actor()` still returns the old, stopped actor, so an event sent through it there is dropped; react to the target's notification instead, which comes once, after the swap.
+- As in XState persistence, the restored state's invoked and spawned actors restart, and the old actor's stop. Entry actions aren't re-run. Both actors exist for one synchronous turn, so effects that start on `start()` can run once more than in the original timeline.
+- Delayed transitions (`after`) that were pending when the snapshot was saved don't fire after a restore, because XState's persisted snapshot holds no scheduled events. A restored state waiting on a delay stays in it until an event moves it.
+- `snapshotLoad` runs in the target's mutating queue, so no ironbird dispatch interleaves with a restore.
+- Without `restore`, the target's capabilities are `['persist']`.
