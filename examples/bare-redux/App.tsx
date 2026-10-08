@@ -6,7 +6,7 @@ import { store } from './src/app/instance';
 import type { AppDispatch } from './src/store/store';
 import { added, toggled, type AppState, type Todo } from './src/store/todos';
 
-export default function App() {
+export function App() {
   return (
     <Provider store={store}>
       <SafeAreaProvider>

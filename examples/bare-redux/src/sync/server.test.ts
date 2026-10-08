@@ -1,13 +1,13 @@
-import { createManualClock } from '@ironbird/core';
 import { describe, expect, it } from 'vitest';
 import type { SyncAck } from './port';
 import { FAST_ACK_MS, SLOW_ACK_MS, createSimulatedServer } from './server';
+import { createManualTimers } from '../test/manual-timers';
 
 const todo = (rev: number) => ({ id: 't1', title: 'Buy milk', done: rev % 2 === 0, rev });
 
 describe('the simulated sync server', () => {
   it('alternates a slow and a fast acknowledgement, so a quick second save is acknowledged first', async () => {
-    const clock = createManualClock();
+    const clock = createManualTimers();
     const server = createSimulatedServer(clock);
     const acks: SyncAck[] = [];
     void server.save(todo(1)).then((ack) => acks.push(ack));
@@ -24,7 +24,7 @@ describe('the simulated sync server', () => {
   });
 
   it('keeps alternating: the third save is slow again', async () => {
-    const clock = createManualClock();
+    const clock = createManualTimers();
     const server = createSimulatedServer(clock);
     const acks: number[] = [];
     for (const rev of [1, 2, 3]) void server.save(todo(rev)).then((ack) => acks.push(ack.rev));

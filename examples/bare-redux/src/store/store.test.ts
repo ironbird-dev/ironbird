@@ -1,8 +1,8 @@
-import { createManualClock } from '@ironbird/core';
 import type { Reducer } from '@reduxjs/toolkit';
 import { describe, expect, it } from 'vitest';
 import type { SavedTodo, SyncAck, SyncPort } from '../sync/port';
 import { SLOW_ACK_MS, createSimulatedServer } from '../sync/server';
+import { createManualTimers } from '../test/manual-timers';
 import { createAppStore } from './store';
 import { added, renamed, toggled, type AppState } from './todos';
 
@@ -85,8 +85,21 @@ describe('the app store', () => {
     expect(store.getState().todos.items[0]).toMatchObject({ rev: 1, syncedRev: 0 });
   });
 
+  it('records a save that throws before it returns a promise, as for a rejected one', async () => {
+    const throwing: SyncPort = {
+      save: () => {
+        throw new Error('offline');
+      },
+    };
+    const store = createAppStore({ sync: throwing });
+    expect(() => store.dispatch(added({ title: 'Buy milk' }))).not.toThrow();
+    await flush();
+    expect(store.getState().sync).toEqual({ inFlight: 0, lastError: 'Saving t1 failed: offline' });
+    expect(store.getState().todos.items[0]).toMatchObject({ rev: 1, syncedRev: 0 });
+  });
+
   it('ends saved at the latest revision when the simulated server acknowledges a quick edit first', async () => {
-    const clock = createManualClock();
+    const clock = createManualTimers();
     const store = createAppStore({ sync: createSimulatedServer(clock) });
     store.dispatch(added({ title: 'Buy milk' }));
     store.dispatch(toggled({ id: 't1' }));
@@ -97,7 +110,7 @@ describe('the app store', () => {
   });
 
   it('with the planted bug, ends unsaved with nothing in flight after the same reordering', async () => {
-    const clock = createManualClock();
+    const clock = createManualTimers();
     const store = createAppStore({ sync: createSimulatedServer(clock) }, { plantBug: true });
     store.dispatch(added({ title: 'Buy milk' }));
     store.dispatch(toggled({ id: 't1' }));
