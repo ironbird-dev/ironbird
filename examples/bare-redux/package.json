@@ -1,0 +1,42 @@
+{
+  "name": "@ironbird-examples/bare-redux",
+  "private": true,
+  "license": "MIT",
+  "version": "0.0.0",
+  "scripts": {
+    "android": "react-native run-android",
+    "ios": "react-native run-ios",
+    "start": "react-native start",
+    "bundle:release": "mkdir -p build && react-native bundle --platform ios --dev false --entry-file index.js --bundle-output build/main.jsbundle --assets-dest build",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run --project unit"
+  },
+  "dependencies": {
+    "@ironbird/core": "workspace:*",
+    "@ironbird/react-native": "workspace:*",
+    "@ironbird/redux": "workspace:*",
+    "@reduxjs/toolkit": "^2.13.0",
+    "react": "19.2.3",
+    "react-native": "0.87.1",
+    "react-native-safe-area-context": "^5.5.2",
+    "react-redux": "^9.3.0",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@babel/preset-env": "^7.25.3",
+    "@babel/runtime": "^7.25.0",
+    "@ironbird/cli": "workspace:*",
+    "@ironbird/testing": "workspace:*",
+    "@react-native-community/cli": "20.2.0",
+    "@react-native-community/cli-platform-android": "20.2.0",
+    "@react-native-community/cli-platform-ios": "20.2.0",
+    "@react-native/babel-preset": "0.87.1",
+    "@react-native/metro-config": "0.87.1",
+    "@react-native/typescript-config": "0.87.1",
+    "@types/react": "~19.2.18"
+  },
+  "engines": {
+    "node": ">= 22.11.0"
+  }
+}
