@@ -1,0 +1,13 @@
+name: Add a to-do and let it sync
+description: A new to-do is saved to the sync API and shows as saved once its acknowledgement arrives. Runs on a fresh app (headless resets; on a device, run `ironbird reload --target ios` first).
+steps:
+  - send: todos.add
+    payload: { title: Buy milk }
+  - expect: todos.items.0.title
+    equals: Buy milk
+  - clock: 300ms
+    optional: true   # headless: the first save's 300 ms acknowledgement; a remote target's settle already waited for it
+  - wait: sync.inFlight
+    equals: 0
+  - expect: todos.items.0.syncedRev
+    equals: 1

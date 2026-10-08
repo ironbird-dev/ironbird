@@ -1,0 +1,18 @@
+name: The sync API answers a quick second edit first
+description: A to-do is added and toggled at once. The sync API's alternating timer acknowledges the second save after 100 ms and the first after 300 ms, so the acknowledgements arrive newest first without any fake control. Fails at the last step with PLANT_BUG=1.
+target: headless   # the manual clock decides when each acknowledgement lands
+steps:
+  - send: todos.add
+    payload: { title: Buy milk }
+  - send: todos.toggle
+    payload: { id: t1 }
+  - clock: 100ms   # the second save (rev 2) is acknowledged
+  - expect: todos.items.0.syncedRev
+    equals: 2
+  - expect: sync.inFlight
+    equals: 1
+  - clock: 200ms   # the first save (rev 1) is acknowledged after it
+  - expect: sync.inFlight
+    equals: 0
+  - expect: todos.items.0.syncedRev
+    equals: 2
