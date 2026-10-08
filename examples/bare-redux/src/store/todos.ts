@@ -21,8 +21,6 @@ export const renamed = createAction<{ id: string; title: string }>('todos/rename
 export const saveStarted = createAction<{ id: string; rev: number }>('sync/saveStarted');
 export const saveAcked = createAction<{ id: string; rev: number }>('sync/saveAcked');
 export const saveFailed = createAction<{ id: string; rev: number; reason: string }>('sync/saveFailed');
-/** Forgets the saves in flight: for when the state was replaced and their completions will be ignored. */
-export const savesAbandoned = createAction('sync/savesAbandoned');
 
 export const initialState: AppState = {
   todos: { items: [], nextId: 1 },
@@ -72,9 +70,6 @@ export function createRootReducer(options: ReducerOptions = {}): Reducer<AppStat
       })
       .addCase(saveAcked, (state) => {
         state.inFlight = Math.max(0, state.inFlight - 1);
-      })
-      .addCase(savesAbandoned, (state) => {
-        state.inFlight = 0;
       })
       .addCase(saveFailed, (state, action) => {
         state.inFlight = Math.max(0, state.inFlight - 1);

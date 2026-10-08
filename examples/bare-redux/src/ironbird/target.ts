@@ -4,7 +4,7 @@ import type { UnknownAction } from '@reduxjs/toolkit';
 import type { AppStore } from '../store/store';
 import { added, renamed, toggled } from '../store/todos';
 import { commands } from './commands';
-import { appStateSchema } from './schema';
+import { restoreSchema } from './schema';
 
 /** Each command dispatches the app's own action, with the payload the command schema already validated. */
 export function toAction(command: CommandOf<typeof commands>): UnknownAction {
@@ -19,4 +19,4 @@ export function toAction(command: CommandOf<typeof commands>): UnknownAction {
 }
 
 /** The store as an ironbird target. No `select`: agents and scenarios see the root state. */
-export const toTarget = (store: AppStore): Target => fromStore(store, { commands, toAction, restore: { schema: appStateSchema } });
+export const toTarget = (store: AppStore): Target => fromStore(store, { commands, toAction, restore: { schema: restoreSchema } });

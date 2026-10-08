@@ -150,4 +150,23 @@ describe('bare-redux headless entry', () => {
     await settle();
     expect(state(app)).toEqual({ ...midSave, sync: { inFlight: 0, lastError: null } });
   });
+
+  it('counts a save started while the restore is still being awaited', async () => {
+    const { app, settle } = await boot();
+    const { persist, restore } = persistAndRestore(app);
+    await syncFake(app).control('setAcks', { mode: 'manual' });
+    await app.target.dispatch('todos.add', { title: 'Old milk' });
+    const midSave = persist();
+    const restoring = restore(midSave);
+    await app.target.dispatch('todos.add', { title: 'New milk' });
+    await restoring;
+    await settle();
+    expect(state(app).sync.inFlight).toBe(1);
+
+    await syncFake(app).control('release', { order: 'oldest' });
+    await syncFake(app).control('release', { order: 'oldest' });
+    await settle();
+    expect(state(app).sync.inFlight).toBe(0);
+    expect(state(app).todos.items.map((item) => item.syncedRev)).toEqual([0, 1]);
+  });
 });

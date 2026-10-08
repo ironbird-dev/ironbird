@@ -18,3 +18,10 @@ export const appStateSchema = z.strictObject({
   todos: z.strictObject({ items: z.array(todo), nextId: z.number().int().min(1) }),
   sync: z.strictObject({ inFlight: z.number().int().min(0), lastError: z.string().nullable() }),
 }) satisfies z.ZodType<AppState>;
+
+/**
+ * What `restore` validates against. A snapshot taken mid-save records saves in flight, but a
+ * restore abandons them (their completions are ignored), so the count is zeroed here, in the value
+ * the restore action carries, and the state is replaced in one reducer step.
+ */
+export const restoreSchema = appStateSchema.transform((state): AppState => ({ ...state, sync: { ...state.sync, inFlight: 0 } }));
