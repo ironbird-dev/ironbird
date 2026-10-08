@@ -131,4 +131,24 @@ describe('the app store', () => {
     expect(seen).toContain('todos/added');
     expect(seen).toContain('sync/saveStarted');
   });
+
+  it('drops an acknowledgement or failure from before the generation changed', async () => {
+    const sync = manualSync();
+    let generation = 0;
+    const store = createAppStore({ sync: sync.port }, { syncGeneration: () => generation });
+    store.dispatch(added({ title: 'Old milk' }));
+    store.dispatch(added({ title: 'Old bread' }));
+    generation += 1;
+    const before = store.getState();
+    sync.ack(0);
+    sync.fail(1, 'offline');
+    await flush();
+    expect(store.getState()).toBe(before);
+
+    store.dispatch(added({ title: 'New milk' }));
+    sync.ack(2);
+    await flush();
+    expect(store.getState().todos.items[2]).toMatchObject({ rev: 1, syncedRev: 1 });
+    expect(store.getState().sync).toEqual({ inFlight: 2, lastError: null });
+  });
 });

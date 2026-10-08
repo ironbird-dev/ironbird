@@ -119,4 +119,35 @@ describe('bare-redux headless entry', () => {
     await settle();
     expect(state(app)).toEqual({ todos: { items: [], nextId: 1 }, sync: { inFlight: 0, lastError: null } });
   });
+
+  it('ignores an old acknowledgement that arrives for a new to-do reusing the id after a restore', async () => {
+    const { app, settle } = await boot();
+    const { persist, restore } = persistAndRestore(app);
+    const empty = persist();
+    await syncFake(app).control('setAcks', { mode: 'manual' });
+    await app.target.dispatch('todos.add', { title: 'Old milk' });
+    await restore(empty);
+    await app.target.dispatch('todos.add', { title: 'New milk' });
+    expect(state(app)).toMatchObject({ todos: { items: [{ id: 't1', title: 'New milk', syncedRev: 0 }] }, sync: { inFlight: 1 } });
+
+    await syncFake(app).control('release', { order: 'oldest' });
+    await settle();
+    expect(state(app)).toMatchObject({ todos: { items: [{ id: 't1', title: 'New milk', syncedRev: 0 }] }, sync: { inFlight: 1 } });
+
+    await syncFake(app).control('release', { order: 'oldest' });
+    await settle();
+    expect(state(app)).toMatchObject({ todos: { items: [{ syncedRev: 1 }] }, sync: { inFlight: 0 } });
+  });
+
+  it('clears the in-flight count a restored snapshot carries, since those saves are abandoned', async () => {
+    const { app, settle } = await boot();
+    const { persist, restore } = persistAndRestore(app);
+    await syncFake(app).control('setAcks', { mode: 'manual' });
+    await app.target.dispatch('todos.add', { title: 'Buy milk' });
+    const midSave = persist() as AppState;
+    expect(midSave.sync.inFlight).toBe(1);
+    await restore(midSave);
+    await settle();
+    expect(state(app)).toEqual({ ...midSave, sync: { inFlight: 0, lastError: null } });
+  });
 });
