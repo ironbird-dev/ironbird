@@ -2,7 +2,7 @@ import type { SavedTodo, SyncAck, SyncPort } from './port';
 
 /** The timer the simulated server waits on. Any timer with this shape works, including a test clock. */
 export interface Timers {
-  setTimeout(callback: () => void, ms: number, label?: string): unknown;
+  setTimeout: (callback: () => void, ms: number, label?: string) => unknown;
 }
 
 /** How long the 1st, 3rd, 5th, ... save takes to be acknowledged. */

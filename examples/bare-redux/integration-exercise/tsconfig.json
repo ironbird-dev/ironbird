@@ -1,0 +1,10 @@
+{
+  "extends": "@react-native/typescript-config",
+  "compilerOptions": {
+    "types": [],
+    "jsx": "react-jsx",
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["App.tsx", "src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["**/*.test.ts"]
+}

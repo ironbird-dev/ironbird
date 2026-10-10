@@ -24,4 +24,10 @@ describe('the bare-redux scenarios, headless and in process', () => {
     const result = await runScenario(file('add-and-sync.yaml'), { headless, env: { PLANT_BUG: '1' } });
     expect(result.passed).toBe(true);
   });
+
+  it('passes the integration exercise acceptance scenario', async () => {
+    const result = await runScenario(path.resolve(__dirname, '../../exercise/acceptance.yaml'), { headless });
+    expect(result.failedStep).toBeUndefined();
+    expect(result.passed).toBe(true);
+  });
 });
