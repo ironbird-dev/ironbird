@@ -200,6 +200,37 @@ describe('replaceExercise', () => {
     expect(await readFile(path.join(outDir, 'old.txt'), 'utf8')).toBe('old');
     expect(await readdir(path.dirname(outDir))).toEqual(['integration-exercise']);
   });
+
+  it('keeps the old copy and names it when it cannot be put back either', async () => {
+    const outDir = await committedCopy();
+    let moves = 0;
+    const move = async (from, to) => {
+      moves += 1;
+      if (moves >= 2) throw new Error(`move ${moves} failed`);
+      await rename(from, to);
+    };
+    const failure = await replaceExercise({ exampleDir, outDir, generate: writes('new.txt'), move }).catch((error) => error);
+    expect(failure.message).toMatch(/^Could not move the new copy into .* \(move 2 failed\) or put the old copy back \(move 3 failed\); the old copy is kept at /);
+    const kept = failure.message.split('the old copy is kept at ')[1];
+    made.push(path.dirname(kept));
+    expect(await readdir(kept)).toEqual(['old.txt']);
+    expect(await readdir(path.dirname(kept))).toEqual(['previous']);
+  });
+
+  it('keeps what was moved aside when moving the old copy aside stops partway', async () => {
+    const outDir = await committedCopy();
+    const move = async (from, to) => {
+      await mkdir(to, { recursive: true });
+      await writeFile(path.join(to, 'old.txt'), 'old');
+      throw new Error('cross-device copy failed');
+    };
+    const failure = await replaceExercise({ exampleDir, outDir, generate: writes('new.txt'), move }).catch((error) => error);
+    expect(failure.message).toMatch(/^Could not move .* aside \(cross-device copy failed\); what was moved is kept at /);
+    const kept = failure.message.split('what was moved is kept at ')[1];
+    made.push(path.dirname(kept));
+    expect(await readdir(kept)).toEqual(['old.txt']);
+    expect(await readdir(outDir)).toEqual(['old.txt']);
+  });
 });
 
 describe('generateExercise on this app', () => {

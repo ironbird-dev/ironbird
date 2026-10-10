@@ -215,26 +215,44 @@ export async function moveDir(from, to) {
  * Regenerates the copy at `outDir` without ever leaving it missing or half written. It generates
  * once into a temporary folder, which also runs the marker and leak checks, and only then swaps
  * the result in: the committed copy is moved aside, the new one moved into place, and the old one
- * deleted. If moving the new copy in fails, the old one is moved back.
+ * deleted. If moving the new copy in fails, the old one is moved back. The old copy is deleted only
+ * once a complete copy is in place: if it cannot be put back, or moving it aside stopped partway,
+ * it is kept and the error names where.
  */
 export async function replaceExercise({ exampleDir, outDir, generate = generateExercise, move = moveDir }) {
   const work = await mkdtemp(path.join(os.tmpdir(), 'exercise-'));
   const staging = path.join(work, 'new');
   const previous = path.join(work, 'previous');
+  let keepPrevious = false;
   try {
     const result = await generate({ exampleDir, outDir: staging });
     const hadCopy = existsSync(outDir);
-    if (hadCopy) await move(outDir, previous);
+    if (hadCopy) {
+      try {
+        await move(outDir, previous);
+      } catch (error) {
+        if (!existsSync(previous)) throw error;
+        keepPrevious = true;
+        throw new Error(`Could not move ${outDir} aside (${error.message}); what was moved is kept at ${previous}`, { cause: error });
+      }
+    }
     try {
       await move(staging, outDir);
     } catch (error) {
       await rm(outDir, { recursive: true, force: true });
-      if (hadCopy) await move(previous, outDir);
+      if (hadCopy) {
+        try {
+          await move(previous, outDir);
+        } catch (restoreError) {
+          keepPrevious = true;
+          throw new Error(`Could not move the new copy into ${outDir} (${error.message}) or put the old copy back (${restoreError.message}); the old copy is kept at ${previous}`, { cause: restoreError });
+        }
+      }
       throw error;
     }
     return result;
   } finally {
-    await rm(work, { recursive: true, force: true });
+    await rm(keepPrevious ? staging : work, { recursive: true, force: true });
   }
 }
 
