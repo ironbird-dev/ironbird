@@ -1,9 +1,9 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { MATERIAL_FILES, diffTrees, findLeaks, generateExercise, isIncluded, listExampleFiles, snapshotTree, transformPackageJson, transformSource, walkFiles } from './exercise.mjs';
+import { MATERIAL_FILES, diffTrees, findLeaks, generateExercise, isIncluded, listExampleFiles, replaceExercise, snapshotTree, transformPackageJson, transformSource, walkFiles } from './exercise.mjs';
 
 const exampleDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const lines = (...parts) => parts.join('\n');
@@ -142,6 +142,63 @@ describe('diffTrees', () => {
       ['d', entry('5')],
     ]);
     expect(diffTrees(committed, generated)).toEqual(['a: executable bit differs', 'b: missing from the generated copy', 'c: content differs', 'd: not in the committed copy']);
+  });
+});
+
+describe('replaceExercise', () => {
+  async function committedCopy() {
+    const outDir = path.join(await tmp(), 'integration-exercise');
+    await mkdir(outDir);
+    await writeFile(path.join(outDir, 'old.txt'), 'old');
+    return outDir;
+  }
+  const writes = (file) => async ({ outDir }) => {
+    await mkdir(outDir, { recursive: true });
+    await writeFile(path.join(outDir, file), 'new');
+    return { files: [file] };
+  };
+
+  it('swaps a freshly generated copy into place', async () => {
+    const outDir = await committedCopy();
+    const { files } = await replaceExercise({ exampleDir, outDir, generate: writes('new.txt') });
+    expect(files).toEqual(['new.txt']);
+    expect(await readdir(outDir)).toEqual(['new.txt']);
+    expect(await readdir(path.dirname(outDir))).toEqual(['integration-exercise']);
+  });
+
+  it('creates the copy when there is none yet', async () => {
+    const outDir = path.join(await tmp(), 'integration-exercise');
+    await replaceExercise({ exampleDir, outDir, generate: writes('new.txt') });
+    expect(await readdir(outDir)).toEqual(['new.txt']);
+  });
+
+  it('leaves the committed copy untouched when generation fails', async () => {
+    const outDir = await committedCopy();
+    const generate = async ({ outDir: staging }) => {
+      await writes('half.txt')({ outDir: staging });
+      throw new Error('leak');
+    };
+    await expect(replaceExercise({ exampleDir, outDir, generate })).rejects.toThrow('leak');
+    expect(await readdir(outDir)).toEqual(['old.txt']);
+    expect(await readdir(path.dirname(outDir))).toEqual(['integration-exercise']);
+  });
+
+  it('restores the committed copy when moving the new one into place fails', async () => {
+    const outDir = await committedCopy();
+    let moves = 0;
+    const move = async (from, to) => {
+      moves += 1;
+      if (to === outDir && moves === 2) {
+        await mkdir(to, { recursive: true });
+        await writeFile(path.join(to, 'partial.txt'), 'partial');
+        throw new Error('disk full');
+      }
+      await rename(from, to);
+    };
+    await expect(replaceExercise({ exampleDir, outDir, generate: writes('new.txt'), move })).rejects.toThrow('disk full');
+    expect(await readdir(outDir)).toEqual(['old.txt']);
+    expect(await readFile(path.join(outDir, 'old.txt'), 'utf8')).toBe('old');
+    expect(await readdir(path.dirname(outDir))).toEqual(['integration-exercise']);
   });
 });
 

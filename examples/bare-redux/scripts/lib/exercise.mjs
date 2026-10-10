@@ -14,7 +14,8 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 
 /**
@@ -197,6 +198,44 @@ export async function generateExercise({ exampleDir, outDir }) {
   const leaks = findLeaks(texts);
   if (leaks.length > 0) throw new Error(`The exercise copy still mentions ironbird or an exercise marker:\n${leaks.join('\n')}`);
   return { files: written.sort() };
+}
+
+/** Renames a folder, falling back to copy and delete when `to` is on another file system. */
+export async function moveDir(from, to) {
+  try {
+    await rename(from, to);
+  } catch (error) {
+    if (error?.code !== 'EXDEV') throw error;
+    await cp(from, to, { recursive: true });
+    await rm(from, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Regenerates the copy at `outDir` without ever leaving it missing or half written. It generates
+ * once into a temporary folder, which also runs the marker and leak checks, and only then swaps
+ * the result in: the committed copy is moved aside, the new one moved into place, and the old one
+ * deleted. If moving the new copy in fails, the old one is moved back.
+ */
+export async function replaceExercise({ exampleDir, outDir, generate = generateExercise, move = moveDir }) {
+  const work = await mkdtemp(path.join(os.tmpdir(), 'exercise-'));
+  const staging = path.join(work, 'new');
+  const previous = path.join(work, 'previous');
+  try {
+    const result = await generate({ exampleDir, outDir: staging });
+    const hadCopy = existsSync(outDir);
+    if (hadCopy) await move(outDir, previous);
+    try {
+      await move(staging, outDir);
+    } catch (error) {
+      await rm(outDir, { recursive: true, force: true });
+      if (hadCopy) await move(previous, outDir);
+      throw error;
+    }
+    return result;
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
 }
 
 /** Content hash and executable bit of each file, keyed by its relative path. */
