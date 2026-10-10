@@ -10,9 +10,9 @@ export interface AppPorts {
 export interface AppStoreOptions {
   /** See ReducerOptions.plantBug. */
   plantBug?: boolean;
-  /** Wraps the root reducer, for reducer enhancers such as persistence or state restore. */
   /** See SyncMiddlewareOptions.generation. */
   syncGeneration?: () => number;
+  /** Wraps the root reducer, for reducer enhancers such as persistence or state restore. */
   wrapReducer?: (reducer: Reducer<AppState>) => Reducer<AppState>;
 }
 

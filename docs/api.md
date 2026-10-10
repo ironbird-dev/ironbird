@@ -442,6 +442,23 @@ if (__DEV__) {
 
 Keep the `require` inside the `__DEV__` branch so production bundles drop the bridge, then prove it with `ironbird verify-bundle` in CI. Dev builds that should exercise fakes on a simulator, for example to test reader failures without hardware, wire fakes in `instance.ts` and pass them as `fakes`.
 
+In a bare React Native app, Metro can fail on the first dev bundle that reaches your command schemas with `Export namespace should be first transformed by @babel/plugin-transform-export-namespace-from`, naming a file under `zod/v4/`. Metro picks zod's `import` condition, an ESM build that uses `export * as`, and the React Native Babel preset does not transform files inside `node_modules`. Resolve zod to its CommonJS build in `metro.config.js`:
+
+```js
+const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
+
+const isZod = (name) => name === 'zod' || name.startsWith('zod/');
+
+module.exports = mergeConfig(getDefaultConfig(__dirname), {
+  resolver: {
+    resolveRequest: (context, moduleName, platform) =>
+      context.resolveRequest(isZod(moduleName) ? { ...context, isESMImport: false } : context, moduleName, platform),
+  },
+});
+```
+
+Expo apps (`examples/checkout`) don't need this; `examples/bare-redux/metro.config.js` carries the same setting.
+
 ### Reduce motion in agent-driven builds (P0)
 
 Settle sees work that runs through JavaScript: tracked promises and timers, and rendered frames. It cannot see an animation that runs on the UI thread (`Animated` with the native driver, Reanimated), a `LayoutAnimation`, or an image decode, so a screenshot taken right after settle can catch that motion mid-flight. In the M1 measurement a 400 ms native-driver fade was still running in 50 of 60 Android captures, and with motion reduced no app content differed in any capture on either platform ([evals/m1-remote-mode.md](evals/m1-remote-mode.md), [ADR-0005](adr/0005-pure-javascript-no-native-code.md)).

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -41,6 +41,20 @@ async function verify(file: string): Promise<{ code: number; found: unknown[] }>
   }
 }
 
+// Every react-native module in the bundle is named by its path; the distinct package roots those
+// paths point to are the react-native installations Metro resolved. Paths are relative to this
+// example or absolute.
+async function reactNativeRoots(source: string): Promise<string[]> {
+  const roots = new Set<string>();
+  for (const match of source.matchAll(/"([^"\n]*?node_modules\/react-native)\/[^"\n]*"/g)) {
+    const named = match[1] as string;
+    // Asset registrations carry a URL path ("/assets/../../node_modules/..."), not a module path.
+    if (named.startsWith('/assets/')) continue;
+    roots.add(await realpath(path.resolve(example, named)));
+  }
+  return [...roots];
+}
+
 describe('bare-redux Metro bundles', () => {
   // Regression check: passes before the bridge is wired and must keep passing after.
   it('keeps the bridge out of the release bundle', async () => {
@@ -55,7 +69,9 @@ describe('bare-redux Metro bundles', () => {
     expect(result.code).toBe(1);
     expect(result.found).toHaveLength(1);
     const source = await readFile(file, 'utf8');
-    expect(source).toMatch(/react-native@0\.87\.1/);
-    expect(source).not.toMatch(/react-native@0\.86\./);
+    const roots = await reactNativeRoots(source);
+    expect(roots).toHaveLength(1);
+    const manifest = JSON.parse(await readFile(path.join(roots[0] as string, 'package.json'), 'utf8')) as { version: string };
+    expect(manifest.version).toBe('0.87.1');
   }, 300_000);
 });
