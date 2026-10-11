@@ -10,7 +10,7 @@ Priority markers match [spec.md](spec.md): **P0** ships in 0.1, **P1** is planne
 
 ## @ironbird/core
 
-Runs unmodified in Node and Hermes. Peer dependency: `zod@^4.2`. Core imports zod only as a type: JSON Schema comes from each schema's own `toJSONSchema` method, so importing `@ironbird/core` does not load zod.
+Runs unmodified in Node and Hermes. Peer dependency: `zod@^4.2`. Core imports zod only as a type: JSON Schema comes from each schema's own `toJSONSchema` method, so importing `@ironbird/core` does not load zod. Apps still on Zod 3: see [migrating-from-zod-3.md](migrating-from-zod-3.md).
 
 ### defineCommands (P0)
 

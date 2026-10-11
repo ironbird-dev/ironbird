@@ -82,6 +82,10 @@ M0 built the registry on Zod 4 and the checkout example declares its commands wi
 
 **Amendment.** `@ironbird/core` imports Zod as a type only. The registry validates through each schema's own parse method and produces JSON Schema through the schema's own `toJSONSchema` method, so core never evaluates the Zod module at load time and CLI client commands start without it. That structural dependency on two methods is the "small internal interface" the decision called for. The peer dependency floor is `zod@^4.2.0`, the first release with `toJSONSchema` on schema instances.
 
+## Review (2026-10-04, M5): Q8 closed
+
+Spec Q8 asked whether apps still on Zod 3 are supported. They are not (M5 design D9): the peer range stays `zod ^4.2.0` for `@ironbird/core` and both adapters, and `@ironbird/testing` follows it. Zod 4 ships the Zod 3 API at `zod/v3`, so an app on Zod 3 upgrades the package, keeps its unmigrated schemas on `zod/v3`, and writes its command and control schemas against Zod 4; [migrating-from-zod-3.md](../migrating-from-zod-3.md) says how. `defineCommands` now rejects a schema without the two methods the registry relies on with `INVALID_CONFIG`, so a Zod 3 or `zod/mini` schema fails when it is defined rather than when an agent first lists the commands. The "Harder" consequence above stands: ironbird has no Zod 3 compatibility path of its own.
+
 ## Action items
 
 1. [x] Internal schema interface in the registry that isolates Zod-specific calls (realized as the type-only import described above)
