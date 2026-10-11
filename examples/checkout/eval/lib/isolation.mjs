@@ -71,20 +71,27 @@ export async function userSkillNames(dir = path.join(os.homedir(), '.claude', 's
 /**
  * Checks a session's init event. `memoryEntries` lists the auto-memory folder the event reports
  * (empty when the folder is absent or empty); `model` is the pattern the event's model id must match
- * (MODEL_PATTERN); `userSkills` are the user's skill names (userSkillNames). Returns every
- * problem, not only the first.
+ * (MODEL_PATTERN); `userSkills` are the user's skill names (userSkillNames). `ironbird` is
+ * 'required' (M3: the ironbird MCP server connected and the ironbird skill loaded, and no other
+ * server) or 'absent' (the M5 integration proxy, whose app has no ironbird yet: no MCP server at all
+ * and no ironbird skill). Returns every problem, not only the first.
  */
-export function checkIsolation(init, { memoryEntries, model, userSkills }) {
+export function checkIsolation(init, { memoryEntries, model, userSkills, ironbird = 'required' }) {
   assertPattern(model);
   if (!Array.isArray(userSkills)) throw new TypeError(`expected userSkills as an array of names, got ${JSON.stringify(userSkills)}`);
+  if (ironbird !== 'required' && ironbird !== 'absent') throw new TypeError(`expected ironbird as 'required' or 'absent', got ${JSON.stringify(ironbird)}`);
   if (!init) return { valid: false, problems: ['the stream has no init event'] };
   const problems = [];
 
   const servers = Array.isArray(init.mcp_servers) ? init.mcp_servers : [];
-  for (const name of names(servers)) if (name !== 'ironbird') problems.push(`MCP server ${name} is loaded`);
-  const ironbird = servers.find((server) => nameOf(server) === 'ironbird');
-  if (!ironbird) problems.push('the ironbird MCP server is not loaded');
-  else if (typeof ironbird !== 'object' || ironbird.status !== 'connected') problems.push(`the ironbird MCP server is ${ironbird.status ?? 'not reported as connected'}`);
+  if (ironbird === 'required') {
+    for (const name of names(servers)) if (name !== 'ironbird') problems.push(`MCP server ${name} is loaded`);
+    const server = servers.find((candidate) => nameOf(candidate) === 'ironbird');
+    if (!server) problems.push('the ironbird MCP server is not loaded');
+    else if (typeof server !== 'object' || server.status !== 'connected') problems.push(`the ironbird MCP server is ${server.status ?? 'not reported as connected'}`);
+  } else {
+    for (const name of names(servers)) problems.push(`MCP server ${name} is loaded`);
+  }
 
   const user = new Set(userSkills);
   const skills = names(init.skills);
@@ -92,7 +99,8 @@ export function checkIsolation(init, { memoryEntries, model, userSkills }) {
     if (skill.includes(':')) problems.push(`skill ${skill} is loaded from a plugin`);
     else if (user.has(skill)) problems.push(`skill ${skill} is loaded, and the user skills folder has a skill of that name`);
   }
-  if (!skills.includes('ironbird')) problems.push('the ironbird skill is not loaded');
+  if (ironbird === 'required' && !skills.includes('ironbird')) problems.push('the ironbird skill is not loaded');
+  if (ironbird === 'absent' && skills.includes('ironbird')) problems.push('the ironbird skill is loaded');
 
   for (const plugin of Array.isArray(init.plugins) ? init.plugins : []) if (!isBuiltIn(plugin)) problems.push(`plugin ${JSON.stringify(plugin)} is not built in`);
 
