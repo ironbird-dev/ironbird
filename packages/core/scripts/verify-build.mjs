@@ -18,8 +18,9 @@ for (const file of readdirSync(dist)) {
   if (/from\s+["']node:|require\(["']node:/.test(source)) throw new Error(`${file} imports a node: module`);
   // Loading zod costs tens of milliseconds, and every CLI client command imports core. Core reaches
   // zod only through the schema instances it is handed (registry.ts imports it as a type), so a
-  // static import here would put that cost back on the client startup path.
-  if (/from\s+["']zod(?:\/[^"']*)?["']|require\(["']zod(?:\/[^"']*)?["']\)/.test(source)) {
+  // static import here would put that cost back on the client startup path. The pattern matches
+  // import and require statements, not the text "from 'zod/v3'" inside the schema-check messages.
+  if (/\bimport\s+(?:[^;"']*?\s+from\s+)?["']zod(?:\/[^"']*)?["']|require\(["']zod(?:\/[^"']*)?["']\)/.test(source)) {
     throw new Error(`${file} imports zod at load time; core must only use zod through the schemas it is given`);
   }
   if (source.includes('__IRONBIRD_BRIDGE')) throw new Error(`${file} contains the bridge marker; it must live only in @ironbird/react-native`);

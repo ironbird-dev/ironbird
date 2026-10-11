@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { z as z3 } from 'zod/v3';
+import * as zm from 'zod/mini';
+import { z as z4 } from 'zod/v4';
 import { isIronbirdError } from './errors';
 import type { CommandRegistry } from './registry';
 import { defineCommands, suggestNames } from './registry';
@@ -105,5 +108,29 @@ describe('suggestNames', () => {
     expect(ranked).not.toContain('cart.addItem');
     expect(suggestNames('x', ['a', 'b'], 1)).toEqual(['a']);
     expect(suggestNames('x', [])).toEqual([]);
+  });
+});
+
+describe('schemas that are not Zod 4.2+ (M5 design D9, Q8)', () => {
+  const cases: Array<[string, () => unknown, string]> = [
+    ['a zod/v3 schema', () => z3.object({ sku: z3.string() }), "it is a Zod 3 schema (from zod 3, or from 'zod/v3')"],
+    ['a zod/mini schema', () => zm.object({ sku: zm.string() }), "it is a Zod 4 schema without a toJSONSchema method (from 'zod/mini', or from zod before 4.2)"],
+    ['an object that only looks like a schema', () => ({ safeParse: () => ({ success: true, data: {} }) }), 'it is not a Zod schema'],
+    ['undefined', () => undefined, 'it is not a Zod schema'],
+  ];
+
+  it.each(cases)('rejects %s when the commands are defined, with INVALID_CONFIG naming the command and the migration note', (_label, make, reason) => {
+    const error = catchError(() => defineCommands({ 'cart.ok': z.object({}), 'cart.legacy': make() as z.ZodType }));
+    expect(isIronbirdError(error) && error.code).toBe('INVALID_CONFIG');
+    expect(isIronbirdError(error) && error.details).toEqual({ name: 'cart.legacy', reason });
+    expect((error as Error).message).toBe(
+      `The schema for cart.legacy can't be used: ${reason}. ironbird needs zod 4.2 or later, with schemas from 'zod' or 'zod/v4'; see docs/migrating-from-zod-3.md`,
+    );
+  });
+
+  it('accepts schemas from zod/v4, the same classic API as zod', () => {
+    const registry = defineCommands({ 'cart.addItem': z4.object({ sku: z4.string() }) });
+    expect(registry.describe()['cart.addItem']?.payload).toMatchObject({ type: 'object', required: ['sku'] });
+    expect(registry.parse('cart.addItem', { sku: 'a' })).toEqual({ sku: 'a' });
   });
 });

@@ -85,8 +85,35 @@ function hasUnrepresentableFeatures(schema: unknown, seen = new Set<unknown>()):
   return children.some((child) => hasUnrepresentableFeatures(child, seen));
 }
 
+/**
+ * Why `schema` can't serve as a command or control schema, or undefined when it can (M5 design D9,
+ * spec Q8). The registry validates through the schema's own `safeParse` and describes it through its
+ * own `toJSONSchema`, which only Zod 4.2+ classic schemas (`zod`, `zod/v4`) have. The check is
+ * structural, because core never loads zod: Zod 3 schemas (`zod` 3, `zod/v3`) carry `_def` and no
+ * `_zod`; `zod/mini` schemas, and classic schemas before 4.2, carry `_zod` but no `toJSONSchema`.
+ */
+function schemaProblem(schema: unknown): string | undefined {
+  if (typeof schema !== 'object' || schema === null) return 'it is not a Zod schema';
+  const candidate = schema as { safeParse?: unknown; toJSONSchema?: unknown };
+  const zod4 = '_zod' in schema;
+  if (zod4 && typeof candidate.safeParse === 'function' && typeof candidate.toJSONSchema === 'function') return undefined;
+  if (!zod4 && '_def' in schema) return "it is a Zod 3 schema (from zod 3, or from 'zod/v3')";
+  if (zod4) return "it is a Zod 4 schema without a toJSONSchema method (from 'zod/mini', or from zod before 4.2)";
+  return 'it is not a Zod schema';
+}
+
 export function defineCommands<const T extends Schemas>(schemas: T): CommandRegistry<T> {
   const names = Object.keys(schemas) as Array<keyof T & string>;
+  for (const name of names) {
+    const problem = schemaProblem(schemas[name]);
+    if (problem !== undefined) {
+      throw new IronbirdError(
+        'INVALID_CONFIG',
+        `The schema for ${name} can't be used: ${problem}. ironbird needs zod 4.2 or later, with schemas from 'zod' or 'zod/v4'; see docs/migrating-from-zod-3.md`,
+        { name, reason: problem },
+      );
+    }
+  }
   const has = (name: string): name is keyof T & string => Object.prototype.hasOwnProperty.call(schemas, name);
 
   // The interface's members are declared through a deferred conditional type

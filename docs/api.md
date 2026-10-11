@@ -47,6 +47,8 @@ export const commands = defineCommands({
 });
 ```
 
+Every schema must be a Zod 4.2+ schema from `zod` or `zod/v4`. `defineCommands` checks each one when it is called and throws `IronbirdError` with code `INVALID_CONFIG` and details `{ name, reason }` for a Zod 3 schema (from `zod` 3 or `zod/v3`), a `zod/mini` schema, or anything else, so a schema the registry can't describe fails before an agent asks for it; `defineFake` applies the same check to its controls in `create`. TypeScript rejects those schemas too. Apps still on Zod 3: see [migrating-from-zod-3.md](migrating-from-zod-3.md).
+
 ### createTarget (P0)
 
 ```ts
