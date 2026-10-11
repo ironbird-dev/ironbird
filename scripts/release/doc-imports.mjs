@@ -44,12 +44,15 @@ export function importsInMarkdown(text) {
 /**
  * The declaration file a subpath (`.`, `./config`) of a manifest resolves to, or undefined. When an
  * `exports` map is present it decides what is importable: a subpath it leaves out is undefined even
- * if `types` names a file. Top-level `types` only fills in for an exported (or export-less) `.`.
+ * if `types` names a file, and an empty map exports nothing. Top-level `types` only fills in for an
+ * exported `.`, or for `.` when there is no `exports` field.
  */
 export function declarationFile(manifest, subpath) {
   const { exports } = manifest;
   if (exports === undefined || exports === null) return subpath === '.' ? manifest.types : undefined;
-  const sugar = typeof exports === 'string' || Object.keys(exports).every((key) => !key.startsWith('.'));
+  // A string, or a non-empty map of conditions with no subpath keys, exports `.` only. An empty map exports nothing.
+  const keys = typeof exports === 'object' ? Object.keys(exports) : [];
+  const sugar = typeof exports === 'string' || (keys.length > 0 && keys.every((key) => !key.startsWith('.')));
   const entry = sugar ? (subpath === '.' ? exports : undefined) : exports[subpath];
   if (entry === undefined || entry === null) return undefined;
   const types = typeof entry === 'object' ? (entry.import?.types ?? entry.types ?? entry.require?.types) : undefined;

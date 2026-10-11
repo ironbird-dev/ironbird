@@ -61,6 +61,8 @@ describe('resolving a specifier to its declarations', () => {
     expect(declarationFile({ types: './dist/index.d.ts', exports: { '.': './dist/index.js' } }, '.')).toBe('./dist/index.d.ts');
     expect(declarationFile({ types: './dist/index.d.ts', exports: './dist/index.js' }, '.')).toBe('./dist/index.d.ts');
     expect(declarationFile({ types: './dist/index.d.ts', exports: './dist/index.js' }, './config')).toBeUndefined();
+    expect(declarationFile({ types: './dist/index.d.ts', exports: {} }, '.')).toBeUndefined();
+    expect(declarationFile({ types: './dist/index.d.ts', exports: {} }, './config')).toBeUndefined();
   });
 
   it('checks the README, package READMEs, and docs, but not design plans or eval records', () => {
