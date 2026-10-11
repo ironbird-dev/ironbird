@@ -19,7 +19,7 @@ packages/
   redux/          @ironbird/redux: target adapter (M5)
 examples/
   checkout/       Expo app: cart → payment → receipt, fake card reader and API, planted race behind a flag
-  bare-redux/     Bare React Native app using Redux (M5)
+  bare-redux/     Bare React Native 0.87 app on Redux Toolkit: to-dos, a sync fake that reorders acknowledgements, planted bug behind a flag; generates integration-exercise/
 docs/
 ```
 
