@@ -2,7 +2,7 @@
 
 Ground-test React Native apps for AI coding agents.
 
-> **Status: M2 implemented.** M0 (headless loop), M1 (remote mode), and M2 (fakes and scenarios) are implemented and published to npm as 0.0.x previews, and the M2 gate closed on 2026-09-26 ([docs/evals/m2-fakes-and-scenarios.md](docs/evals/m2-fakes-and-scenarios.md)). Every API shown here is still a draft; see [docs/roadmap.md](docs/roadmap.md) for what's next.
+> **Status: 0.1.0 prepared.** Milestones M0 to M5 are implemented (the M3 agent gate was not met; see [docs/evals/m3-agent-interface.md](docs/evals/m3-agent-interface.md)). 0.1.0 is published once the maintainer's integration trial passes ([docs/releasing.md](docs/releasing.md)); until then the packages on npm are 0.0.x previews. APIs may still change before 1.0; see [docs/roadmap.md](docs/roadmap.md).
 
 Repository: [github.com/ironbird-dev/ironbird](https://github.com/ironbird-dev/ironbird) · npm: [`@ironbird`](https://www.npmjs.com/org/ironbird) and `ironbird`
 
@@ -102,6 +102,26 @@ ironbird state payment
 ironbird step payment.start '{"method":"card"}' --target ios   # dev build: state + screenshot
 ```
 
+## Install
+
+```sh
+npm install @ironbird/core @ironbird/react-native zod@^4.2
+npm install --save-dev @ironbird/cli
+```
+
+Add `@ironbird/redux` or `@ironbird/xstate` to adapt a Redux store or an XState actor without writing `createTarget` by hand:
+
+```ts
+// src/ironbird/target.ts, for a Redux store
+import { fromStore } from '@ironbird/redux';
+import type { AppStore } from '../store';
+import { commands } from './commands';
+
+export const toTarget = (store: AppStore) => fromStore(store, { commands });
+```
+
+`@ironbird/testing` runs scenarios and model-based tests from Vitest or Jest. Node 22 or later and `zod` 4.2 or later are required; apps on Zod 3 can follow [docs/migrating-from-zod-3.md](docs/migrating-from-zod-3.md). The step-by-step path is [docs/guides/getting-started.md](docs/guides/getting-started.md).
+
 ## Packages
 
 | Package | Runs in | Purpose | Priority |
@@ -111,7 +131,7 @@ ironbird step payment.start '{"method":"card"}' --target ios   # dev build: stat
 | `@ironbird/cli` | Node 22+ | `ironbird` binary: daemon, commands, scenarios, screenshots, MCP server | P0 (MCP is P1) |
 | `ironbird` | Node 22+ | Thin wrapper that exposes the same binary, so `npx ironbird` works without a local install | P0 |
 | `@ironbird/testing` | Vitest or Jest | Scenario runner and model-based testing helpers | P1 (delivered in M4) |
-| `@ironbird/xstate`, `@ironbird/redux` | Node and React Native | Target adapters for common state containers | P1 (delivered in M5) |
+| `@ironbird/xstate`, `@ironbird/redux` | Node and React Native | Target adapters for XState actors and Redux stores, with snapshots | P1 (delivered in M5) |
 
 ## What ironbird is not
 
@@ -126,6 +146,9 @@ It is not a UI automation tool, a state management library, or a way to run arbi
 | [docs/protocol.md](docs/protocol.md) | Wire protocol v1: operations, messages, error codes |
 | [docs/api.md](docs/api.md) | TypeScript API for each package |
 | [docs/cli.md](docs/cli.md) | CLI commands, scenario file format, MCP tools |
+| [docs/guides/getting-started.md](docs/guides/getting-started.md) | Adding ironbird to an existing app, step by step |
+| [docs/migrating-from-zod-3.md](docs/migrating-from-zod-3.md) | Apps still on Zod 3 |
+| [docs/releasing.md](docs/releasing.md) | How releases are cut, and the 0.1.0 checklist |
 | [docs/testing-strategy.md](docs/testing-strategy.md) | How ironbird itself is tested and how its reliability is measured |
 | [docs/roadmap.md](docs/roadmap.md) | Milestones M0–M5 with exit criteria |
 | [docs/adr/](docs/adr/) | Architecture decision records |

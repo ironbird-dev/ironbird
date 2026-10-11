@@ -42,6 +42,7 @@ These are the workspace scripts.
 | Measure the M4 race gate (10 seeds × 1,000 model runs, planted and control) | `pnpm gate:m4` |
 | Measure the clock and tracker mutation score (M4; not in CI) | `pnpm mutation`; fails below 70% |
 | Add a release note | `pnpm changeset` |
+| Check what each published package would ship | `pnpm release:check` |
 | Publish the packages | `pnpm release` |
 
 Run `pnpm build` before `pnpm typecheck` on a fresh checkout: packages that import another workspace package resolve its types from that package's `dist`.

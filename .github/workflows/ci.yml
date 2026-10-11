@@ -24,6 +24,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm build
+      # What each published package would ship (docs/releasing.md): README, LICENSE, both builds and
+      # declarations, no sources or tests, no workspace ranges. Needs the build above.
+      - run: node scripts/release/check-packs.mjs
       - run: pnpm typecheck
       - run: pnpm test
       # @ironbird/testing under Jest, from its CommonJS build (M4 design D9). Needs the build above.
