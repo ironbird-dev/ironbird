@@ -27,7 +27,7 @@ console.log(`compat leg: react-native ${reactNative}, @react-native-community/cl
 
 // 1. A fresh project from the template this React Native version resolves to. A stalled fetch is
 // killed at its limit and retried once, after clearing the half-written project.
-run('npx', ['--yes', `@react-native-community/cli@${cli}`, 'init', 'CompatApp', '--version', reactNative, '--directory', project, '--pm', 'npm', '--skip-git-init', '--install-pods', 'false'], {
+await run('npx', ['--yes', `@react-native-community/cli@${cli}`, 'init', 'CompatApp', '--version', reactNative, '--directory', project, '--pm', 'npm', '--skip-git-init', '--install-pods', 'false'], {
   cwd: work,
   retry: true,
   timeoutMs: STEP_TIMEOUT_MS.init,
@@ -40,7 +40,7 @@ assertVersion('react-native', resolved, reactNative);
 
 // 3. The packages as they would be published from this commit.
 const tarballs = packPackages(['core', 'react-native'], path.join(work, 'packs'));
-run('npm', ['install', '--no-audit', '--no-fund', ...tarballs, 'zod@^4.2.0'], { cwd: project, retry: true, timeoutMs: STEP_TIMEOUT_MS.install });
+await run('npm', ['install', '--no-audit', '--no-fund', ...tarballs, 'zod@^4.2.0'], { cwd: project, retry: true, timeoutMs: STEP_TIMEOUT_MS.install });
 
 // 4. The wiring, started from index.js in dev builds only, and the Metro setting docs/api.md gives
 // bare apps that import zod: resolve it to its CommonJS build.
@@ -52,7 +52,7 @@ const metroFile = path.join(project, 'metro.config.js');
 writeFileSync(metroFile, patchMetroConfig(readFileSync(metroFile, 'utf8')));
 
 // 5. Typecheck against this React Native version's types.
-run(bin('tsc'), ['--noEmit', '-p', 'tsconfig.ironbird.json'], { cwd: project });
+await run(bin('tsc'), ['--noEmit', '-p', 'tsconfig.ironbird.json'], { cwd: project });
 
 // 6 and 7. Release bundles must be clean; dev bundles must carry the marker.
 const rows = [];
@@ -60,8 +60,8 @@ for (const platform of ['ios', 'android']) {
   for (const mode of ['release', 'dev']) {
     const out = path.join(work, 'bundles', `${platform}-${mode}.jsbundle`);
     mkdirSync(path.dirname(out), { recursive: true });
-    run(bin('react-native'), ['bundle', '--platform', platform, '--dev', String(mode === 'dev'), '--entry-file', 'index.js', '--bundle-output', out], { cwd: project });
-    const verify = verifyBundle(cliBin, out);
+    await run(bin('react-native'), ['bundle', '--platform', platform, '--dev', String(mode === 'dev'), '--entry-file', 'index.js', '--bundle-output', out], { cwd: project });
+    const verify = await verifyBundle(cliBin, out);
     const expectation = mode === 'dev' ? 'marker' : 'clean';
     rows.push({ bundle: `${platform} ${mode}`, 'verify-bundle exit': verify.status, expected: expectation === 'clean' ? 0 : 1 });
     const problem = checkVerify(verify, expectation);

@@ -48,10 +48,12 @@ export function classifyFailure(result) {
 
 /**
  * Runs `attempt(1)` and, only when it failed with a fetch failure or a fetch timeout, `attempt(2)`.
- * `attempt` returns `{ status, timedOut?, output }`; the last result is returned for the caller to judge.
+ * `attempt` resolves to `{ status, timedOut?, output }` once its command's whole process tree has
+ * exited, so the second attempt never starts beside the first; the last result is returned for the
+ * caller to judge.
  */
-export function retryOnFetchFailure(attempt) {
-  const first = attempt(1);
+export async function retryOnFetchFailure(attempt) {
+  const first = await attempt(1);
   const kind = classifyFailure(first);
   if (kind === null || kind === 'other') return first;
   return attempt(2);
@@ -131,11 +133,28 @@ export function patchMetroConfig(source) {
   return source.replace(TEMPLATE_CONFIG, ZOD_CONFIG);
 }
 
-/** Null when verify-bundle's exit code is what the bundle needs, else why not. */
+/** The `found` array of verify-bundle's --json result, or undefined for anything else (an error, say). */
+function foundIn(stdout) {
+  try {
+    const parsed = JSON.parse(stdout);
+    return Array.isArray(parsed?.found) ? parsed.found : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Null when verify-bundle's result is what the bundle needs, else why not. A scanner error also
+ * exits 1, so a marker counts only with a result whose `found` lists it, and a clean bundle only
+ * with exit 0 and an empty `found`.
+ */
 export function checkVerify(result, expectation) {
   const output = result.stdout.trim();
-  if (expectation === 'clean') return result.status === 0 ? null : `expected a clean bundle (exit 0), got exit ${result.status}: ${output}`;
-  return result.status === 1 ? null : `expected the bridge marker (exit 1), got exit ${result.status}: ${output}`;
+  const found = foundIn(output);
+  if (expectation === 'clean') {
+    return result.status === 0 && found?.length === 0 ? null : `expected a clean bundle (exit 0, nothing found), got exit ${result.status}: ${output}`;
+  }
+  return result.status === 1 && found !== undefined && found.length > 0 ? null : `expected the bridge marker (exit 1, found it), got exit ${result.status}: ${output}`;
 }
 
 /** A Markdown table under a heading, for the log and the GitHub step summary. */

@@ -9,7 +9,7 @@ Raw evidence for two M5 measurements (M5 design §1, §8, and §11), cited by th
 | Leg | Command | Resolved | Typecheck | Bundles: verify-bundle exit (expected) | Wall time |
 |---|---|---|---|---|---|
 | React Native 0.86 | `node scripts/compat/bare-leg.mjs --react-native 0.86.3 --cli 20.1.0` | react-native 0.86.3 | passed | ios release 0 (0), ios dev 1 (1), android release 0 (0), android dev 1 (1) | 0:57 |
-| React Native 0.87 | `node scripts/compat/bare-leg.mjs --react-native 0.87.1 --cli 20.2.0` | react-native 0.87.1 | passed | same four rows | 1:03 |
+| React Native 0.87 | `node scripts/compat/bare-leg.mjs --react-native 0.87.1 --cli 20.2.0` | react-native 0.87.1 | passed | ios release 0 (0), ios dev 1 (1), android release 0 (0), android dev 1 (1) | 1:03 |
 | Expo SDK 57 | `node scripts/compat/expo-leg.mjs` | expo 57.0.23, react-native 0.86.3 | n/a | release 0 (0), forced-bridge 1 (1) | 0:29 |
 
 Bare legs ran with an empty npm cache (cold). Slowest cold `init`: 33 s; slowest cold `install`: 1 s; `STEP_TIMEOUT_MS`: init 10 min, install 5 min. W (slowest bare leg, cold): 1:03, so the `compat` job's `timeout-minutes` is ceil(1.5 × W) + 5 + I + N = 22.

@@ -32,8 +32,8 @@ const exports = [
 const rows = [];
 for (const { name, env, expectation } of exports) {
   const out = path.join(work, name);
-  run('pnpm', ['exec', 'expo', 'export', '--platform', 'all', '--output-dir', out, '--clear'], { cwd: checkout, env: { CI: '1', EXPO_NO_TELEMETRY: '1', ...env } });
-  const verify = verifyBundle(cliBin, out);
+  await run('pnpm', ['exec', 'expo', 'export', '--platform', 'all', '--output-dir', out, '--clear'], { cwd: checkout, env: { CI: '1', EXPO_NO_TELEMETRY: '1', ...env } });
+  const verify = await verifyBundle(cliBin, out);
   rows.push({ export: name, 'verify-bundle exit': verify.status, expected: expectation === 'clean' ? 0 : 1 });
   const problem = checkVerify(verify, expectation);
   if (problem) throw new Error(`${name} export: ${problem}`);

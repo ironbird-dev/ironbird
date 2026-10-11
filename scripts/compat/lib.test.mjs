@@ -77,10 +77,11 @@ describe('fetch failures', () => {
     expect(Number.isFinite(STEP_TIMEOUT_MS.init + STEP_TIMEOUT_MS.install)).toBe(true);
   });
 
-  it('retries once after a fetch failure or a fetch timeout and never after any other failure', () => {
+  it('retries once after a fetch failure or a fetch timeout and never after any other failure', async () => {
     const attempts = (results) => {
       const calls = [];
-      const attempt = (n) => {
+      // Attempts are async, as proc.mjs's are: each waits for its command's process tree to exit.
+      const attempt = async (n) => {
         calls.push(n);
         return results[n - 1];
       };
@@ -91,28 +92,28 @@ describe('fetch failures', () => {
     const real = { status: 1, output: 'error TS2307' };
 
     let run = attempts([ok]);
-    expect(retryOnFetchFailure(run.attempt)).toBe(ok);
+    expect(await retryOnFetchFailure(run.attempt)).toBe(ok);
     expect(run.calls).toEqual([1]);
 
     run = attempts([blip, ok]);
-    expect(retryOnFetchFailure(run.attempt)).toBe(ok);
+    expect(await retryOnFetchFailure(run.attempt)).toBe(ok);
     expect(run.calls).toEqual([1, 2]);
 
     run = attempts([real, ok]);
-    expect(retryOnFetchFailure(run.attempt)).toBe(real);
+    expect(await retryOnFetchFailure(run.attempt)).toBe(real);
     expect(run.calls).toEqual([1]);
 
     run = attempts([blip, blip, ok]);
-    expect(retryOnFetchFailure(run.attempt)).toBe(blip);
+    expect(await retryOnFetchFailure(run.attempt)).toBe(blip);
     expect(run.calls).toEqual([1, 2]);
 
     const stalled = { status: 1, timedOut: true, output: '[compat] npx timed out after 600000 ms' };
     run = attempts([stalled, ok]);
-    expect(retryOnFetchFailure(run.attempt)).toBe(ok);
+    expect(await retryOnFetchFailure(run.attempt)).toBe(ok);
     expect(run.calls).toEqual([1, 2]);
 
     run = attempts([stalled, stalled, ok]);
-    expect(retryOnFetchFailure(run.attempt)).toBe(stalled);
+    expect(await retryOnFetchFailure(run.attempt)).toBe(stalled);
     expect(run.calls).toEqual([1, 2]);
   });
 });
@@ -205,12 +206,28 @@ describe('patchMetroConfig', () => {
 
 describe('checkVerify', () => {
   const output = (found) => JSON.stringify({ scanned: 1, found });
-  it('wants exit 0 for a clean bundle and exit 1 for the marker', () => {
+  const hit = [{ file: 'a', offset: 1 }];
+  // What verify-bundle --json prints when the scan itself fails, with exit 1 like a found marker.
+  const scannerError = JSON.stringify({ error: { code: 'INTERNAL', message: 'EACCES: permission denied' } });
+
+  it('wants exit 0 with nothing found for a clean bundle and exit 1 with a found marker for a dev one', () => {
     expect(checkVerify({ status: 0, stdout: output([]) }, 'clean')).toBeNull();
-    expect(checkVerify({ status: 1, stdout: output([{ file: 'a', offset: 1 }]) }, 'marker')).toBeNull();
-    expect(checkVerify({ status: 1, stdout: output([{ file: 'a', offset: 1 }]) }, 'clean')).toBe('expected a clean bundle (exit 0), got exit 1: {"scanned":1,"found":[{"file":"a","offset":1}]}');
-    expect(checkVerify({ status: 0, stdout: output([]) }, 'marker')).toBe('expected the bridge marker (exit 1), got exit 0: {"scanned":1,"found":[]}');
-    expect(checkVerify({ status: 2, stdout: '' }, 'clean')).toBe('expected a clean bundle (exit 0), got exit 2: ');
+    expect(checkVerify({ status: 1, stdout: output(hit) }, 'marker')).toBeNull();
+    expect(checkVerify({ status: 1, stdout: output(hit) }, 'clean')).toBe('expected a clean bundle (exit 0, nothing found), got exit 1: {"scanned":1,"found":[{"file":"a","offset":1}]}');
+    expect(checkVerify({ status: 0, stdout: output([]) }, 'marker')).toBe('expected the bridge marker (exit 1, found it), got exit 0: {"scanned":1,"found":[]}');
+    expect(checkVerify({ status: 2, stdout: '' }, 'clean')).toBe('expected a clean bundle (exit 0, nothing found), got exit 2: ');
+  });
+
+  it('never takes a scanner error for a found marker', () => {
+    expect(checkVerify({ status: 1, stdout: scannerError }, 'marker')).toBe(`expected the bridge marker (exit 1, found it), got exit 1: ${scannerError}`);
+    expect(checkVerify({ status: 1, stdout: scannerError }, 'clean')).toBe(`expected a clean bundle (exit 0, nothing found), got exit 1: ${scannerError}`);
+    expect(checkVerify({ status: 1, stdout: 'error INTERNAL: boom' }, 'marker')).toBe('expected the bridge marker (exit 1, found it), got exit 1: error INTERNAL: boom');
+    expect(checkVerify({ status: 1, stdout: output([]) }, 'marker')).toBe('expected the bridge marker (exit 1, found it), got exit 1: {"scanned":1,"found":[]}');
+  });
+
+  it('wants the result shape on a zero exit too', () => {
+    expect(checkVerify({ status: 0, stdout: '' }, 'clean')).toBe('expected a clean bundle (exit 0, nothing found), got exit 0: ');
+    expect(checkVerify({ status: 0, stdout: output(hit) }, 'clean')).toBe('expected a clean bundle (exit 0, nothing found), got exit 0: {"scanned":1,"found":[{"file":"a","offset":1}]}');
   });
 });
 
