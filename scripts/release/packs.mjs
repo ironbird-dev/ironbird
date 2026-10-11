@@ -65,6 +65,38 @@ export function packProblems({ name, manifest, files }) {
       for (const field of ['types', 'default']) if (typeof entry?.[condition]?.[field] !== 'string') problems.push(`exports["${key}"].${condition}.${field} is missing`);
     }
   }
+  problems.push(...formatProblems(manifest));
+  return problems;
+}
+
+/**
+ * Every `import` and `require` condition in `exports`, dual or not, must point at its own format:
+ * `import` at ESM (`.mjs`, or `.js` in a `"type": "module"` package) with ESM declarations, `require`
+ * at CommonJS (`.cjs`, or `.js` otherwise) with CommonJS declarations. This also covers the CLI's
+ * ESM-only main entry, which DUAL_ENTRIES leaves out.
+ */
+function formatProblems(manifest) {
+  const esm = manifest.type === 'module';
+  const ok = {
+    import: { types: (file) => file.endsWith('.d.mts') || (esm && file.endsWith('.d.ts')), default: (file) => file.endsWith('.mjs') || (esm && file.endsWith('.js')) },
+    require: { types: (file) => file.endsWith('.d.cts') || (!esm && file.endsWith('.d.ts')), default: (file) => file.endsWith('.cjs') || (!esm && file.endsWith('.js')) },
+  };
+  const expected = {
+    import: { types: 'an ESM declaration (.d.mts, or .d.ts with "type": "module")', default: 'ESM (.mjs, or .js with "type": "module")' },
+    require: { types: 'a CommonJS declaration (.d.cts, or .d.ts without "type": "module")', default: 'CommonJS (.cjs, or .js without "type": "module")' },
+  };
+  const problems = [];
+  const exports = manifest.exports && typeof manifest.exports === 'object' ? manifest.exports : {};
+  for (const [key, entry] of Object.entries(exports)) {
+    if (!entry || typeof entry !== 'object') continue;
+    for (const condition of ['import', 'require']) {
+      const target = typeof entry[condition] === 'string' ? { default: entry[condition] } : entry[condition];
+      for (const field of ['types', 'default']) {
+        const file = target?.[field];
+        if (typeof file === 'string' && !ok[condition][field](file)) problems.push(`exports["${key}"].${condition}.${field} is ${file}, not ${expected[condition][field]}`);
+      }
+    }
+  }
   return problems;
 }
 

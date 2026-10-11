@@ -53,6 +53,16 @@ describe('resolving a specifier to its declarations', () => {
     expect(declarationFile({ exports: { '.': { require: { types: './x.d.cts' } } } }, '.')).toBe('./x.d.cts');
   });
 
+  it('does not fall back to types for a subpath an exports map leaves out', () => {
+    const configOnly = { types: './dist/index.d.ts', exports: { './config': { import: { types: './dist/config.d.ts' } } } };
+    expect(declarationFile(configOnly, '.')).toBeUndefined();
+    expect(declarationFile(configOnly, './config')).toBe('./dist/config.d.ts');
+    expect(resolveSpecifier('@ironbird/x', [{ dir: '/r/packages/x', manifest: { name: '@ironbird/x', ...configOnly } }])).toBeUndefined();
+    expect(declarationFile({ types: './dist/index.d.ts', exports: { '.': './dist/index.js' } }, '.')).toBe('./dist/index.d.ts');
+    expect(declarationFile({ types: './dist/index.d.ts', exports: './dist/index.js' }, '.')).toBe('./dist/index.d.ts');
+    expect(declarationFile({ types: './dist/index.d.ts', exports: './dist/index.js' }, './config')).toBeUndefined();
+  });
+
   it('checks the README, package READMEs, and docs, but not design plans or eval records', () => {
     expect(['README.md', 'packages/redux/README.md', 'docs/api.md', 'docs/guides/getting-started.md', 'docs/superpowers/plans/x.md', 'docs/evals/m5.md', 'AGENTS.md', 'docs/a.png'].filter(isCheckedDoc)).toEqual([
       'README.md',

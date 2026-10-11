@@ -5,6 +5,7 @@ const dual = (base) => ({ import: { types: `./dist/${base}.d.ts`, default: `./di
 const coreManifest = {
   name: '@ironbird/core',
   version: '0.1.0',
+  type: 'module',
   license: 'MIT',
   main: './dist/index.cjs',
   module: './dist/index.js',
@@ -56,6 +57,7 @@ describe('packProblems', () => {
   it("checks the CLI's dual subpaths but not its ESM-only main entry, and accepts the bin-only wrapper", () => {
     const cli = {
       name: '@ironbird/cli',
+      type: 'module',
       license: 'MIT',
       exports: { '.': { import: { types: './dist/index.d.ts', default: './dist/index.js' } }, './config': dual('config-entry'), './runner': dual('runner'), './bin': './dist/bin.js' },
       bin: { ironbird: './dist/bin.js' },
@@ -65,6 +67,38 @@ describe('packProblems', () => {
     expect(packProblems({ name: '@ironbird/cli', manifest: cli, files })).toEqual([]);
     const wrapper = { name: 'ironbird', license: 'MIT', bin: { ironbird: './bin.js' } };
     expect(packProblems({ name: 'ironbird', manifest: wrapper, files: ['LICENSE', 'README.md', 'package.json', 'bin.js'] })).toEqual([]);
+  });
+
+  it('names import and require conditions that point at the other format, given the package type', () => {
+    const swapped = { '.': { import: { types: './dist/index.d.cts', default: './dist/index.cjs' }, require: { types: './dist/index.d.ts', default: './dist/index.js' } } };
+    expect(packProblems({ name: '@ironbird/core', manifest: { ...coreManifest, exports: swapped }, files: coreFiles })).toEqual([
+      'exports["."].import.types is ./dist/index.d.cts, not an ESM declaration (.d.mts, or .d.ts with "type": "module")',
+      'exports["."].import.default is ./dist/index.cjs, not ESM (.mjs, or .js with "type": "module")',
+      'exports["."].require.types is ./dist/index.d.ts, not a CommonJS declaration (.d.cts, or .d.ts without "type": "module")',
+      'exports["."].require.default is ./dist/index.js, not CommonJS (.cjs, or .js without "type": "module")',
+    ]);
+    const { type: _type, ...commonjs } = coreManifest;
+    expect(packProblems({ name: '@ironbird/core', manifest: commonjs, files: coreFiles })).toEqual([
+      'exports["."].import.types is ./dist/index.d.ts, not an ESM declaration (.d.mts, or .d.ts with "type": "module")',
+      'exports["."].import.default is ./dist/index.js, not ESM (.mjs, or .js with "type": "module")',
+    ]);
+  });
+
+  it("lets only the CLI's main entry be ESM only, and still checks that entry's format", () => {
+    const esmOnly = (base) => ({ import: { types: `./dist/${base}.d.ts`, default: `./dist/${base}.js` } });
+    const files = ['LICENSE', 'README.md', 'package.json'];
+    for (const base of ['index', 'config-entry', 'runner']) files.push(`dist/${base}.js`, `dist/${base}.cjs`, `dist/${base}.d.ts`, `dist/${base}.d.cts`);
+    const cli = (exports) => ({ name: '@ironbird/cli', type: 'module', license: 'MIT', exports });
+    expect(packProblems({ name: '@ironbird/cli', manifest: cli({ '.': esmOnly('index'), './config': dual('config-entry'), './runner': dual('runner') }), files })).toEqual([]);
+    expect(packProblems({ name: '@ironbird/cli', manifest: cli({ '.': esmOnly('index'), './config': esmOnly('config-entry'), './runner': dual('runner') }), files })).toEqual([
+      'exports["./config"].require.types is missing',
+      'exports["./config"].require.default is missing',
+    ]);
+    const cjsMain = { import: { types: './dist/index.d.cts', default: './dist/index.cjs' } };
+    expect(packProblems({ name: '@ironbird/cli', manifest: cli({ '.': cjsMain, './config': dual('config-entry'), './runner': dual('runner') }), files })).toEqual([
+      'exports["."].import.types is ./dist/index.d.cts, not an ESM declaration (.d.mts, or .d.ts with "type": "module")',
+      'exports["."].import.default is ./dist/index.cjs, not ESM (.mjs, or .js with "type": "module")',
+    ]);
   });
 });
 
