@@ -1,18 +1,14 @@
 # Results
 
-| | |
-|---|---|
-| Participant | |
-| Date | |
-| Ironbird version or commit of the tarballs | |
-| Started (local time) | |
-| Finished (local time) | |
-| Breaks (total minutes) | |
-| Elapsed, excluding breaks (hours:minutes) | |
-| Checks passed (of 5) | |
+One row per attempt. Write times in local time with the time zone, and the elapsed time without breaks.
 
-## Where the docs fell short
+| Participant | Date | Started | Finished | Elapsed (hours) | 1 `serve` | 2 `commands` | 3 `acceptance` | 4 `bridgeDevOnly` | 5 `releaseBundleClean` | ironbird version |
+|---|---|---|---|---|---|---|---|---|---|---|
 
-One line per gap: what you needed, where you looked, and what you did instead.
+## Where the documentation wasn't enough
 
-## Notes
+-
+
+## Other notes
+
+-

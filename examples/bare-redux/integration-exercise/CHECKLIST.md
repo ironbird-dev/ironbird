@@ -1,24 +1,13 @@
-# Checklist
+# Scoring checklist
 
-Run each check from the root of your copy, after `npm install`. A check passes only as written.
+Run every command from the app's folder, with no other `ironbird serve` running. Each check passes only as its last column says. Record each result in RESULTS.md. The proxy eval's grader (`examples/bare-redux/eval/grade.mjs` in the ironbird repository) runs the same five checks, with the ids in brackets.
 
-1. **The daemon loads the headless entry.** In one terminal run `npx ironbird serve`. In another, `npx ironbird status` exits 0 and its `targets` include `{ "id": "headless", "appId": "com.example.bareredux" }`.
-2. **The commands are declared.** `npx ironbird commands` exits 0 and lists exactly `todos.add`, `todos.rename`, and `todos.toggle`.
-3. **The acceptance scenario passes headlessly.** With the daemon running, `npx ironbird scenario run acceptance.yaml` exits 0.
-4. **The bridge is in development builds.** The code that calls `startBridge` runs only when `__DEV__` is true, and
+| # | Check | How | Passes when |
+|---|---|---|---|
+| 1 | `ironbird serve` loads the headless entry [`serve`] | `npx ironbird serve`, left running; then, in a second terminal, `npx ironbird status` | `status` lists a target with id `headless` |
+| 2 | `ironbird commands` lists the declared commands [`commands`] | `npx ironbird commands` | Every command in TASK.md's Commands table is listed |
+| 3 | The acceptance scenario passes headlessly [`acceptance`] | `npx ironbird scenario run acceptance.yaml --target headless`; then stop `serve` | Exit code 0 and `"passed": true` |
+| 4 | The bridge is started in development builds only [`bridgeDevOnly`] | `npx react-native bundle --platform ios --dev true --entry-file index.js --bundle-output build/dev.ios.js --assets-dest build/assets`, then `npx ironbird verify-bundle build/dev.ios.js` | The app's source calls `startBridge` from `@ironbird/react-native`, and `verify-bundle` finds the bridge in the development bundle (exit code 1) |
+| 5 | Release bundles don't contain the bridge [`releaseBundleClean`] | `npx react-native bundle --platform ios --dev false --minify true --entry-file index.js --bundle-output build/release.ios.js --assets-dest build/assets`, then `npx ironbird verify-bundle build/release.ios.js` | Exit code 0 and `found` is empty |
 
-   ```sh
-   mkdir -p build
-   npx react-native bundle --platform ios --dev true --entry-file index.js --bundle-output build/dev.jsbundle
-   npx ironbird verify-bundle build/dev.jsbundle
-   ```
-
-   exits 1: the bridge marker is found.
-5. **The bridge is not in release builds.**
-
-   ```sh
-   npx react-native bundle --platform ios --dev false --entry-file index.js --bundle-output build/release.jsbundle
-   npx ironbird verify-bundle build/release.jsbundle
-   ```
-
-   exits 0.
+Checks 4 and 5 together show that the bridge runs in development builds and nowhere else. Check 5 alone also passes for an app with no bridge at all.

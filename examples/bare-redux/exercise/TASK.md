@@ -1,36 +1,71 @@
-# Integration exercise: add ironbird to a bare React Native app
+# Integration exercise: add ironbird to this app
 
-This folder is a bare React Native 0.87 app: a to-do list on Redux Toolkit whose changes are saved to a simulated sync server. It has no ironbird in it. Your task is to add ironbird using **only the ironbird documentation you were given**: the README and the `docs/` pages. Don't read ironbird's source code, its tests, or the examples in its repository.
+This folder is a bare React Native app whose logic lives in a Redux Toolkit store. It doesn't use ironbird yet. Your task is to wire ironbird into it, using only the ironbird documentation, so that a coding agent can drive the app's logic through typed commands: headlessly in Node, and in a development build.
 
-Write your start time in RESULTS.md before you begin, and your end time when every check in CHECKLIST.md passes or when you stop.
+Write your start time in RESULTS.md before you begin, and your end time when every check in CHECKLIST.md passes or when you stop. The target is one working day or less.
 
-## Setup
+## Rules
 
-1. Copy this folder somewhere outside the ironbird repository and run `npm install` in the copy.
-2. Install the ironbird packages and Zod 4. Until 0.1.0 is on npm, install them from the tarballs you were given (the maintainer makes them with `node scripts/pack-packages.mjs <dir> core react-native redux cli` in the ironbird repository):
+- Use only the ironbird documentation: the README and the files under `docs/` in the ironbird repository (or the copy you were given), and the README of each `@ironbird/*` package. Don't read `examples/` in the ironbird repository, and don't ask the ironbird author for help. Note every place where the documentation wasn't enough in RESULTS.md.
+- Keep the app working: don't change what it does, and `npm run typecheck` must still pass.
+- Work inside this folder, and put build output under `build/`.
 
-       npm install <dir>/ironbird-core-*.tgz <dir>/ironbird-react-native-*.tgz <dir>/ironbird-redux-*.tgz zod@^4.2.0
-       npm install --save-dev <dir>/ironbird-cli-*.tgz
+## Install
 
-   Once 0.1.0 is published, `npm install @ironbird/core @ironbird/react-native @ironbird/redux zod` and `npm install --save-dev @ironbird/cli` do the same.
+ironbird 0.1.0 is in `vendor/` as package tarballs. From this folder:
+
+```sh
+npm install ./vendor/ironbird-core-0.1.0.tgz ./vendor/ironbird-react-native-0.1.0.tgz ./vendor/ironbird-redux-0.1.0.tgz
+npm install --save-dev ./vendor/ironbird-cli-0.1.0.tgz
+```
+
+Once 0.1.0 is on npm, `npm install @ironbird/core @ironbird/react-native @ironbird/redux` and `npm install --save-dev @ironbird/cli` do the same.
+
+ironbird also needs `zod` 4.2 or later, which this app doesn't list yet:
+
+```sh
+npm install zod@^4.2
+```
+
+Start with the getting-started guide, `docs/guides/getting-started.md`: it covers installing and configuring ironbird in a React Native app, bare React Native included.
 
 ## What to build
 
-- An ironbird config for the app id `com.example.bareredux`, with a headless entry, so `npx ironbird serve` runs the app in Node without a simulator.
-- Three commands, served through the Redux adapter, each dispatching the app's existing action:
+1. **Commands.** Declare the commands `acceptance.yaml` sends, with Zod schemas for their payloads, mapped onto what the app's store already does.
+2. **Fakes.** Declare the fakes and controls `acceptance.yaml` drives. Each one stands in for a port, a dependency on the outside world that the app already has, so a scenario can script it.
+3. **A headless entry and `ironbird.config.ts`.** `npx ironbird serve` must load the app's logic in Node, with the fakes in place of the real ports.
+4. **The bridge.** Start the ironbird bridge in development builds, and only there.
+5. **Clean release builds.** A release bundle must not contain the bridge.
 
-  | Command | Payload | Dispatches |
-  |---|---|---|
-  | `todos.add` | `{ title }`, a non-empty string | `added` |
-  | `todos.toggle` | `{ id }`, such as `t1` | `toggled` |
-  | `todos.rename` | `{ id, title }` | `renamed` |
+`acceptance.yaml` is the scenario that must pass. Don't change it; the scorer runs its own copy. It needs:
 
-- The target's state is the store's root state, not a projection: the acceptance scenario reads `todos.items` and `sync.inFlight`.
-- In the headless entry the simulated sync server runs on ironbird's clock, so the scenario's `clock` step decides when saves are acknowledged.
-- The in-app bridge, started in development builds only, so the app can be driven on a simulator and release bundles don't contain it.
+<!-- contract:start (written by examples/bare-redux/eval/render-task.mjs from acceptance.yaml; do not edit by hand) -->
 
-You may add files and restructure as you see fit, but don't change what the app does.
+### Commands
 
-## Done when
+| Command | Payload in `acceptance.yaml` |
+|---|---|
+| `todos.add` | `{"title":"Buy milk"}` |
+| `todos.toggle` | `{"id":"t1"}` |
 
-Every check in CHECKLIST.md passes. Running the app on a simulator is optional and isn't scored.
+### Fakes
+
+| Fake | Control | Payload in `acceptance.yaml` |
+|---|---|---|
+| `sync` | `release` | `{"order":"newest"}` |
+| `sync` | `setAcks` | `{"mode":"manual"}` |
+
+### State the scenario checks
+
+| Path | Condition |
+|---|---|
+| `sync.inFlight` | `{"equals":2}` |
+| `todos.items.0.rev` | `{"equals":2}` |
+| `todos.items.0.syncedRev` | `{"equals":2}` |
+
+The scenario doesn't advance the clock.
+<!-- contract:end -->
+
+## Done
+
+You are done when every check in CHECKLIST.md passes. Run them yourself; the scorer runs the same commands.
