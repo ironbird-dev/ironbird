@@ -76,3 +76,6 @@ export function proxyGradeLayout(root, id) {
   const dir = path.join(path.resolve(root), id);
   return { dir, session: path.join(dir, 'session'), out: path.join(dir, 'grader'), grade: path.join(dir, 'grade.json'), report: path.join(dir, 'final-report.md') };
 }
+
+/** Repository paths the template is built from: run-session refuses a template prepared before any of them changed. */
+export const PROXY_SOURCES = ['examples/bare-redux/integration-exercise', 'examples/bare-redux/eval', 'packages', 'docs', 'README.md', 'pnpm-lock.yaml'];

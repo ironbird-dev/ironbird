@@ -1,0 +1,1 @@
+Read TASK.md in this folder and do what it says. The ironbird documentation is in {{docs}}: start with README.md there. That folder is read-only, and it is the only ironbird documentation you have. Work only inside this folder. When you finish, report what you changed and which checks in CHECKLIST.md you ran, with their results.

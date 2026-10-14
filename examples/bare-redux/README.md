@@ -73,11 +73,11 @@ pnpm exec ironbird verify-bundle build/main.jsbundle   # exit 0: no bridge
 
 `test/bundle.test.ts` runs the same check in `pnpm test`, together with a dev bundle that must contain the bridge.
 
-## Integration exercise
+## Integration exercise and proxy eval
 
-`integration-exercise/` is generated from this app by `pnpm make:exercise`. It leaves out `src/ironbird/`, `ironbird/`, `ironbird.config.ts`, `test/`, `scripts/`, every test file, and the ironbird dependencies; removes every line between `// exercise:begin-remove` and `// exercise:end`; writes each `// exercise:else` branch uncommented instead; and copies in `exercise/`'s README, TASK.md, CHECKLIST.md, RESULTS.md, and acceptance.yaml, whose single source is `exercise/`. Never edit `integration-exercise/` by hand, the material copies included: after any change to the app or to `exercise/`, run `pnpm make:exercise` and commit the result, or `scripts/lib/exercise.test.mjs` fails.
+`integration-exercise/` is generated from this app by `pnpm make:exercise`. It leaves out `src/ironbird/`, `ironbird/`, `ironbird.config.ts`, `test/`, `scripts/`, `eval/`, every test file, and the ironbird dependencies; removes every line between `// exercise:begin-remove` and `// exercise:end`; writes each `// exercise:else` branch uncommented instead; and copies in the exercise material from `exercise/`, its single source: `README.md`, `TASK.md` (the task sheet), `CHECKLIST.md` (the five scoring checks), `RESULTS.md` (where a participant records elapsed time and documentation gaps), and `acceptance.yaml` (the scenario the integration must pass, copied from `ironbird/scenarios/`). Edit the material in `exercise/`, never in `integration-exercise/`: after changing `exercise/acceptance.yaml`, run `node eval/render-task.mjs` to rewrite TASK.md's contract block, and after any change to the app or to `exercise/`, run `pnpm make:exercise` and commit the result, or `scripts/lib/exercise.test.mjs` fails.
 
-To run the trial, copy `integration-exercise/` outside the repository, make the tarballs from the repository root with `node scripts/pack-packages.mjs <dir> core react-native redux cli`, and give the participant the copy, the tarballs, and the documentation. They follow TASK.md and record their time in RESULTS.md.
+It is the material for M5's human exit criterion. `eval/` runs a sandboxed agent session on the same material as a proxy, and scores either one. To run the human trial, follow [eval/README.md](eval/README.md#the-human-trial).
 
 ## Monorepo note
 
