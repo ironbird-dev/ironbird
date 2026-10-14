@@ -1,5 +1,11 @@
 # @ironbird/core
 
+## 0.0.4
+
+### Patch Changes
+
+- a77bd89: `Capability` gains `reload`, declared by targets that can load the app's current code from a fresh start through the new `reload` operation.
+
 ## 0.0.3
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@ironbird/cli",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "The ironbird daemon and CLI",
   "license": "MIT",
   "repository": {
