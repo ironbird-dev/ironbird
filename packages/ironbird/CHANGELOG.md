@@ -1,5 +1,12 @@
 # ironbird
 
+## 0.0.5
+
+### Patch Changes
+
+- Updated dependencies [c096b90]
+  - @ironbird/cli@0.0.5
+
 ## 0.0.4
 
 ### Patch Changes
