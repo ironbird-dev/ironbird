@@ -75,6 +75,9 @@ describe('what the grader reads', () => {
       { file: 'renamed-away.ts', text: "import { startBridge as sb } from '@ironbird/react-native';\nstartBridge({ target });" },
       { file: 'member.ts', text: "import { startBridge } from '@ironbird/react-native';\nother.startBridge({ target });" },
       { file: 'url.ts', text: "import { startBridge } from '@ironbird/react-native';\nconst u = 'http://x'; // startBridge()" },
+      { file: 'literal.ts', text: "import { startBridge } from '@ironbird/react-native';\nconst s = 'startBridge({ target })';\nconst t = \"x\"; const u = `startBridge()`;" },
+      { file: 'template-comment.ts', text: "import { startBridge } from '@ironbird/react-native';\nconst s = `${/* startBridge() */ 1}`;\nconst t = `${1 // startBridge()\n}`;" },
+      { file: 'other-module.ts', text: "import { startBridge } from './bridge';\nstartBridge({ target });" },
     ];
     expect(startBridgeCallers(sources)).toEqual([]);
   });
@@ -85,7 +88,10 @@ describe('what the grader reads', () => {
       { file: 'namespace.ts', text: "import * as ib from '@ironbird/react-native';\nib.startBridge({ target });" },
       { file: 'index.js', text: "if (__DEV__) {\n  const { startBridge } = require('@ironbird/react-native');\n  startBridge({ target });\n}" },
       { file: 'require-renamed.js', text: "const { startBridge: go } = require('@ironbird/react-native');\ngo({ target });" },
+      { file: 'required.js', text: "const rn = require('@ironbird/react-native');\nrn.startBridge({ target });" },
+      { file: 'require-inline.js', text: "require('@ironbird/react-native').startBridge({ target });" },
+      { file: 'dynamic.tsx', text: "export async function go() {\n  const { startBridge } = await import('@ironbird/react-native');\n  startBridge({ target });\n  return <View />;\n}" },
     ];
-    expect(startBridgeCallers(sources)).toEqual(['index.js', 'namespace.ts', 'renamed.ts', 'require-renamed.js']);
+    expect(startBridgeCallers(sources)).toEqual(['dynamic.tsx', 'index.js', 'namespace.ts', 'renamed.ts', 'require-inline.js', 'require-renamed.js', 'required.js']);
   });
 });

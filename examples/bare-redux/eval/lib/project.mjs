@@ -1,5 +1,6 @@
 // Reading the exercise and an integrated project (M5 design D11): what prepare copies, the audits
 // that keep the exercise honest and standalone, and what the grader needs to find in a project.
+import ts from 'typescript';
 import { MATERIALS } from './paths.mjs';
 
 /** Folders never copied into the template: dependencies, git, native build output and pods, ironbird's artifacts, build output, and vendor/ (prepare packs it fresh). */
@@ -56,77 +57,84 @@ export function entryFile(rootFiles) {
   return ['index.js', 'index.ts', 'index.tsx', 'index.jsx'].find((name) => rootFiles.includes(name));
 }
 
-/**
- * `text` with its line and block comments blanked out, leaving string and template literals intact so
- * a `//` inside a URL is not taken for a comment. Regular expression literals are not recognised; the
- * grader reads app entry code, where that is good enough.
- */
-function stripComments(text) {
-  let out = '';
-  let i = 0;
-  while (i < text.length) {
-    const char = text[i];
-    const next = text[i + 1];
-    if (char === '/' && next === '/') {
-      while (i < text.length && text[i] !== '\n') i += 1;
-    } else if (char === '/' && next === '*') {
-      const end = text.indexOf('*/', i + 2);
-      const stop = end === -1 ? text.length : end + 2;
-      out += text.slice(i, stop).replace(/[^\n]/g, ' ');
-      i = stop;
-    } else if (char === "'" || char === '"' || char === '`') {
-      let j = i + 1;
-      while (j < text.length && text[j] !== char) j += text[j] === '\\' ? 2 : 1;
-      out += text.slice(i, j + 1);
-      i = j + 1;
-    } else {
-      out += char;
-      i += 1;
-    }
-  }
-  return out;
+const BRIDGE_MODULE = '@ironbird/react-native';
+
+const SCRIPT_KINDS = { '.ts': ts.ScriptKind.TS, '.tsx': ts.ScriptKind.TSX, '.jsx': ts.ScriptKind.JSX };
+
+function scriptKind(file) {
+  const ext = /\.[^./]+$/.exec(file)?.[0] ?? '';
+  return SCRIPT_KINDS[ext] ?? ts.ScriptKind.JS;
 }
 
-const BRIDGE_MODULE = String.raw`['"]@ironbird/react-native['"]`;
-const escape = (name) => name.replace(/\$/g, '\\$');
+/** `node` with parentheses, `await`, and non-null assertions taken off. */
+function unwrap(node) {
+  let inner = node;
+  while (ts.isParenthesizedExpression(inner) || ts.isAwaitExpression(inner) || ts.isNonNullExpression(inner)) inner = inner.expression;
+  return inner;
+}
 
-/** The local names that `startBridge` is bound to, and the namespaces it can be reached through, by value imports and requires of @ironbird/react-native in comment-free `code`. */
-function bridgeBindings(code) {
+/** Whether `node` is `require('@ironbird/react-native')` or `import('@ironbird/react-native')`, awaited or not. */
+function isBridgeLoad(node) {
+  const call = unwrap(node);
+  if (!ts.isCallExpression(call) || call.arguments.length !== 1) return false;
+  const [specifier] = call.arguments;
+  const callee = call.expression;
+  const loads = callee.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(callee) && callee.text === 'require');
+  return loads && ts.isStringLiteralLike(specifier) && specifier.text === BRIDGE_MODULE;
+}
+
+/** The local names `startBridge` is bound to, and the names the whole module is bound to, by value imports, requires, and dynamic imports of @ironbird/react-native. */
+function bridgeBindings(source) {
   const names = new Set();
   const namespaces = new Set();
-  for (const [, typeOnly, clause] of code.matchAll(new RegExp(String.raw`\bimport\s+(type\s+)?([^'";]*?)\s*from\s*${BRIDGE_MODULE}`, 'g'))) {
-    if (typeOnly) continue;
-    const namespace = /\*\s*as\s+([\w$]+)/.exec(clause);
-    if (namespace) namespaces.add(namespace[1]);
-    const named = /\{([^}]*)\}/.exec(clause);
-    for (const spec of named ? named[1].split(',') : []) {
-      const match = /^\s*(type\s+)?([\w$]+)(?:\s+as\s+([\w$]+))?\s*$/.exec(spec);
-      if (match && !match[1] && match[2] === 'startBridge') names.add(match[3] ?? match[2]);
+  const visit = (node) => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier) && node.moduleSpecifier.text === BRIDGE_MODULE) {
+      const clause = node.importClause;
+      const bindings = clause && !clause.isTypeOnly ? clause.namedBindings : undefined;
+      if (bindings && ts.isNamespaceImport(bindings)) namespaces.add(bindings.name.text);
+      if (bindings && ts.isNamedImports(bindings)) {
+        for (const element of bindings.elements) {
+          if (!element.isTypeOnly && (element.propertyName ?? element.name).text === 'startBridge') names.add(element.name.text);
+        }
+      }
+    } else if (ts.isVariableDeclaration(node) && node.initializer && isBridgeLoad(node.initializer)) {
+      if (ts.isIdentifier(node.name)) namespaces.add(node.name.text);
+      if (ts.isObjectBindingPattern(node.name)) {
+        for (const element of node.name.elements) {
+          const property = element.propertyName ?? element.name;
+          if (!element.dotDotDotToken && ts.isIdentifier(property) && property.text === 'startBridge' && ts.isIdentifier(element.name)) names.add(element.name.text);
+        }
+      }
     }
-  }
-  const loaded = String.raw`=\s*(?:await\s+)?(?:require|import)\s*\(\s*${BRIDGE_MODULE}\s*\)`;
-  for (const [, specs] of code.matchAll(new RegExp(String.raw`\b(?:const|let|var)\s*\{([^}]*)\}\s*${loaded}`, 'g'))) {
-    for (const spec of specs.split(',')) {
-      const match = /^\s*([\w$]+)(?:\s*:\s*([\w$]+))?\s*$/.exec(spec);
-      if (match && match[1] === 'startBridge') names.add(match[2] ?? match[1]);
-    }
-  }
-  for (const [, name] of code.matchAll(new RegExp(String.raw`\b(?:const|let|var)\s+([\w$]+)\s*${loaded}`, 'g'))) namespaces.add(name);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
   return { names, namespaces };
 }
 
+/** Whether some call in `source` invokes startBridge through one of `bindings`: `startBridge(`, a renamed binding, `ns.startBridge(`, or `require(...).startBridge(`. */
+function callsBridge(source, { names, namespaces }) {
+  const invokes = (callee) => {
+    const target = unwrap(callee);
+    if (ts.isIdentifier(target)) return names.has(target.text);
+    if (!ts.isPropertyAccessExpression(target) || target.name.text !== 'startBridge') return false;
+    const owner = unwrap(target.expression);
+    return (ts.isIdentifier(owner) && namespaces.has(owner.text)) || isBridgeLoad(owner);
+  };
+  const visit = (node) => (ts.isCallExpression(node) && invokes(node.expression)) || ts.forEachChild(node, visit) === true;
+  return visit(source);
+}
+
 /**
- * Source files (`{ file, text }`) that call startBridge as imported from @ironbird/react-native, sorted:
- * comments are ignored, type-only imports bind nothing, and the call must use the imported binding
- * (renamed, `ns.startBridge(` through a namespace import, or a `require` of the module).
+ * Source files (`{ file, text }`) that call startBridge as imported from @ironbird/react-native, sorted.
+ * Each file is parsed with the TypeScript compiler, so comments and strings never count, type-only
+ * imports bind nothing, and the call must use a binding of the module. Shadowing is not tracked.
  */
 export function startBridgeCallers(sources) {
   return sources
-    .filter(({ text }) => {
-      const code = stripComments(text);
-      const { names, namespaces } = bridgeBindings(code);
-      const calls = [...[...names].map((name) => `${escape(name)}\\s*\\(`), ...[...namespaces].map((ns) => `${escape(ns)}\\s*\\??\\.\\s*startBridge\\s*\\(`)];
-      return calls.some((call) => new RegExp(`(?<![\\w$.])${call}`).test(code));
+    .filter(({ file, text }) => {
+      const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKind(file));
+      return callsBridge(source, bridgeBindings(source));
     })
     .map(({ file }) => file)
     .sort();
