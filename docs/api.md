@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft; signatures will change during M0–M2 |
-| Last updated | 2026-09-29 |
+| Last updated | 2026-10-03 |
 | Related | [protocol.md](protocol.md) for wire types and error codes · [cli.md](cli.md) for the CLI |
 
 Priority markers match [spec.md](spec.md): **P0** ships in 0.1, **P1** is planned for 0.1 if milestones hold. Sections marked **M1** or **M2** describe APIs planned for those milestones ([roadmap.md](roadmap.md)); they are not in the repository yet.
@@ -470,7 +470,7 @@ useEffect(() => {
 
 ## @ironbird/cli
 
-The binary is documented in [cli.md](cli.md). The package also exports the pieces the binary is built from, for embedding a daemon in another process: `loadConfig`, `loadTypeScriptModule`, `createHeadlessTarget`, `startDaemon`, `readDaemonInfo` / `writeDaemonInfo` / `removeDaemonInfo`, `buildProgram`, `runServe`, `isLoopbackHost`, `parseCondition` / `conditionHolds`, and the scenario runner: `parseScenario` and `loadScenarioFiles` turn a file (or a directory of them) into a validated `Scenario`, made of `ScenarioStep`s and reporting any authoring error as a `ScenarioIssue`; `runScenario` runs one `Scenario` against a `DaemonClient` and returns its `ScenarioResult`, per its `RunScenarioOptions`, whose `reset` resets a target that declares the `reset` capability before the first step (design D14; `scenario run` always sets it). `createHeadlessTarget` takes an optional `loadDefinition`, which the `reload` operation calls to load the headless entry again (`runServe` passes one that re-bundles the configured entry under a fresh label); a target created without it doesn't declare `reload`. For agents, `createMcpServer` builds the `ironbird mcp` server, an `McpServer` from `@modelcontextprotocol/server` with the sixteen tools in [cli.md](cli.md#mcp-tools), from `McpServerOptions`: its `version`, the `cwd` that scenario paths resolve against, a `resolve` called on every tool call that returns a `DaemonClient` and the artifacts directory, and an optional `readImage` for screenshots. `agentSetup` does what `ironbird agent setup` does, given `AgentSetupOptions` (`cwd`, `skillsDir?`, and the `packageRoot` holding `skills/ironbird/`), and returns an `AgentSetupResult`.
+The binary is documented in [cli.md](cli.md). The package also exports the pieces the binary is built from, for embedding a daemon in another process: `loadConfig`, `loadTypeScriptModule`, `createHeadlessTarget`, `startDaemon`, `readDaemonInfo` / `writeDaemonInfo` / `removeDaemonInfo`, `buildProgram`, `runServe`, `isLoopbackHost`, `parseCondition` / `conditionHolds`, and the scenario runner: `parseScenario` and `loadScenarioFiles` turn a file (or a directory of them) into a validated `Scenario`, made of `ScenarioStep`s and reporting any authoring error as a `ScenarioIssue`; `runScenario` runs one `Scenario` against a `DaemonClient` and returns its `ScenarioResult`, per its `RunScenarioOptions`, whose `reset` resets a target that declares the `reset` capability before the first step (design D14; `scenario run` always sets it). `createHeadlessTarget` takes an optional `loadDefinition`, which the `reload` operation calls to load the headless entry again (`runServe` passes one that re-bundles the configured entry under a fresh label); a target created without it doesn't declare `reload`. For agents, `createMcpServer` builds the `ironbird mcp` server, an `McpServer` from `@modelcontextprotocol/server` with the sixteen tools in [cli.md](cli.md#mcp-tools), from `McpServerOptions`: its `version`, the `cwd` that scenario paths resolve against, a `resolve` called on every tool call that returns a `DaemonClient` and the artifacts directory, and an optional `readImage` for screenshots. `agentSetup` does what `ironbird agent setup` does, given `AgentSetupOptions` (`cwd`, `skillsDir?`, and the `packageRoot` holding `skills/ironbird/`), and returns an `AgentSetupResult`. The headless target and the scenario engine are also published as the subpath `@ironbird/cli/runner`, in ESM and CommonJS with type declarations, for CommonJS callers such as Jest (the main entry is ESM only): it exports `createHeadlessTarget`, `loadScenarioFiles`, `parseScenario`, and `runScenario`, and the `HeadlessTarget`, `HeadlessTargetOptions`, `Scenario`, `ScenarioStep`, `RunScenarioOptions`, and `DaemonClient` types. `@ironbird/testing` reaches the CLI only through it.
 
 ### defineConfig (P0)
 
@@ -495,44 +495,141 @@ export default defineConfig({
 });
 ```
 
-## @ironbird/testing (P1, sketch)
+## @ironbird/testing
 
-Depends on the resolution of open question Q6.
+Runs ironbird from Vitest or Jest against a headless definition, in process: no daemon, port, or child process. It needs Node 22 or later, ships ESM and CommonJS builds, and imports no test framework, so the same calls work in either runner. It reuses the CLI's headless target and scenario engine through `@ironbird/cli/runner` and is built on fast-check 4. `zod` 4 is a peer dependency, as for core.
+
+### createTestTarget
 
 ```ts
-function runScenario(file: string, options: { headless: HeadlessDefinition }): Promise<ScenarioResult>;
+function createTestTarget(options: TestTargetOptions): Promise<TestTarget>;
 
-function modelTest<S>(options: {
+interface TestTargetOptions {
   headless: HeadlessDefinition;
-  steps: Array<
-    | string                                          // a command; payloads generated from its schema
-    | { fake: string; control: string }               // a fake control; payloads generated from its schema
-    | { clock: { maxMs: number } }                    // advance the clock by a random amount
-  >;
-  invariants: Record<string, (state: S) => boolean>;  // name → must hold after every step
-  numRuns?: number;                                   // default 100
-  seed?: number;
-}): Promise<void>;
+  appId?: string;                              // reported as app.id; default 'test'
+  env?: Record<string, string | undefined>;    // the factory's env; default {}, never process.env
+  clockStart?: string;                         // ISO time the manual clock starts at on every boot; default the Unix epoch
+  settleTimeoutMs?: number;                    // wall-clock settle bound per step; default 5000
+}
+
+interface TestTarget {
+  readonly client: DaemonClient;               // the CLI's client interface, served in process
+  send(command: string, payload?: unknown): Promise<StepResult>;
+  fake(fake: string, control: string, payload?: unknown): Promise<StepResult>;
+  advance(ms: number): Promise<StepResult & { now: number }>;
+  state<T = unknown>(path?: string): Promise<T>;
+  describe(): Promise<Description>;
+  reset(): Promise<void>;
+  dispose(): Promise<void>;
+}
 ```
 
+`client.call(op, params)` runs one protocol operation on the headless target and returns `{ target: 'headless', result }`, `client.rpc` returns the result alone, and failures are the target's `IronbirdError`s. A `target` argument other than `headless` fails with `NO_TARGET`, and `client.stream` fails with `UNSUPPORTED`; read events with `client.rpc('events', { since })`. `send`, `fake`, `advance`, `state`, `describe`, and `reset` are the `dispatch`, `fakeControl`, `clockAdvance`, `getState`, `describe`, and `reset` operations; `reset` boots the app again with fresh fakes and a fresh clock. After `dispose`, every call fails with `UNSUPPORTED`.
+
+### runScenario
+
 ```ts
+function runScenario(file: string, options: RunScenarioFileOptions): Promise<ScenarioResult>;
+
+interface RunScenarioFileOptions {
+  headless: HeadlessDefinition;
+  env?: Record<string, string | undefined>;    // default {}
+  artifacts?: string | false;                  // default false: write nothing
+}
+```
+
+Runs one [scenario file](cli.md#scenario-files) the way `ironbird scenario run` does, on a fresh in-process target that is reset before the first step and disposed after the last. A relative `file` resolves against the working directory. The file always runs headless, whatever its own `target` says, so a device scenario's `screenshot` steps fail unless they are `optional`. An invalid file, a missing or unreadable path, or a directory fails with `INVALID_SCENARIO` before anything runs. A scenario that fails is not an error: the result has `passed: false` and `failedStep`, so assert on it and the step shows in the diff. With `artifacts` set to a directory, each run writes `runs/<stamp>-<slug>/` under it, with the files `scenario run` writes.
+
+```ts
+import { runScenario } from '@ironbird/testing';
+import headless from '../src/ironbird/headless';
+
+test('the saved-card checkout passes', async () => {
+  const result = await runScenario('ironbird/scenarios/checkout-saved-card.yaml', { headless });
+  expect(result.passed).toBe(true);
+});
+```
+
+### modelTest
+
+```ts
+function modelTest<S = unknown>(options: ModelTestOptions<S>): Promise<ModelTestResult>;
+
+interface ModelTestOptions<S> {
+  headless: HeadlessDefinition;
+  env?: Record<string, string | undefined>;    // default {}
+  steps: ModelStep[];
+  invariants: Record<string, (state: S) => boolean>;
+  maxSteps?: number;                           // longest sequence; default 20
+  numRuns?: number;                            // default 100
+  seed?: number;                               // a 32-bit integer; default: fast-check's
+  onStepError?: 'skip' | 'fail';               // default 'skip'
+  artifacts?: string | false;                  // where traces go; default '.ironbird/model'
+}
+
+type ModelStep =
+  | string                                                                         // a command; payload generated from its schema
+  | { command: string; payload?: fc.Arbitrary<unknown> | unknown[]; weight?: number }
+  | { fake: string; control: string; payload?: fc.Arbitrary<unknown> | unknown[]; weight?: number }
+  | { clock: { maxMs: number }; weight?: number };                                 // advance 0 to maxMs ms
+
+interface ModelTestResult { runs: number; seed: number; stepsApplied: number; stepsRejected: number }
+```
+
+Model-based testing in which the app is the model. Each run resets the target (a fresh app, fresh fakes, and the manual clock at its start), applies a random sequence of 1 to `maxSteps` steps, each one operation with settling, and after every step checks every invariant against the whole state. An invariant must be synchronous and return `true`; returning anything else, including `undefined` or a promise, or throwing, is a violation.
+
+- **Generation.** Each step is drawn from the declared ones by `weight` (default 1). A `payload` list is picked from; a fast-check arbitrary, from any copy of fast-check, is used as is; with no `payload`, the payload comes from the command's or control's JSON Schema through `arbitraryFromSchema`. A clock step advances a whole number of milliseconds from 0 to `maxMs`.
+- **Validation first.** Before any run the declared steps are checked against `describe()`: an unknown command, fake, or control fails with `UNKNOWN_COMMAND`, `UNKNOWN_FAKE`, or `UNKNOWN_CONTROL` and suggestions; a fake step on an app without fakes, or a clock step on a target without the `clock` capability, fails with `UNSUPPORTED`; a schema the generator can't honor, or an invalid option (a `numRuns`, `maxSteps`, or `weight` that is not a positive integer, a `seed` that is not a 32-bit integer, no steps), fails with `INVALID_PAYLOAD` whose details give the path (`{ name: 'modelTest', issues: [{ path: ['steps', 0, 'weight'], message }] }` for options).
+- **Rejected steps.** A step the app rejects (`DISPATCH_FAILED`, `UNSUPPORTED`, a fake control's error) is counted in `stepsRejected` and the run continues; invariants are still checked. With `onStepError: 'fail'` it ends the run instead: after shrinking, `modelTest` throws the step's own error, with ` (modelTest step <k>, seed <seed>, path <path>)` appended to its message and `seed`, `path`, `runs`, and `steps` added to its details. `INVALID_PAYLOAD`, `CLOCK_RUNAWAY`, `INTERNAL`, `TARGET_DISCONNECTED`, and `HEADLESS_LOAD_FAILED` always end the run that way, because they mean the generator, the timing, or the target broke, not that the app declined. No trace is written for them.
+- **Counterexample.** fast-check shrinks a failing run to a minimal sequence. `modelTest` then throws `IronbirdError('INVARIANT_FAILED')` with the message `Invariant "<name>" failed after <k> steps (seed <seed>, path <path>); trace: <file>` and details `{ invariant, message, seed, path, runs, steps, scenarioFile, traceReplayable }`: `message` is why the invariant failed (`returned false`, `threw: ...`), `runs` counts runs up to the failure, and `steps` are the shrunk steps up to the violation, as scenario steps, each with `rejected: true` or `false` for whether the app rejected it. `traceReplayable` is `false` when a rejected step changed the target's state or revision anyway (a dispatch that mutated and then threw, which the target reports as `DISPATCH_FAILED` without rolling back), and `true` otherwise. The same `seed` reproduces the same runs and the same counterexample.
+- **Trace.** Unless `artifacts` is `false`, the applied steps are written to `<artifacts>/<UTC stamp>-<invariant slug>.trace.yaml`, a valid scenario file, and `scenarioFile` is its absolute path: a `reset`, then one `send`, `fake`, or `clock` (milliseconds) step per shrunk step the app applied. Rejected steps are left out: on replay their error would stop the scenario. A rejected step usually changed nothing; when one did, the trace is still written, `traceReplayable` is `false`, and a line in the trace's `description` names the rejected steps that changed state by their index in `details.steps`, because replay may not reproduce the violation. It has no `expect`, so `ironbird scenario run` on it passes: it reproduces the violating state rather than asserting on it. Replay it against the same environment the model test used, since the app may only misbehave under it: for the example's planted race, which `modelTest` finds with `env: { PLANT_RACE: '1' }`, run `PLANT_RACE=1 ironbird serve`, then `ironbird scenario run <trace>`. Add `wait` and `expect` steps to turn it into a regression scenario. Its `clock` steps are exact only on headless. With `artifacts: false`, `scenarioFile` is `null` and the message has no `trace:` clause. If the file can't be written, the violation is still thrown the same way, and the write error's message is in `details.traceError`, which is present only then.
+
+```ts
+import { modelTest } from '@ironbird/testing';
+import type { CheckoutState } from '../src/core/checkout';
+import headless from '../src/ironbird/headless';
+
 test('no ordering of events completes an order with a zero total', async () => {
-  await modelTest<AppState>({
+  await modelTest<CheckoutState>({
     headless,
+    env: { PLANT_RACE: '1' },
     steps: [
-      'cart.addItem',
-      'payment.start',
-      { fake: 'api', control: 'emit' },
-      { fake: 'reader', control: 'emit' },
-      { clock: { maxMs: 5000 } },
+      { command: 'cart.addItem', payload: [{ sku: 'cut-45', qty: 1 }, { sku: 'beard-20', qty: 2 }] },
+      { command: 'payment.start', payload: [{ method: 'saved' }, { method: 'card' }] },
+      { fake: 'api', control: 'setEcho', payload: [{ mode: 'manual' }, { mode: 'auto' }] },
+      { fake: 'api', control: 'emit', payload: [{ event: 'payment.succeeded' }, { event: 'order.confirmed' }, { event: 'payment.failed' }] },
+      { clock: { maxMs: 1000 } },
     ],
     invariants: {
-      'completed orders have a non-zero total': (s) => !(s.order.status === 'completed' && s.order.total === 0),
+      'completed orders have a non-zero total': (s) => !(s.order.status === 'completed' && s.order.totalCents === 0),
     },
     numRuns: 1000,
   });
 });
 ```
+
+The SKUs come from the example's catalog rather than the schema, because `sku` is a free string: that is what payload overrides are for.
+
+### arbitraryFromSchema
+
+```ts
+function arbitraryFromSchema(schema: JsonSchema, options?: { name?: string }): fc.Arbitrary<unknown>;
+```
+
+A fast-check arbitrary for the JSON Schema `describe()` reports for a payload, the subset Zod 4's `toJSONSchema` emits. `modelTest` uses it for every step without a `payload`; it is exported for property tests of your own. Every value it generates is valid against the schema.
+
+| Schema | Arbitrary |
+|---|---|
+| `type: object` with `properties` and `required`; `additionalProperties` absent or `false` | `fc.record`: keys in `required` always, the others sometimes, no other keys, never a null prototype |
+| `enum`, `const` | `fc.constantFrom`, `fc.constant` |
+| `type: string` with `minLength` / `maxLength` | `fc.string` with those bounds |
+| `type: integer` / `number` with `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` | `fc.integer` / `fc.double` within the bounds, never NaN or infinite |
+| `type: boolean`, `type: null` | `fc.boolean`, `fc.constant(null)` |
+| `type: array` with `items`, `minItems`, `maxItems` | `fc.array` |
+| `anyOf`, or `type` as a list (Zod's `.nullable()` and unions of primitives) | `fc.oneof` |
+| `oneOf` | `fc.oneof` over the values that match exactly one branch. A branch whose values can be listed (`const`, `enum`, `type: boolean`, `type: null`, or a `type` list of those) contributes exactly its exclusive values, however rare. Any other branch is probed with a fixed-seed sample and kept, filtered to exclusive values, only if the sample finds one; a branch whose exclusive values the probe misses is dropped, so such a branch may never be generated. `INVALID_PAYLOAD` only when no branch contributes |
+
+`description`, `title`, `default`, `examples`, `$schema`, `deprecated`, and `readOnly` are ignored. Any other keyword, such as `pattern` (`.regex`), `format` (`z.email()`), `multipleOf`, `propertyNames` (`z.record`), `prefixItems` (`z.tuple`), or `$ref`, and a schema with no type at all (`z.unknown()`, `z.date()`), throws `INVALID_PAYLOAD` with details `{ name, issues: [{ path, message }] }`, where `name` is `options.name` (the command, or `<fake>.<control>`; default `payload`) and `path` is the schema path, such as `['properties', 'sku', 'pattern']`. Pass a `payload` override for that step instead: the generator never guesses.
 
 ## Adapters (P1)
 

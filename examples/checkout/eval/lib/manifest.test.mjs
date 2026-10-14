@@ -39,6 +39,7 @@ describe('standaloneManifest', () => {
     expect(manifest.devDependencies['@ironbird/cli']).toBe('file:vendor/ironbird-cli-0.0.4.tgz');
     expect(manifest.devDependencies.vitest).toBe(root.devDependencies.vitest);
     expect(manifest.devDependencies.typescript).toBe(root.devDependencies.typescript);
+    expect(manifest.devDependencies['@ironbird/testing']).toBeUndefined();
     expect(manifest.devDependencies.pngjs).toBeUndefined();
     expect(manifest.devDependencies['@types/pngjs']).toBeUndefined();
     expect(manifest.overrides).toEqual({ '@ironbird/core': '$@ironbird/core', '@ironbird/react-native': '$@ironbird/react-native' });

@@ -58,7 +58,7 @@ The daemon is the only long-lived process. CLI invocations and the MCP server ar
 | `@ironbird/react-native` | Hermes, dev builds | core; `react-native` (peer) | `startBridge`, settle detection, reconnection |
 | `@ironbird/cli` | Node 22+ | core; WebSocket server, YAML parser, TypeScript loader, MCP SDK (confirm in M0) | Daemon, CLI commands, scenario runner, device helpers, `verify-bundle`, MCP server |
 | `ironbird` | Node 22+ | `@ironbird/cli` | Wrapper that exposes the `ironbird` binary for `npx ironbird` |
-| `@ironbird/testing` (P1) | Vitest, Jest | core, cli internals, fast-check | Scenario runner for test suites, model-based testing helper |
+| `@ironbird/testing` | Node 22+, under Vitest or Jest | core; cli through `@ironbird/cli/runner`; fast-check; yaml | In-process test target, scenario runner for test suites, model-based testing helper (`modelTest`), JSON-Schema payload generator |
 | `@ironbird/xstate`, `@ironbird/redux` (P1) | Node, Hermes | core; the library (peer) | `Target` adapters |
 
 Dependencies point one way. Every package may depend on core, and core depends on nothing but Zod. The CLI never imports `@ironbird/react-native`.

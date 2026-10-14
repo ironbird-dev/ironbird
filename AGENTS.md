@@ -39,12 +39,14 @@ These are the workspace scripts.
 | Run the example on Android | `pnpm example:android` |
 | Measure the M1 stale-screenshot and latency indicators | `pnpm measure -- --target ios` |
 | Measure the M0 performance budgets | `pnpm bench`; `--check` fails on a miss |
+| Measure the M4 race gate (10 seeds × 1,000 model runs, planted and control) | `pnpm gate:m4` |
+| Measure the clock and tracker mutation score (M4; not in CI) | `pnpm mutation`; fails below 70% |
 | Add a release note | `pnpm changeset` |
 | Publish the packages | `pnpm release` |
 
 Run `pnpm build` before `pnpm typecheck` on a fresh checkout: packages that import another workspace package resolve its types from that package's `dist`.
 
-Tooling: pnpm workspaces, TypeScript in strict mode, Vitest for packages and for the example app's logic, ESLint for import boundaries, and Changesets for releases. The example's screen is exercised by the device tests and the measurement harness rather than by component tests. Vitest runs with `test.projects`: `unit` is the default, `serial` holds the two files that drive a real daemon against the example app and runs them one at a time, and `device` holds `*.device.test.ts`.
+Tooling: pnpm workspaces, TypeScript in strict mode, Vitest for packages and for the example app's logic, ESLint for import boundaries, and Changesets for releases. The example's screen is exercised by the device tests and the measurement harness rather than by component tests. Vitest runs with `test.projects`: `unit` is the default, `serial` runs its files one at a time and holds the tests that drive a real daemon against the example app plus the example's model-based race smoke; `gate` holds the M4 race gate and runs only through `pnpm gate:m4`; and `device` holds `*.device.test.ts`.
 
 ## Hard rules
 
