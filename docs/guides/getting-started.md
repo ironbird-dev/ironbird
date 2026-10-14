@@ -6,7 +6,7 @@
 | Last updated | 2026-10-11 |
 | Related | [api.md](../api.md) · [cli.md](../cli.md) · [architecture.md §5](../architecture.md#5-integrating-an-app) · [agents.md](../agents.md) |
 
-This guide wires ironbird into an existing React Native app whose logic lives in a Redux Toolkit store. When you finish, `npx ironbird serve` runs the app's logic in Node, a scenario file drives it through typed commands, a development build connects to the same daemon, and release builds carry none of it. With an XState actor instead of a store, follow the same steps with `fromActor` from `@ironbird/xstate` in step 5 ([api.md](../api.md#adapters)).
+This guide wires ironbird into an existing React Native app whose logic lives in a Redux Toolkit store. When you finish, `npx ironbird serve` runs the app's logic in Node, a scenario file drives it through typed commands, a development build connects to the same daemon, and release builds leave the bridge out; `ironbird verify-bundle` checks that (step 9). With an XState actor instead of a store, follow the same steps with `fromActor` from `@ironbird/xstate` in step 5 ([api.md](../api.md#adapters)).
 
 The examples use a small cart: a `cart` slice and an `api` port that submits orders. Use your app's names instead. [`examples/bare-redux`](../../examples/bare-redux) is a complete bare React Native app wired this way.
 
@@ -313,7 +313,7 @@ module.exports = mergeConfig(getDefaultConfig(__dirname), {
 
 An Expo app doesn't need that setting. It puts the same `if (__DEV__)` block in its entry file, before `registerRootComponent(App)`. An app that runs in Expo Go must also pass `reload: () => reloadAppAsync()` to `startBridge`, with `reloadAppAsync` from `expo`; the default, `DevSettings.reload`, restarts the JavaScript without Expo Go's native modules, so the app never comes back for `ironbird reload`. [`examples/checkout`](../../examples/checkout) is wired this way.
 
-With `npx ironbird serve` running, start the app on a simulator; `npx ironbird status` then lists an `ios` (or `android`) target next to `headless`, and every command above works with `--target ios`, except `clock`, which is headless only. The `appId` in `startBridge` must match the config's `appId`, or the daemon refuses the connection with `APP_MISMATCH`. The iOS Simulator reaches the daemon at `localhost` directly; for an Android emulator, `ironbird serve` runs `adb reverse` when `adb` is on the path.
+With `npx ironbird serve` running, start the app on a simulator; `npx ironbird status` then lists an `ios` (or `android`) target next to `headless`, and every command above works with `--target ios`, except `clock`, which is headless only, and `fake`: the app above wires its real API, so the bridge has no fakes and `ironbird fake` fails there with `UNKNOWN_FAKE`. To script fakes in a development build, wire them in `instance.ts` and pass them to `startBridge` as `fakes` ([api.md](../api.md#startbridge-p0)). The `appId` in `startBridge` must match the config's `appId`, or the daemon refuses the connection with `APP_MISMATCH`. The iOS Simulator reaches the daemon at `localhost` directly; for an Android emulator, `ironbird serve` runs `adb reverse` when `adb` is on the path.
 
 ## 9. Prove release builds are clean
 
