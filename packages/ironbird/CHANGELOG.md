@@ -1,5 +1,14 @@
 # ironbird
 
+## 0.0.4
+
+### Patch Changes
+
+- Updated dependencies [a77bd89]
+- Updated dependencies [a77bd89]
+- Updated dependencies [a77bd89]
+  - @ironbird/cli@0.0.4
+
 ## 0.0.3
 
 ### Patch Changes
