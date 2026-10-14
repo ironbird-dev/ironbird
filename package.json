@@ -11,6 +11,8 @@
     "test": "vitest run --project unit --project serial",
     "test:device": "vitest run --project device",
     "bench": "pnpm build && node packages/cli/scripts/bench.mjs",
+    "gate:m4": "pnpm build && vitest run --project gate",
+    "mutation": "stryker run",
     "lint": "eslint .",
     "typecheck": "pnpm -r run typecheck",
     "example:ios": "pnpm --filter @ironbird-examples/checkout start:ios",
@@ -22,6 +24,8 @@
   "devDependencies": {
     "@changesets/cli": "^3.0.2",
     "@eslint/js": "^10.0.1",
+    "@stryker-mutator/core": "^10.0.0",
+    "@stryker-mutator/vitest-runner": "^10.0.0",
     "@types/node": "^22.20.2",
     "eslint": "^10.10.0",
     "fast-check": "^4.9.0",

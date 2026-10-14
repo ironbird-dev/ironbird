@@ -20,6 +20,7 @@ export const ERROR_CODES = [
   'PROTOCOL_MISMATCH',
   'APP_MISMATCH',
   'UNAUTHORIZED',
+  'INVARIANT_FAILED',
   'INTERNAL',
 ] as const;
 

@@ -26,6 +26,8 @@ jobs:
       - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm test
+      # @ironbird/testing under Jest, from its CommonJS build (M4 design D9). Needs the build above.
+      - run: pnpm --filter @ironbird/testing test:jest
   # Branch protection requires a status named `check`. The matrix reports `test (node 22)` and `test (node 26)`,
   # so this job carries the required name and passes only when every matrix leg passed.
   check:

@@ -33,12 +33,12 @@ const sortKeys = (object) => Object.fromEntries(Object.entries(object).sort(([a]
  * makes every nested reference to core and react-native use the same tarballs, Vitest, TypeScript,
  * and Node's types join devDependencies at the monorepo's versions (Expo checks for TypeScript when
  * a tsconfig.json exists, and the tsconfig names Node's types), `test` runs Vitest, and the
- * measurement script, the `start:ios` and `start:android` scripts, and the pngjs dependencies go. `pins` (FIXTURE_PINS) join `overrides`.
+ * measurement script, the `start:ios` and `start:android` scripts, the pngjs dependencies, and `@ironbird/testing` (only the removed test/ files use it) go. `pins` (FIXTURE_PINS) join `overrides`.
  */
 export function standaloneManifest(example, { tarballs, versions, pins = {} }) {
   // `start:ios` and `start:android` go too: `expo start --ios` picks the wrong simulator, so agents start Metro with `expo start`.
   const { measure: _measure, 'start:ios': _startIos, 'start:android': _startAndroid, ...scripts } = example.scripts;
-  const { '@ironbird/cli': _cli, pngjs: _pngjs, '@types/pngjs': _typesPngjs, ...devDependencies } = example.devDependencies;
+  const { '@ironbird/cli': _cli, '@ironbird/testing': _testing, pngjs: _pngjs, '@types/pngjs': _typesPngjs, ...devDependencies } = example.devDependencies;
   const manifest = {
     name: 'checkout',
     private: true,
