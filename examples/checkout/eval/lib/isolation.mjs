@@ -90,7 +90,7 @@ export function checkIsolation(init, { memoryEntries, model, userSkills, ironbir
     if (!server) problems.push('the ironbird MCP server is not loaded');
     else if (typeof server !== 'object' || server.status !== 'connected') problems.push(`the ironbird MCP server is ${server.status ?? 'not reported as connected'}`);
   } else {
-    for (const name of names(servers)) problems.push(`MCP server ${name} is loaded`);
+    for (const server of servers) problems.push(`MCP server ${nameOf(server) ?? '<unnamed>'} is loaded`);
   }
 
   const user = new Set(userSkills);

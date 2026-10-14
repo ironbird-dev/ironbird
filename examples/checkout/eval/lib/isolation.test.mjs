@@ -172,6 +172,15 @@ describe('checkIsolation with ironbird absent (the M5 integration proxy)', () =>
     expect(absent(init).problems).toEqual(['MCP server ironbird is loaded', 'MCP server slack is loaded', 'the ironbird skill is loaded']);
   });
 
+  it('rejects a server entry that has no string name, labelled <unnamed>', () => {
+    expect(absent(proxyInit({ mcp_servers: [{}] })).problems).toEqual(['MCP server <unnamed> is loaded']);
+    expect(absent(proxyInit({ mcp_servers: [{ status: 'connected' }, null, { name: 'slack' }] })).problems).toEqual([
+      'MCP server <unnamed> is loaded',
+      'MCP server <unnamed> is loaded',
+      'MCP server slack is loaded',
+    ]);
+  });
+
   it('still applies the plugin, user-skill, namespaced-skill, memory, and model rules', () => {
     const init = proxyInit({
       model: 'claude-opus-5',
