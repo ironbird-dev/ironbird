@@ -60,6 +60,10 @@ describe('acceptanceCheck', () => {
     expect(acceptanceCheck({ exitCode: 0, result: { passed: true, stepsRun: 0, durationMs: 1 } }).pass).toBe(false);
     expect(acceptanceCheck({ exitCode: 0, result: { passed: true, durationMs: 1 } }).pass).toBe(false);
     expect(acceptanceCheck({ exitCode: 0, result: { passed: true, stepsRun: 2, failedStep: { index: 1 } } }).pass).toBe(false);
+    for (const durationMs of [undefined, -1, NaN, Infinity, '41', null]) {
+      expect(acceptanceCheck({ exitCode: 0, result: { passed: true, stepsRun: 2, durationMs } }).pass).toBe(false);
+    }
+    expect(acceptanceCheck({ exitCode: 0, result: { passed: true, stepsRun: 2, durationMs: 0 } }).pass).toBe(true);
     expect(acceptanceCheck({ exitCode: 0, result: {} }).pass).toBe(false);
     expect(acceptanceCheck({ exitCode: 0, result: { passed: 'true', stepsRun: 2 } }).pass).toBe(false);
     expect(acceptanceCheck({ exitCode: 0 }).pass).toBe(false);
@@ -119,6 +123,8 @@ describe('releaseBundleCheck', () => {
     expect(releaseBundleCheck({ releaseBundle: { scan: { report: { scanned: 1, found: [] } } } }).pass).toBe(false);
     expect(releaseBundleCheck({ releaseBundle: scan(0, [hit]) }).pass).toBe(false);
     expect(releaseBundleCheck({ releaseBundle: scan(1, []) }).pass).toBe(false);
+    expect(releaseBundleCheck({ releaseBundle: scan(1, [hit], 0) }).pass).toBe(false);
+    expect(bridgeDevOnlyCheck({ callers: ['a.ts'], devBundle: scan(1, [hit], 0) }).pass).toBe(false);
     expect(releaseBundleCheck({}).pass).toBe(false);
     expect(releaseBundleCheck(undefined).pass).toBe(false);
   });

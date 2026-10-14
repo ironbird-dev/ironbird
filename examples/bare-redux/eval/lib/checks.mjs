@@ -24,6 +24,7 @@ function readScan(bundle, what) {
     Number.isInteger(report.scanned) &&
     report.scanned >= 0 &&
     Array.isArray(report.found) &&
+    (report.found.length === 0 || report.scanned >= 1) &&
     report.found.every((hit) => isRecord(hit) && isNonEmptyString(hit.file) && Number.isInteger(hit.offset));
   if (!valid) return { problem: `verify-bundle exited ${exitCode} on the ${what}` };
   return { exitCode, report };
@@ -59,6 +60,7 @@ export function acceptanceCheck(run) {
   const { exitCode, result, error } = run;
   if (isRecord(result) && result.passed === true && !result.failedStep) {
     if (exitCode !== 0) return verdict('acceptance', false, `exited ${exitCode} with passed: true`);
+    if (!Number.isFinite(result.durationMs) || result.durationMs < 0) return verdict('acceptance', false, `passed without a valid durationMs (${JSON.stringify(result.durationMs)})`);
     if (!Number.isInteger(result.stepsRun) || result.stepsRun < 1) return verdict('acceptance', false, `passed without running a step (stepsRun: ${JSON.stringify(result.stepsRun)})`);
     return verdict('acceptance', true, `passed: ${result.stepsRun} steps in ${result.durationMs} ms`);
   }
