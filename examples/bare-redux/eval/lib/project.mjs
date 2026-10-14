@@ -56,10 +56,78 @@ export function entryFile(rootFiles) {
   return ['index.js', 'index.ts', 'index.tsx', 'index.jsx'].find((name) => rootFiles.includes(name));
 }
 
-/** Source files (`{ file, text }`) that import from @ironbird/react-native and call startBridge, sorted. */
+/**
+ * `text` with its line and block comments blanked out, leaving string and template literals intact so
+ * a `//` inside a URL is not taken for a comment. Regular expression literals are not recognised; the
+ * grader reads app entry code, where that is good enough.
+ */
+function stripComments(text) {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const char = text[i];
+    const next = text[i + 1];
+    if (char === '/' && next === '/') {
+      while (i < text.length && text[i] !== '\n') i += 1;
+    } else if (char === '/' && next === '*') {
+      const end = text.indexOf('*/', i + 2);
+      const stop = end === -1 ? text.length : end + 2;
+      out += text.slice(i, stop).replace(/[^\n]/g, ' ');
+      i = stop;
+    } else if (char === "'" || char === '"' || char === '`') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== char) j += text[j] === '\\' ? 2 : 1;
+      out += text.slice(i, j + 1);
+      i = j + 1;
+    } else {
+      out += char;
+      i += 1;
+    }
+  }
+  return out;
+}
+
+const BRIDGE_MODULE = String.raw`['"]@ironbird/react-native['"]`;
+const escape = (name) => name.replace(/\$/g, '\\$');
+
+/** The local names that `startBridge` is bound to, and the namespaces it can be reached through, by value imports and requires of @ironbird/react-native in comment-free `code`. */
+function bridgeBindings(code) {
+  const names = new Set();
+  const namespaces = new Set();
+  for (const [, typeOnly, clause] of code.matchAll(new RegExp(String.raw`\bimport\s+(type\s+)?([^'";]*?)\s*from\s*${BRIDGE_MODULE}`, 'g'))) {
+    if (typeOnly) continue;
+    const namespace = /\*\s*as\s+([\w$]+)/.exec(clause);
+    if (namespace) namespaces.add(namespace[1]);
+    const named = /\{([^}]*)\}/.exec(clause);
+    for (const spec of named ? named[1].split(',') : []) {
+      const match = /^\s*(type\s+)?([\w$]+)(?:\s+as\s+([\w$]+))?\s*$/.exec(spec);
+      if (match && !match[1] && match[2] === 'startBridge') names.add(match[3] ?? match[2]);
+    }
+  }
+  const loaded = String.raw`=\s*(?:await\s+)?(?:require|import)\s*\(\s*${BRIDGE_MODULE}\s*\)`;
+  for (const [, specs] of code.matchAll(new RegExp(String.raw`\b(?:const|let|var)\s*\{([^}]*)\}\s*${loaded}`, 'g'))) {
+    for (const spec of specs.split(',')) {
+      const match = /^\s*([\w$]+)(?:\s*:\s*([\w$]+))?\s*$/.exec(spec);
+      if (match && match[1] === 'startBridge') names.add(match[2] ?? match[1]);
+    }
+  }
+  for (const [, name] of code.matchAll(new RegExp(String.raw`\b(?:const|let|var)\s+([\w$]+)\s*${loaded}`, 'g'))) namespaces.add(name);
+  return { names, namespaces };
+}
+
+/**
+ * Source files (`{ file, text }`) that call startBridge as imported from @ironbird/react-native, sorted:
+ * comments are ignored, type-only imports bind nothing, and the call must use the imported binding
+ * (renamed, `ns.startBridge(` through a namespace import, or a `require` of the module).
+ */
 export function startBridgeCallers(sources) {
   return sources
-    .filter(({ text }) => /['"]@ironbird\/react-native['"]/.test(text) && /\bstartBridge\s*\(/.test(text))
+    .filter(({ text }) => {
+      const code = stripComments(text);
+      const { names, namespaces } = bridgeBindings(code);
+      const calls = [...[...names].map((name) => `${escape(name)}\\s*\\(`), ...[...namespaces].map((ns) => `${escape(ns)}\\s*\\??\\.\\s*startBridge\\s*\\(`)];
+      return calls.some((call) => new RegExp(`(?<![\\w$.])${call}`).test(code));
+    })
     .map(({ file }) => file)
     .sort();
 }

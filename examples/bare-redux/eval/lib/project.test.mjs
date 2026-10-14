@@ -65,4 +65,27 @@ describe('what the grader reads', () => {
     expect(isSourceFile('src/a.tsx')).toBe(true);
     expect(isSourceFile('src/a.json')).toBe(false);
   });
+
+  it('does not count a commented-out call, a type-only import, or a call of something else named startBridge', () => {
+    const sources = [
+      { file: 'line-comment.ts', text: "import { startBridge } from '@ironbird/react-native';\n// startBridge({ target });" },
+      { file: 'block-comment.ts', text: "import { startBridge } from '@ironbird/react-native';\n/*\n startBridge({ target });\n*/" },
+      { file: 'type-only.ts', text: "import type { startBridge } from '@ironbird/react-native';\nstartBridge({ target });" },
+      { file: 'type-specifier.ts', text: "import { type startBridge } from '@ironbird/react-native';\nstartBridge({ target });" },
+      { file: 'renamed-away.ts', text: "import { startBridge as sb } from '@ironbird/react-native';\nstartBridge({ target });" },
+      { file: 'member.ts', text: "import { startBridge } from '@ironbird/react-native';\nother.startBridge({ target });" },
+      { file: 'url.ts', text: "import { startBridge } from '@ironbird/react-native';\nconst u = 'http://x'; // startBridge()" },
+    ];
+    expect(startBridgeCallers(sources)).toEqual([]);
+  });
+
+  it('counts a renamed import, a namespace import, and a require, called after a string with slashes', () => {
+    const sources = [
+      { file: 'renamed.ts', text: "import { type BridgeOptions, startBridge as sb } from '@ironbird/react-native';\nconst u = 'http://x';\nsb({ target });" },
+      { file: 'namespace.ts', text: "import * as ib from '@ironbird/react-native';\nib.startBridge({ target });" },
+      { file: 'index.js', text: "if (__DEV__) {\n  const { startBridge } = require('@ironbird/react-native');\n  startBridge({ target });\n}" },
+      { file: 'require-renamed.js', text: "const { startBridge: go } = require('@ironbird/react-native');\ngo({ target });" },
+    ];
+    expect(startBridgeCallers(sources)).toEqual(['index.js', 'namespace.ts', 'renamed.ts', 'require-renamed.js']);
+  });
 });

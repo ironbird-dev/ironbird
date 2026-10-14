@@ -48,6 +48,9 @@ export function releaseManifest(manifest, version, internal) {
   return next;
 }
 
+/** A lockfile key for an ironbird package (`@ironbird/*` or `ironbird`) below some other package, at any depth: anything but a top-level `node_modules/<name>`. */
+const NESTED_IRONBIRD = /^.+\/node_modules\/(@ironbird\/[^/]+|ironbird)$/;
+
 /** Problems with an npm lockfile after the TASK.md install: each vendored package once, from vendor/, at `version`. */
 export function installProblems(lock, version) {
   const problems = [];
@@ -63,7 +66,7 @@ export function installProblems(lock, version) {
     if (!String(entry.resolved ?? '').includes(file)) problems.push(`${name} was not installed from ${file} (resolved: ${entry.resolved})`);
   }
   for (const key of Object.keys(packages)) {
-    if (/node_modules\/@ironbird\/[^/]+\/node_modules\/@ironbird\//.test(key)) problems.push(`a second copy of an ironbird package is installed at ${key}`);
+    if (NESTED_IRONBIRD.test(key)) problems.push(`a second copy of an ironbird package is installed at ${key}`);
   }
   return problems;
 }

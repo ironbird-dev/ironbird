@@ -60,4 +60,16 @@ describe('installProblems', () => {
       'a second copy of an ironbird package is installed at node_modules/@ironbird/cli/node_modules/@ironbird/core',
     ]);
   });
+
+  it('names a nested ironbird copy under any package, at any depth, and leaves an ironbird package’s own dependencies alone', () => {
+    const nested = lock({
+      'node_modules/react/node_modules/@ironbird/core': { version: '0.0.3' },
+      'node_modules/a/node_modules/b/node_modules/ironbird': { version: '0.0.3' },
+      'node_modules/@ironbird/core/node_modules/zod': { version: '4.2.0' },
+    });
+    expect(installProblems(nested, '0.1.0')).toEqual([
+      'a second copy of an ironbird package is installed at node_modules/react/node_modules/@ironbird/core',
+      'a second copy of an ironbird package is installed at node_modules/a/node_modules/b/node_modules/ironbird',
+    ]);
+  });
 });
