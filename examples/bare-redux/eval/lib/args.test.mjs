@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fillPrompt, proxyArgs, proxyEnv } from './args.mjs';
+import { budgetFrom, fillPrompt, proxyArgs, proxyEnv } from './args.mjs';
 
 const PROJECT = '/Users/dev/.ironbird-eval/proxy/sessions/proxy-1/project';
 const DOCS = '/Users/dev/.ironbird-eval/proxy/sessions/proxy-1/docs';
@@ -54,5 +54,23 @@ describe('proxyEnv', () => {
 describe('fillPrompt', () => {
   it('fills the docs and repository folders', () => {
     expect(fillPrompt('read {{docs}}/README.md, not {{repo}}/AGENTS.md', { docs: '/d', repo: '/r' })).toBe('read /d/README.md, not /r/AGENTS.md');
+  });
+});
+
+describe('budgetFrom', () => {
+  it('uses the cap when no budget is given', () => {
+    expect(budgetFrom(undefined, 20)).toBe(20);
+  });
+
+  it('accepts a positive decimal no greater than the cap', () => {
+    expect(budgetFrom('1', 20)).toBe(1);
+    expect(budgetFrom('0.5', 20)).toBe(0.5);
+    expect(budgetFrom('20', 20)).toBe(20);
+  });
+
+  it('rejects zero, negatives, values above the cap, infinity, and anything that is not a plain decimal', () => {
+    for (const value of ['0', '-1', '20.01', '21', 'Infinity', '1e9', 'NaN', '', ' 5', '0x10', 'abc']) {
+      expect(() => budgetFrom(value, 20), value).toThrow('--max-budget-usd');
+    }
   });
 });

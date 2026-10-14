@@ -54,3 +54,11 @@ export function proxyEnv(base) {
 export function fillPrompt(text, { docs, repo }) {
   return text.replaceAll('{{docs}}', docs).replaceAll('{{repo}}', repo);
 }
+
+/** The session budget from `--max-budget-usd`: `cap` when absent, else a plain decimal above 0 and at most `cap`. Throws otherwise. */
+export function budgetFrom(value, cap) {
+  if (value === undefined) return cap;
+  const budget = /^\d+(\.\d+)?$/.test(value) ? Number(value) : Number.NaN;
+  if (!(Number.isFinite(budget) && budget > 0 && budget <= cap)) throw new Error(`--max-budget-usd must be a number above 0 and at most ${cap}, not ${JSON.stringify(value)}`);
+  return budget;
+}

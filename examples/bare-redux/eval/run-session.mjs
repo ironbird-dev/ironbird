@@ -17,8 +17,9 @@ import { assertPortsFree, clone, groupAlive, listenerOwners, must, pgidOf, readJ
 import { sandboxProfile } from '../../checkout/eval/lib/sandbox.mjs';
 import { sessionVerdict } from '../../checkout/eval/lib/session.mjs';
 import { deniedCalls, outOfFolderPaths, parseTranscript, untrackedWrites } from '../../checkout/eval/lib/transcript.mjs';
-import { fillPrompt, proxyArgs, proxyEnv } from './lib/args.mjs';
+import { budgetFrom, fillPrompt, proxyArgs, proxyEnv } from './lib/args.mjs';
 import { docsRead } from './lib/docs.mjs';
+import { sourcesState, templateStaleness } from './lib/freshness.mjs';
 import { BUDGET_USD, evalDir, evalHome, MODEL, MODEL_PATTERN, PORTS, PROXY_SOURCES, proxyLayout, proxySessionLayout, repoRoot, sessionId, SESSION_LIMIT_MS, TEARDOWN_RESERVE_MS } from './lib/paths.mjs';
 import { classifyListeners, outsideProblems, pidsWithCwdUnder } from './lib/session-rules.mjs';
 
@@ -28,7 +29,6 @@ const { values: options, positionals } = parseArgs({
 });
 const id = positionals[0];
 const L = proxyLayout();
-const budgetUsd = Number(options['max-budget-usd'] ?? BUDGET_USD);
 const exists = (file) => stat(file).then(() => true, () => false);
 const step = (message) => process.stderr.write(`run-session ${id}: ${message}\n`);
 const errorText = (error) => (error instanceof Error ? error.message : String(error));
@@ -49,25 +49,21 @@ async function settingsFor() {
   return renderSettings(template, { repo: repoRoot, fixture: L.template, alsoDeny: [...sessions, L.grades, L.templateCheck, L.templateGrade, L.baselineDir, L.docs] });
 }
 
-/** Repository and eval home denied; the session's project and docs allowed again. */
+/** Repository and eval home denied; the session's project allowed again, and its docs for reading only. */
 async function profileFor(S) {
-  return sandboxProfile({ denied: [await resolvedPath(repoRoot), await resolvedPath(evalHome())], allowed: [await resolvedPath(S.project), await resolvedPath(S.docs)] });
+  return sandboxProfile({ denied: [await resolvedPath(repoRoot), await resolvedPath(evalHome())], allowed: [await resolvedPath(S.project)], readOnly: [await resolvedPath(S.docs)] });
 }
 
-/** Why the prepared template can't be used now: a source changed since it was built, or (for a proxy session) it was built from uncommitted sources. */
+/** Why the prepared template can't be used now: a source was committed or edited since it was built, or (for a proxy session) it was built from, or the sources now hold, uncommitted changes. */
 async function staleness(label) {
   const prepared = await readJson(L.prepareFile).catch(() => null);
   const head = prepared?.repo?.head;
-  if (typeof head !== 'string' || head === '') return ['prepare.json records no commit; run prepare.mjs again'];
-  const problems = [];
-  const diff = await run('git', ['diff', '--name-only', head, 'HEAD', '--', ...PROXY_SOURCES], { cwd: repoRoot });
-  if (diff.code !== 0) problems.push(`cannot compare the prepared commit ${head.slice(0, 7)} with HEAD; run prepare.mjs again`);
-  else {
-    const changed = diff.stdout.split('\n').filter(Boolean);
-    if (changed.length > 0) problems.push(`the template was prepared at ${head.slice(0, 7)} and ${changed.length} file(s) it is built from changed since: ${changed.join(', ')}; run prepare.mjs again`);
+  let changed = null;
+  if (typeof head === 'string' && head !== '') {
+    const diff = await run('git', ['diff', '--name-only', head, 'HEAD', '--', ...PROXY_SOURCES], { cwd: repoRoot });
+    changed = diff.code === 0 ? diff.stdout.split('\n').filter(Boolean) : null;
   }
-  if (label === 'proxy' && (prepared.repo.dirty ?? []).length > 0) problems.push(`the template was prepared with uncommitted changes (${prepared.repo.dirty.join(', ')}); commit them and run prepare.mjs again`);
-  return problems;
+  return templateStaleness({ prepared, label, changed, ...(await sourcesState(repoRoot, PROXY_SOURCES)) });
 }
 
 /** Runs claude until it exits, fails the isolation check, is interrupted, or reaches the deadline less the teardown reserve. */
@@ -167,7 +163,7 @@ async function main() {
   if (!id) throw new Error('Pass a session id, such as proxy-1');
   const S = proxySessionLayout(L.home, sessionId(id));
   if (!['proxy', 'smoke'].includes(options.label)) throw new Error(`--label must be proxy or smoke, not ${options.label}`);
-  if (!(budgetUsd > 0)) throw new Error(`--max-budget-usd must be a positive number, not ${options['max-budget-usd']}`);
+  const budgetUsd = budgetFrom(options['max-budget-usd'], BUDGET_USD);
   const promptFile = options.prompt ? path.resolve(options.prompt) : path.join(evalDir, 'prompt.md');
   const prompt = fillPrompt((await readFile(promptFile, 'utf8')).trim(), { docs: S.docs, repo: repoRoot });
   const settings = await settingsFor();

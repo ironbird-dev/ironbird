@@ -12,11 +12,12 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { captureBaselineInit, claudeVersion } from '../../checkout/eval/lib/claude.mjs';
 import { baselineFromInit, checkBaseline } from '../../checkout/eval/lib/isolation.mjs';
-import { clone, must, readJson, run, writeJson } from '../../checkout/eval/lib/proc.mjs';
+import { clone, must, readJson, writeJson } from '../../checkout/eval/lib/proc.mjs';
 import { sandboxProfile } from '../../checkout/eval/lib/sandbox.mjs';
 import { ancestorInstructionFiles, isInside, listFiles } from '../../checkout/eval/lib/tree.mjs';
 import { proxyEnv } from './lib/args.mjs';
 import { docsSet, mentions } from './lib/docs.mjs';
+import { sourcesState } from './lib/freshness.mjs';
 import { gradeProject } from './lib/grade-project.mjs';
 import { ACCEPTANCE, evalHome, exerciseDir, MODEL_PATTERN, PROXY_SOURCES, proxyLayout, repoRoot } from './lib/paths.mjs';
 import { ironbirdMentions, isTextFile, shouldCopy, standaloneProblems } from './lib/project.mjs';
@@ -151,14 +152,14 @@ async function main() {
     await must('pnpm', ['build'], { cwd: repoRoot, timeoutMs: 10 * 60_000 });
   }
   const head = (await must('git', ['rev-parse', 'HEAD'], { cwd: repoRoot })).stdout.trim();
-  const dirty = (await run('git', ['status', '--porcelain', '--', ...PROXY_SOURCES], { cwd: repoRoot })).stdout.split('\n').filter(Boolean);
+  const { dirty, fingerprint } = await sourcesState(repoRoot, PROXY_SOURCES);
   const exercise = await copyExercise();
   const tarballs = await vendorTarballs();
   await installAndCommit();
   const docs = await copyDocs();
   const check = await checkTemplate();
   const baseline = options['skip-baseline'] ? null : await recordBaseline();
-  await writeJson(L.prepareFile, { preparedAt: new Date().toISOString(), repo: { head, dirty }, releaseVersion: RELEASE_VERSION, exercise, tarballs, docs, check, baseline });
+  await writeJson(L.prepareFile, { preparedAt: new Date().toISOString(), repo: { head, dirty, fingerprint }, releaseVersion: RELEASE_VERSION, exercise, tarballs, docs, check, baseline });
   process.stdout.write(`${JSON.stringify({ template: L.template, docs: docs.files.length, bareReduxMentions: docs.bareReduxMentions.length, tarballs: Object.keys(tarballs), baseline: baseline?.claudeVersion ?? 'skipped' })}\n`);
 }
 
