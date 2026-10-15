@@ -138,12 +138,14 @@ const codeOf = (error: unknown): unknown => (error as { code?: unknown }).code;
 
 const MAX_ONE_LINE_LENGTH = 200;
 
-/** External text (host tool output, package.json fields, device names) onto one line: control characters become spaces and the length is capped (`max`, default 200; `Infinity` for no cap), so `detail` stays one line. */
+const ELLIPSIS = '...';
+
+/** External text (host tool output, package.json fields, device names) onto one line: control characters become spaces and the length is capped at `max` characters, a trailing `...` included (default 200; `Infinity` for no cap), so `detail` stays one line. */
 export function oneLine(text: string, options: { max?: number } = {}): string {
   const max = options.max ?? MAX_ONE_LINE_LENGTH;
   // eslint-disable-next-line no-control-regex
   const clean = text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').trim();
-  return clean.length > max ? `${clean.slice(0, max)}...` : clean;
+  return clean.length > max ? `${clean.slice(0, Math.max(0, max - ELLIPSIS.length))}${ELLIPSIS}` : clean;
 }
 
 /** The first line of a host tool's stderr, else the error's message, on one line. */

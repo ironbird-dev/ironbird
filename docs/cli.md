@@ -335,7 +335,7 @@ ironbird watch --path todos
 ironbird doctor [--config <file>]
 ```
 
-Checks that the project and this machine are ready for ironbird, without a daemon. Prints `{ checks: [{ id, ok, required, detail, fix? }] }`, one entry per check in the order below, and exits 0 when every required check passes and 1 otherwise; optional checks never change the exit code. `detail` is one line saying what was found, and `fix`, present on most failures, says what to do. Text from outside ironbird, such as tool output, device names, and package fields, is flattened onto that line, with control characters replaced by spaces, and capped at 200 characters; a config's issues are listed in full.
+Checks that the project and this machine are ready for ironbird, without a daemon. Prints `{ checks: [{ id, ok, required, detail, fix? }] }`, one entry per check in the order below, and exits 0 when every required check passes and 1 otherwise; optional checks never change the exit code. `detail` is one line saying what was found, and `fix`, present on most failures, says what to do. Text from outside ironbird, such as tool output, device names, and package fields, is flattened onto that line, with control characters replaced by spaces, and capped at 200 characters, counting the `...` that ends a cut piece; a config's issues are listed in full.
 
 | id | Required | Passes when |
 |---|---|---|

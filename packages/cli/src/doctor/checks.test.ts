@@ -19,6 +19,7 @@ import {
   failureText,
   identifyDaemon,
   newestVersion,
+  oneLine,
   statusUrl,
 } from './checks';
 import { hasGitEntry, systemEnvironment, type HttpProbe, type InstalledPackage } from './environment';
@@ -466,6 +467,17 @@ describe('one-line details', () => {
     const pkg = { name: '@ironbird/core', version: '0.1.0\nextra', dir: '/x' };
     expect((await checkVersions('/work/app', '0.1.0', { listInstalledPackages: async () => [pkg] })).detail).toBe('@ironbird/core 0.1.0 extra, this CLI 0.1.0');
     expect(failureText(new Error('a\nb'))).toBe('a b');
-    expect(failureText(new Error('x'.repeat(500))).length).toBe(203);
+    expect(failureText(new Error('x'.repeat(500))).length).toBe(200);
+  });
+});
+
+describe('oneLine', () => {
+  it('caps the whole line at max characters, the ellipsis included', () => {
+    expect(oneLine('x'.repeat(200))).toBe('x'.repeat(200));
+    expect(oneLine('x'.repeat(201))).toBe(`${'x'.repeat(197)}...`);
+    expect(oneLine('x'.repeat(201)).length).toBe(200);
+    expect(oneLine('abcdef', { max: 5 })).toBe('ab...');
+    expect(oneLine('abcde', { max: 5 })).toBe('abcde');
+    expect(oneLine('y'.repeat(500), { max: Infinity })).toBe('y'.repeat(500));
   });
 });
