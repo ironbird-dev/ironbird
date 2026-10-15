@@ -1,8 +1,9 @@
 // I/O helpers for the compat legs: run a command with its output echoed, a time limit when asked,
-// and one retry after a fetch failure or a fetch timeout when asked; run verify-bundle without
-// throwing; and add a table to the step summary.
+// and one retry after a fetch failure or a fetch timeout when asked; forward Ctrl-C and SIGTERM to
+// the running command; run verify-bundle without throwing; and add a table to the step summary.
 import { spawn } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
+import { constants } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { classifyFailure, retryOnFetchFailure } from './lib.mjs';
 
@@ -33,8 +34,8 @@ function signalGroup(pgid, signal) {
  * once no process in the group is alive, so nothing from a killed attempt outlives it: npx and npm
  * start children of their own, and those may hold no pipe to us.
  */
-async function killGroup(pgid, graceMs) {
-  signalGroup(pgid, 'SIGTERM');
+async function killGroup(pgid, graceMs, signal = 'SIGTERM') {
+  signalGroup(pgid, signal);
   const deadline = Date.now() + graceMs;
   let killed = false;
   while (groupAlive(pgid)) {
@@ -44,6 +45,37 @@ async function killGroup(pgid, graceMs) {
     }
     await sleep(50);
   }
+}
+
+/** The process groups of the commands running now, each with its kill grace. */
+const activeGroups = new Map();
+const FORWARDED_SIGNALS = ['SIGINT', 'SIGTERM'];
+let stopping = false;
+
+/**
+ * Each command runs detached, in its own process group, so a Ctrl-C in the terminal, which signals
+ * only the leg's group, never reaches it. While any command runs, SIGINT or SIGTERM to the leg is
+ * forwarded to every running command's group, whatever is left after its grace is killed, and the
+ * leg exits 128 + the signal's number, as the default handler's death would report. A second
+ * signal while that is under way exits at once.
+ */
+function onLegSignal(signal) {
+  const exitCode = 128 + constants.signals[signal];
+  if (stopping) process.exit(exitCode);
+  stopping = true;
+  console.error(`\n[compat] ${signal}: stopping the running command`);
+  const groups = [...activeGroups];
+  Promise.allSettled(groups.map(([pgid, graceMs]) => killGroup(pgid, graceMs, signal))).finally(() => process.exit(exitCode));
+}
+
+function trackGroup(pgid, graceMs) {
+  if (activeGroups.size === 0) for (const signal of FORWARDED_SIGNALS) process.on(signal, onLegSignal);
+  activeGroups.set(pgid, graceMs);
+}
+
+function untrackGroup(pgid) {
+  activeGroups.delete(pgid);
+  if (activeGroups.size === 0 && !stopping) for (const signal of FORWARDED_SIGNALS) process.off(signal, onLegSignal);
 }
 
 /**
@@ -59,6 +91,8 @@ async function once(command, args, options) {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
   });
+  const graceMs = options.killGraceMs ?? KILL_GRACE_MS;
+  if (child.pid !== undefined) trackGroup(child.pid, graceMs);
   let stdout = '';
   let stderr = '';
   child.stdout.setEncoding('utf8').on('data', (chunk) => {
@@ -81,7 +115,7 @@ async function once(command, args, options) {
       ? undefined
       : setTimeout(() => {
           timedOut = true;
-          killing = killGroup(child.pid, options.killGraceMs ?? KILL_GRACE_MS);
+          killing = killGroup(child.pid, graceMs);
         }, options.timeoutMs);
   let code;
   try {
@@ -89,7 +123,14 @@ async function once(command, args, options) {
   } finally {
     clearTimeout(timer);
   }
-  await killing;
+  try {
+    await killing;
+  } finally {
+    if (child.pid !== undefined) untrackGroup(child.pid);
+  }
+  // The leg was signalled: onLegSignal exits once every group is gone, and a result here would
+  // let the leg run its next step or report this command's death as its own failure first.
+  if (stopping) await new Promise(() => {});
 
   const note = timedOut ? `\n[compat] ${command} timed out after ${options.timeoutMs} ms` : '';
   console.log(`[compat] ${[command, ...args].slice(0, 4).join(' ')} took ${Math.round((Date.now() - started) / 1000)} s${timedOut ? ' (timed out)' : ''}`);
