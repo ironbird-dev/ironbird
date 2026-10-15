@@ -282,19 +282,28 @@ describe('outOfFolderPaths with tildes', () => {
     expect(hits('ls ~;')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev' }]);
   });
 
-  it('reports another user\'s home, OLDPWD, and PWD tildes', () => {
-    expect(hits('cat ~root/.profile')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/root/.profile' }]);
-    expect(hits('ls ~root')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/root' }]);
-    expect(hits('cat ~-/x')).toEqual([{ index: 0, tool: 'Bash', path: '/~-/x' }]);
-    expect(hits('cd ~-')).toEqual([{ index: 0, tool: 'Bash', path: '/~-' }]);
-    // `~+` is the working directory, so it stays inside the session, like a relative path.
+  it('reports every tilde prefix that could expand, as an outside path that .. cannot normalize back inside', () => {
+    const sentinel = (_word, prefix) => [{ index: 0, tool: 'Bash', path: `/~${prefix}` }];
+    expect(hits('cat ~root/.profile')).toEqual(sentinel('~root', 'root'));
+    expect(hits('ls ~root')).toEqual(sentinel('~root', 'root'));
+    expect(hits('cat ~-/x')).toEqual(sentinel('~-', '-'));
+    expect(hits('cd ~-')).toEqual(sentinel('~-', '-'));
+    expect(hits('cd ~0')).toEqual(sentinel('~0', '0'));
+    expect(hits('cat ~+0/../x')).toEqual(sentinel('~+0', '+0'));
+    expect(hits('cat ~-1/x')).toEqual(sentinel('~-1', '-1'));
+    expect(hits(`cat ~-/../${path.basename(path.dirname(ROOT))}/project/x`)).toEqual(sentinel('~-', '-'));
+    expect(hits(`cat ~-/../../${path.basename(path.dirname(ROOT))}/project/x`)).toEqual(sentinel('~-', '-'));
+  });
+
+  it('resolves ~+ against the session folder like a relative path', () => {
     expect(hits('cat ~+/x')).toEqual([]);
+    expect(hits('cat ~+')).toEqual([]);
     expect(hits('cat ~+/../x')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/.ironbird-eval/sessions/1/x' }]);
   });
 
   it('ignores a tilde inside text or followed by a digit or another character', () => {
     expect(hits("python3 - <<'PY'\nopen('RESULTS.md', 'w').write('| est | ~0.1 | hours |')\nPY")).toEqual([]);
-    expect(hits('echo "| ~0.1 |" a~=b ~=c ~9')).toEqual([]);
+    expect(hits('echo "| ~0.1 |" a~=b ~=c ~9a ~0.1/x')).toEqual([]);
   });
 
   it('accepts a quoted tilde as a false positive', () => {
