@@ -185,7 +185,13 @@ export function untrackedWrites(calls) {
 // Words that name a path: a tilde word (whether its prefix expands is decided in resolvePath; `~0.1`
 // is text), an absolute path, or a relative path with a `..` segment anywhere in
 // it (`../x`, `./../x`, `src/../../x`). A relative path without `..` stays inside the session.
-const BASH_PATH = /(?:^|[\s=('"<>])(~[^\s'";|&<>)/]*(?:\/[^\s'";|&<>)]*)?|(?:[\w.~@%+-]+\/)*\.\.(?=\/|[\s'";|&<>)]|$)(?:\/[^\s'";|&<>)]*)?|\/[^\s'";|&<>)]+)/g;
+const TILDE_WORD = String.raw`~[^\s'";|&<>)/,}:]*(?:\/[^\s'";|&<>),}:]*)?`;
+// Brace expansion (`{~,foo}`) and assignments (`PATH=/a:~/b`) put a tilde word after `{`, `,` or `:`; `:` ends a tilde word and
+// is not allowed before the other kinds, where it would turn `http://host:80/x` into a path.
+const BASH_PATH = new RegExp(
+  String.raw`(?:^|[\s=('"<>{,])(${TILDE_WORD}|(?:[\w.~@%+-]+\/)*\.\.(?=\/|[\s'";|&<>),}:]|$)(?:\/[^\s'";|&<>),}:]*)?|\/[^\s'";|&<>),}:]+)|:(${TILDE_WORD})`,
+  'g',
+);
 const IGNORED_OUTSIDE = new Set(['/dev/null', '/dev/stdout', '/dev/stderr']);
 
 // A heredoc body is file content only when the command plainly writes it to a file. The one shape
@@ -272,7 +278,7 @@ export function pathsOf(call, root, home) {
   if (typeof input.notebook_path === 'string') found.push(input.notebook_path);
   if ((call.name === 'mcp__ironbird__ironbird_run_scenario' || call.name === 'Glob' || call.name === 'Grep') && typeof input.path === 'string') found.push(input.path);
   if (call.name === 'Glob' && typeof input.pattern === 'string' && /^(\/|~|\.\.)/.test(input.pattern)) found.push(input.pattern.replace(/\/?[^/]*[*?[{].*$/, '') || '/');
-  if (call.name === 'Bash' && typeof input.command === 'string') for (const match of stripHeredocs(input.command).matchAll(BASH_PATH)) found.push(match[1]);
+  if (call.name === 'Bash' && typeof input.command === 'string') for (const match of stripHeredocs(input.command).matchAll(BASH_PATH)) found.push(match[1] ?? match[2]);
   return found.map((raw) => resolvePath(raw, root, home));
 }
 

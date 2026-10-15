@@ -295,6 +295,20 @@ describe('outOfFolderPaths with tildes', () => {
     expect(hits(`cat ~-/../../${path.basename(path.dirname(ROOT))}/project/x`)).toEqual(sentinel('~-', '-'));
   });
 
+  it('finds tildes after braces, commas and assignment colons', () => {
+    expect(hits('ls {~,foo}')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev' }]);
+    expect(hits('ls {foo,~/x}')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/x' }]);
+    expect(hits('ls {~root,foo}')).toEqual([{ index: 0, tool: 'Bash', path: '/~root' }]);
+    expect(hits('p=~root:foo')).toEqual([{ index: 0, tool: 'Bash', path: '/~root' }]);
+    expect(hits('PATH=/a:~/b')).toEqual([{ index: 0, tool: 'Bash', path: '/a' }, { index: 0, tool: 'Bash', path: '/Users/dev/b' }]);
+    expect(hits('PATH=~/a:~root/b')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/a' }, { index: 0, tool: 'Bash', path: '/~root' }]);
+    expect(hits('ls {~0.1,foo} a:~0.1')).toEqual([]);
+  });
+
+  it('does not read a URL port as an assignment colon', () => {
+    expect(hits('curl http://127.0.0.1:4567/status')).toEqual([]);
+  });
+
   it('resolves ~+ against the session folder like a relative path', () => {
     expect(hits('cat ~+/x')).toEqual([]);
     expect(hits('cat ~+')).toEqual([]);
