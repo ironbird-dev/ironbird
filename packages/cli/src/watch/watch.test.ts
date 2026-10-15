@@ -13,7 +13,7 @@ interface PendingRead {
 }
 
 /** A scripted daemon: the test emits stream frames and settles each getState read by hand. */
-function fakeDaemon(options: { streamError?: unknown; stallEvents?: boolean } = {}) {
+function fakeDaemon(options: { streamError?: unknown; stallEvents?: boolean; eventsError?: unknown } = {}) {
   const calls: Array<{ op: string; params: Record<string, unknown>; target: string | undefined }> = [];
   const signals: Array<AbortSignal | undefined> = [];
   const reads: PendingRead[] = [];
@@ -25,6 +25,7 @@ function fakeDaemon(options: { streamError?: unknown; stallEvents?: boolean } = 
       calls.push({ op, params, target });
       signals.push(callOptions.signal);
       if (op === 'events' && options.stallEvents) return new Promise(() => {});
+      if (op === 'events' && options.eventsError !== undefined) return Promise.reject(options.eventsError);
       if (op === 'events') return Promise.resolve({ target: target ?? 'headless', result: { events: [], nextSeq: 7, truncated: false } as T });
       if (op === 'getState') {
         return new Promise((resolve, reject) => {
@@ -326,8 +327,18 @@ describe('runWatch', () => {
     expect(w.lines).toEqual([]);
   });
 
-  it('rejects when the stream fails to open', async () => {
+  it('prints the error and exits with its code when the stream fails to open', async () => {
     const d = fakeDaemon({ streamError: new IronbirdError('UNAUTHORIZED', 'Token missing or wrong for this daemon') });
-    await expect(watch(d).done).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    const w = watch(d);
+    expect(await w.done).toBe(2);
+    expect(w.lines).toEqual([{ error: { code: 'UNAUTHORIZED', message: 'Token missing or wrong for this daemon' } }]);
+  });
+
+  it('prints the error and exits with its code when the cursor read fails', async () => {
+    const d = fakeDaemon({ eventsError: new IronbirdError('NO_TARGET', 'Daemon unreachable at http://fake; run ironbird serve', { url: 'http://fake' }) });
+    const w = watch(d);
+    expect(await w.done).toBe(5);
+    expect(w.lines).toEqual([{ error: { code: 'NO_TARGET', message: 'Daemon unreachable at http://fake; run ironbird serve', details: { url: 'http://fake' } } }]);
+    expect(d.calls.map((call) => call.op)).toEqual(['events']);
   });
 });

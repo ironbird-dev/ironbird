@@ -129,19 +129,17 @@ describe('buildProgram', () => {
     expect(h.out()).toEqual({});
   });
 
-  it('events pages with since and limit, and --follow prints JSON lines from the stream', async () => {
+  it('events pages with since and limit', async () => {
     const h = harness({ events: { events: [{ seq: 4, t: 0, source: 's', name: 'a' }], nextSeq: 4, truncated: false } });
     await h.run(['events', '--since', '3', '--limit', '2']);
     expect(h.calls[0]?.params).toEqual({ since: 3, limit: 2 });
     expect(h.out()).toEqual({ target: 'headless', events: [{ seq: 4, t: 0, source: 's', name: 'a' }], nextSeq: 4, truncated: false });
-    h.stdout.length = 0;
-    expect(await h.run(['events', '--follow'])).toBe(0);
-    expect(h.stdout).toEqual(['{"seq":4,"t":0,"source":"s","name":"a"}\n', '{"seq":9,"name":"streamed"}\n']);
   });
 
   it('events --follow reports TARGET_DISCONNECTED and exits 1 when the stream ends without an error frame', async () => {
     const h = harness({ events: { events: [{ seq: 4, t: 0, source: 's', name: 'a' }], nextSeq: 4, truncated: false } }, { signal: new AbortController().signal });
-    expect(await h.run(['events', '--follow', '--target', 'ios'])).toBe(1);
+    expect(await h.run(['events', '--follow', '--target', 'ios', '--since', '3'])).toBe(1);
+    expect(h.calls).toEqual([{ op: 'events', params: { since: 3 }, target: 'ios' }]);
     expect(h.stdout).toEqual([
       '{"seq":4,"t":0,"source":"s","name":"a"}\n',
       '{"seq":9,"name":"streamed"}\n',
@@ -155,27 +153,6 @@ describe('buildProgram', () => {
     expect(JSON.parse(h.stdout[0] ?? '')).toMatchObject({ error: { code: 'TARGET_DISCONNECTED', details: { target: 'headless', op: 'stream' } } });
   });
 
-  it('events --follow exits 0 without an error line when interrupted', async () => {
-    const controller = new AbortController();
-    const stdout: string[] = [];
-    const client: DaemonClient = {
-      url: 'http://127.0.0.1:4567',
-      call: async <T,>() => ({ target: 'headless', result: { events: [], nextSeq: 0, truncated: false } as T }),
-      rpc: async () => {
-        throw new Error('unexpected rpc');
-      },
-      stream: ({ signal, onMessage }) =>
-        new Promise<void>((resolve) => {
-          onMessage('event', { seq: 1, name: 'a' });
-          signal.addEventListener('abort', () => resolve(), { once: true });
-          controller.abort();
-        }),
-    };
-    const { run } = buildProgram({ cwd: '/tmp/nowhere', env: {}, isTTY: false, stdout: (t) => stdout.push(t), stderr: () => {}, version: '0.0.0-test', createClient: () => client, signal: controller.signal });
-    expect(await run(['events', '--follow'])).toBe(0);
-    expect(stdout).toEqual(['{"seq":1,"name":"a"}\n']);
-  });
-
   it('events --follow prints an error frame then resolves with its mapped exit code', async () => {
     const h = harness(
       { events: { events: [], nextSeq: 0, truncated: false } },
@@ -184,6 +161,7 @@ describe('buildProgram', () => {
           { kind: 'event', data: { seq: 9, name: 'streamed' } },
           { kind: 'error', data: { code: 'TARGET_DISCONNECTED', message: 'gone' } },
         ],
+        signal: new AbortController().signal,
       },
     );
     expect(await h.run(['events', '--follow'])).toBe(1);
@@ -191,7 +169,7 @@ describe('buildProgram', () => {
   });
 
   it('events --follow reports a malformed error frame as INTERNAL and exits 1', async () => {
-    const h = harness({ events: { events: [], nextSeq: 0, truncated: false } }, { streamFrames: [{ kind: 'error', data: 'nope' }] });
+    const h = harness({ events: { events: [], nextSeq: 0, truncated: false } }, { streamFrames: [{ kind: 'error', data: 'nope' }], signal: new AbortController().signal });
     expect(await h.run(['events', '--follow'])).toBe(1);
     expect(h.stdout).toEqual(['{"error":{"code":"INTERNAL","message":"Malformed error frame from daemon"}}\n']);
   });
@@ -205,6 +183,7 @@ describe('buildProgram', () => {
           { kind: 'event', data: { seq: 9, name: 'streamed' } },
           { kind: 'error', data: { code: 'TARGET_DISCONNECTED', message: 'gone' } },
         ],
+        signal: new AbortController().signal,
       },
     );
     expect(await h.run(['events', '--follow'])).toBe(1);
@@ -213,6 +192,116 @@ describe('buildProgram', () => {
       '{"seq":9,"name":"streamed"}\n',
       '{"error":{"code":"TARGET_DISCONNECTED","message":"gone"}}\n',
     ]);
+  });
+
+  describe('events --follow ends', () => {
+    /** A scripted client for one follow: `backlog` answers the events read, `stream` plays the stream. */
+    function follow(script: { backlog?: (signal: AbortSignal | undefined) => Promise<unknown>; stream?: DaemonClient['stream'] }, options: { isTTY?: boolean } = {}) {
+      const controller = new AbortController();
+      const stdout: string[] = [];
+      const signals: Array<AbortSignal | undefined> = [];
+      const client: DaemonClient = {
+        url: 'http://127.0.0.1:4567',
+        call: async <T,>(_op: string, _params?: Record<string, unknown>, _target?: string, callOptions: { signal?: AbortSignal } = {}) => {
+          signals.push(callOptions.signal);
+          const result = script.backlog ? await script.backlog(callOptions.signal) : { events: [], nextSeq: 0, truncated: false };
+          return { target: 'headless', result: result as T };
+        },
+        rpc: async () => {
+          throw new Error('unexpected rpc');
+        },
+        stream: script.stream ?? (() => new Promise<void>(() => {})),
+      };
+      const { run } = buildProgram({ cwd: '/tmp/nowhere', env: {}, isTTY: options.isTTY ?? false, stdout: (t) => stdout.push(t), stderr: (t) => stdout.push(`stderr: ${t}`), version: '0.0.0-test', createClient: () => client, signal: controller.signal });
+      return { run: () => run(['events', '--follow']), controller, stdout, signals };
+    }
+
+    it('with 0 and no error line when interrupted during the stream', async () => {
+      const f = follow({
+        stream: ({ signal, onMessage }) =>
+          new Promise<void>((resolve) => {
+            onMessage('event', { seq: 1, name: 'a' });
+            signal.addEventListener('abort', () => resolve(), { once: true });
+            f.controller.abort();
+          }),
+      });
+      expect(await f.run()).toBe(0);
+      expect(f.stdout).toEqual(['{"seq":1,"name":"a"}\n']);
+    });
+
+    it('with 0 and no output when interrupted while the backlog read stalls, cancelling that read', { timeout: 5_000 }, async () => {
+      let reading: () => void = () => {};
+      const read = new Promise<void>((resolve) => (reading = resolve));
+      const f = follow({
+        backlog: () => {
+          reading();
+          return new Promise(() => {});
+        },
+      });
+      const done = f.run();
+      // The program reaches the read only after resolving the daemon, which reads files.
+      await read;
+      expect(f.signals).toHaveLength(1);
+      expect(f.signals[0]?.aborted).toBe(false);
+      f.controller.abort();
+      expect(await done).toBe(0);
+      expect(f.signals[0]?.aborted).toBe(true);
+      expect(f.stdout).toEqual([]);
+    });
+
+    it('with a JSON error line, even in a TTY, when the backlog read fails', async () => {
+      const f = follow({ backlog: () => Promise.reject(new IronbirdError('NO_TARGET', 'Daemon unreachable at http://127.0.0.1:4567; run ironbird serve', { url: 'http://127.0.0.1:4567' })) }, { isTTY: true });
+      expect(await f.run()).toBe(5);
+      expect(f.stdout).toEqual(['{"error":{"code":"NO_TARGET","message":"Daemon unreachable at http://127.0.0.1:4567; run ironbird serve","details":{"url":"http://127.0.0.1:4567"}}}\n']);
+    });
+
+    it('with a JSON error line, even in a TTY, when the stream fails', async () => {
+      const f = follow(
+        {
+          stream: async ({ onMessage }) => {
+            onMessage('event', { seq: 1, name: 'a' });
+            throw new IronbirdError('TARGET_DISCONNECTED', 'Stream from http://127.0.0.1:4567 ended unexpectedly: socket hang up', { op: 'stream' });
+          },
+        },
+        { isTTY: true },
+      );
+      expect(await f.run()).toBe(1);
+      expect(f.stdout).toEqual(['{"seq":1,"name":"a"}\n', '{"error":{"code":"TARGET_DISCONNECTED","message":"Stream from http://127.0.0.1:4567 ended unexpectedly: socket hang up","details":{"op":"stream"}}}\n']);
+    });
+
+    it('with the error frame\'s code when an interrupt follows it before the stream settles', async () => {
+      const f = follow({
+        stream: async ({ onMessage }) => {
+          onMessage('error', { code: 'UNAUTHORIZED', message: 'Token missing or wrong for this daemon' });
+          f.controller.abort();
+        },
+      });
+      expect(await f.run()).toBe(2);
+      expect(f.stdout).toEqual(['{"error":{"code":"UNAUTHORIZED","message":"Token missing or wrong for this daemon"}}\n']);
+    });
+
+    it('with 0 when the interrupt comes before a stream that ignores it settles, and ignores frames after it', async () => {
+      const f = follow({
+        stream: async ({ onMessage }) => {
+          f.controller.abort();
+          onMessage('event', { seq: 2, name: 'late' });
+          onMessage('error', { code: 'INTERNAL', message: 'late' });
+        },
+      });
+      expect(await f.run()).toBe(0);
+      expect(f.stdout).toEqual([]);
+    });
+
+    it('with TARGET_DISCONNECTED when the stream settled before an interrupt that arrives while the error is written', async () => {
+      const f = follow({ stream: async () => {} });
+      const write = f.stdout.push.bind(f.stdout);
+      f.stdout.push = (...lines: string[]) => {
+        f.controller.abort();
+        return write(...lines);
+      };
+      expect(await f.run()).toBe(1);
+      expect(JSON.parse(f.stdout[0] ?? '')).toMatchObject({ error: { code: 'TARGET_DISCONNECTED', details: { target: 'headless', op: 'stream' } } });
+    });
   });
 
   it('exits 5 when the daemon is unreachable and 2 for unknown commands', async () => {

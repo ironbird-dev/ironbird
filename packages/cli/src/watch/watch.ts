@@ -20,7 +20,8 @@ export interface WatchOptions {
  * `ironbird watch` (M5 design D5, §5). Opens the stream at the event cursor, so no backlog is
  * replayed, and treats every `state` frame as a change signal: values and revisions always come
  * from a `getState` read. The first frame is the daemon's barrier, sent once the stream's state
- * subscription is live, so reading after it misses no change. Resolves to the exit code.
+ * subscription is live, so reading after it misses no change. Resolves to the exit code and never
+ * rejects: every end but an interrupt prints `{ "error": ... }` as the last line, whatever the TTY.
  */
 export async function runWatch(options: WatchOptions): Promise<number> {
   const { client, path, signal, write } = options;
@@ -37,7 +38,10 @@ export async function runWatch(options: WatchOptions): Promise<number> {
     cursor = await Promise.race([client.call<{ nextSeq: number }>('events', { limit: 0 }, options.target, { signal }), interrupted]);
   } catch (error) {
     if (signal.aborted) return 0;
-    throw error;
+    // Like every other end, a failed cursor read prints a JSON line whatever the TTY.
+    const shape = toErrorShape(error);
+    write(`${JSON.stringify({ error: shape })}\n`);
+    return exitCodeForError(shape.code);
   } finally {
     signal.removeEventListener('abort', onAbort);
   }
@@ -117,10 +121,7 @@ export async function runWatch(options: WatchOptions): Promise<number> {
     try {
       await client.stream({ target, since: cursor.result.nextSeq, signal: stream.signal, onMessage });
     } catch (error) {
-      if (!stopped) {
-        stop();
-        throw error;
-      }
+      fail(toErrorShape(error));
     }
     // The daemon ended the stream without an error frame (it shut down, or the connection closed
     // cleanly): let a read in flight print, then report the end as TARGET_DISCONNECTED, as the

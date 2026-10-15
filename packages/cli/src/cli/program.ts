@@ -1,12 +1,13 @@
 import { IronbirdError, messageOf, suggestNames, toErrorShape, type Description, type FakeCallsResult, type SettleResult, type StepResult, type TargetInfo } from '@ironbird/core';
 import { Command, CommanderError, InvalidArgumentError } from 'commander';
-import { createDaemonClient, resolveDaemon, unexpectedStreamEnd, type DaemonClient } from './client';
+import { createDaemonClient, resolveDaemon, type DaemonClient } from './client';
 import type { runServe } from './commands/serve';
 import type { McpServerOptions } from '../mcp/server';
 import type { DoctorEnvironment } from '../doctor/environment';
 import { UsageError, parseDuration } from './durations';
 import { exitCodeForError, exitCodeForStep } from './exit-codes';
-import { asErrorShape, createOutput, withTarget, type Output } from './output';
+import { runFollow } from './follow';
+import { createOutput, withTarget, type Output } from './output';
 import { parseJsonOrString, parsePayload } from './values';
 import { formatSnapshotFile, parseSnapshotFile } from './snapshot-file';
 import { formatScenarioResult } from '../scenario/format';
@@ -212,40 +213,10 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
         const params: Record<string, unknown> = {};
         if (opts.since !== undefined) params['since'] = opts.since;
         if (opts.limit !== undefined) params['limit'] = opts.limit;
+        // --follow prints JSON lines whatever the TTY, its errors included (runFollow).
+        if (opts.follow) return { exit: await runFollow({ client: ctx.client, target: ctx.target, params, signal: signal(), write: io.stdout }) };
         const envelope = await ctx.client.call<{ events: unknown[]; nextSeq: number; truncated: boolean }>('events', params, ctx.target);
-        if (!opts.follow) return { value: withTarget(envelope) };
-        for (const event of envelope.result.events) io.stdout(`${JSON.stringify(event)}\n`);
-        let followExit = 0;
-        let ended = false;
-        const followSignal = signal();
-        await ctx.client.stream({
-          target: ctx.target,
-          since: envelope.result.nextSeq,
-          signal: followSignal,
-          onMessage: (kind, data) => {
-            if (kind === 'event') {
-              io.stdout(`${JSON.stringify(data)}\n`);
-            } else if (kind === 'error') {
-              ended = true;
-              const shape = asErrorShape(data);
-              if (shape) {
-                io.stdout(`${JSON.stringify({ error: shape })}\n`);
-                followExit = exitCodeForError(shape.code);
-              } else {
-                io.stdout(`${JSON.stringify({ error: { code: 'INTERNAL', message: 'Malformed error frame from daemon' } })}\n`);
-                followExit = 1;
-              }
-            }
-          },
-        });
-        // Only SIGINT or SIGTERM, or the daemon's error frame, ends a follow on purpose; a stream the
-        // daemon closed without one (it shut down, or the connection dropped) is an error, as in `watch`.
-        if (!ended && !followSignal.aborted) {
-          const shape = unexpectedStreamEnd(ctx.client.url, ctx.target ?? envelope.target);
-          io.stdout(`${JSON.stringify({ error: shape })}\n`);
-          followExit = exitCodeForError(shape.code);
-        }
-        return { exit: followExit };
+        return { value: withTarget(envelope) };
       }),
     );
 

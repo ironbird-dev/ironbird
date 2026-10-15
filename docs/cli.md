@@ -173,7 +173,7 @@ ironbird events [--since <seq>] [--limit <n>] [--follow]
 
 Prints `{ events, nextSeq, truncated }`. With `--follow`, the backlog and every later event print as JSON lines regardless of TTY, until interrupted.
 
-With `--follow`, SIGINT ends it with exit 0, without an error line. Anything else that ends it prints `{ "error": ... }` as the last line and exits with that error's code: an `error` frame, such as `TARGET_DISCONNECTED` when the followed app goes away, or a stream that the daemon closes without an `error` frame, because it shut down or the connection dropped, which is `TARGET_DISCONNECTED` with `{ target, op: "stream" }` (exit 1). `events --follow` doesn't reconnect.
+With `--follow`, SIGINT or SIGTERM ends it with exit 0, without an error line, including while the backlog is still being read. Anything else that ends it prints `{ "error": ... }` as the last line, as JSON even in a TTY, and exits with that error's code: an `error` frame, such as `TARGET_DISCONNECTED` when the followed app goes away; a backlog read or stream that fails, such as `NO_TARGET` (exit 5) when the daemon is unreachable; or a stream that the daemon closes without an `error` frame, because it shut down or the connection dropped, which is `TARGET_DISCONNECTED` with `{ target, op: "stream" }` (exit 1). Whichever of these comes first decides the exit code, and nothing prints after it. `events --follow` doesn't reconnect.
 
 ### fake
 
@@ -322,7 +322,7 @@ Prints one JSON line per change to the state at `--path` (default: the whole sta
 - Objects are compared by key (`add`, `remove`, `replace`). Arrays are compared index by index: changed items are replaced whole, extra old items are removed from the highest index down, and new items are added at the end. A change of type is a `replace`.
 - `watch` samples state. The daemon sends at most 10 state frames per second and coalesces the revisions in between, so intermediate values can be skipped; use `events --follow` when every recorded event matters. Revisions restart after `reset` and `reload`, so `rev` can go backwards.
 - It opens the stream before its first read and reads only after the daemon's first `state` frame, so no change after it starts is missed. Reads never overlap, and any frame that arrives during a read causes one more read after it.
-- SIGINT ends it with exit 0, without an error line. Anything else that ends it prints `{ "error": ... }` as the last line and exits with that error's code: an `error` frame, such as `TARGET_DISCONNECTED` when a connected app goes away; a read that fails, such as `NO_TARGET` (exit 5) when the daemon is gone; or a stream that the daemon closes without an `error` frame, because it shut down or the connection dropped, which is `TARGET_DISCONNECTED` with `{ target, op: "stream" }` (exit 1) once any read in flight has printed. `watch` doesn't reconnect.
+- SIGINT or SIGTERM ends it with exit 0, without an error line. Anything else that ends it prints `{ "error": ... }` as the last line, as JSON even in a TTY, and exits with that error's code: an `error` frame, such as `TARGET_DISCONNECTED` when a connected app goes away; a read, or the stream, that fails, such as `NO_TARGET` (exit 5) when the daemon is gone; or a stream that the daemon closes without an `error` frame, because it shut down or the connection dropped, which is `TARGET_DISCONNECTED` with `{ target, op: "stream" }` (exit 1) once any read in flight has printed. `watch` doesn't reconnect.
 
 ```sh
 ironbird watch --path todos
