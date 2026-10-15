@@ -22,6 +22,16 @@ The bare legs apply one setting beyond the minimal wiring: `metro.config.js` res
 
 The `compat` job on the milestone pull request runs the same three legs on `ubuntu-latest` with Node 22. Its result is recorded here, with the run's URL and each leg's duration, when that pull request's checks finish. CI runners start cold, so if the slowest leg's CI duration exceeds 1.5 × W + 5 minutes, recompute `timeout-minutes` as ceil(1.5 × that duration) + I + N, commit it with the measured durations in the message body, and note the change here.
 
+2026-10-15, pull request #13 at 761a502, https://github.com/ironbird-dev/ironbird/actions/runs/38742986829: all three legs passed.
+
+| Leg | Resolved | Job duration |
+|---|---|---|
+| React Native 0.86 | react-native 0.86.3 (CLI 20.1.0), typecheck passed | 2:14 |
+| React Native 0.87 | react-native 0.87.1 (CLI 20.2.0), typecheck passed | 1:52 |
+| Expo SDK 57 | expo 57.0.23, react-native 0.86.3 | 1:18 |
+
+Every `verify-bundle` exit matched its expected value, as in the local runs. The slowest leg, 2:14, is under 1.5 × W + 5 minutes (6:35), so `timeout-minutes` stays 22.
+
 ## bare-redux iOS build (hand run)
 
 2026-10-10. Apple M3 Pro, macOS 27.2 (26B5101f), Xcode 27.0 (27A266a), CocoaPods 1.17.0, Ruby 4.0.7, Node v26.11.1, commit c5bff21. Simulator: iPhone 17, `9DEB1E0D-3DEF-4B99-ACFC-593ABDCAF6E6`, iOS 27.0 (24A434), booted for this run and shut down after it; no other simulator was booted or used. Built from: the workspace (pnpm).

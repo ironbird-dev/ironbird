@@ -151,6 +151,7 @@ It is not a UI automation tool, a state management library, or a way to run arbi
 | [docs/releasing.md](docs/releasing.md) | How releases are cut, and the 0.1.0 checklist |
 | [docs/testing-strategy.md](docs/testing-strategy.md) | How ironbird itself is tested and how its reliability is measured |
 | [docs/roadmap.md](docs/roadmap.md) | Milestones M0–M5 with exit criteria |
+| [docs/evals/](docs/evals/) | Each milestone's exit-criteria record, with how it was measured |
 | [docs/adr/](docs/adr/) | Architecture decision records |
 | [AGENTS.md](AGENTS.md) | Rules and conventions for contributors, human or agent |
 

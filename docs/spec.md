@@ -4,7 +4,7 @@
 |---|---|
 | Status | Draft |
 | Version | 0.1 (pre-implementation) |
-| Last updated | 2026-10-04 |
+| Last updated | 2026-10-15 |
 | Related | [architecture.md](architecture.md) · [roadmap.md](roadmap.md) |
 
 ## Problem statement
@@ -141,11 +141,11 @@ On 2026-09-10 Shopify described its answer for native apps: business logic decou
 |---|---|---|
 | R13 | MCP server (`ironbird mcp`) | Tools mirror the CLI; `ironbird_step` returns the screenshot as image content. Delivered in M3 as software: `ironbird mcp` (docs/cli.md, docs/agents.md) |
 | R14 | Agent skill | A skill file that teaches the loop: describe, send, wait, then escalate to device checks. Delivered in M3 as software: `packages/cli/skills/ironbird/`, installed by `ironbird agent setup` (docs/agents.md) |
-| R15 | Snapshots | `snapshot save` and `load` for targets that implement `persist` and `restore`; others return `UNSUPPORTED` |
+| R15 | Snapshots | `snapshot save` and `load` for targets that implement `persist` and `restore`; others return `UNSUPPORTED`. Delivered in M5: snapshotSave and snapshotLoad are P0 on both targets, with a strict serializer and INVALID_SNAPSHOT (docs/protocol.md) |
 | R16 | Fake call log | `ironbird fake <name> --calls` lists recorded port calls with arguments and outcomes. Delivered in M2 with the D13 cursor shape; see docs/evals/m2-fakes-and-scenarios.md |
-| R17 | `watch` | Streams state revisions and JSON Patch diffs until interrupted. Moved from M3 to M5 (M3 design D3) |
+| R17 | `watch` | Streams state revisions and JSON Patch diffs until interrupted. Moved from M3 to M5 (M3 design D3). Delivered in M5: ironbird watch [--path] (docs/cli.md) |
 | R18 | `@ironbird/testing` | Runs scenarios in Vitest or Jest; model-based testing helper built on fast-check. Delivered in M4; the model-based helper rediscovers the planted race in 10 of 10 seeds (gate met), see docs/evals/m4-testing-package.md |
-| R19 | Adapters | `@ironbird/xstate` and `@ironbird/redux` targets, with persistence where the library supports it |
+| R19 | Adapters | `@ironbird/xstate` and `@ironbird/redux` targets, with persistence where the library supports it. Delivered in M5: @ironbird/redux and @ironbird/xstate, with snapshots (docs/api.md) |
 | R20 | `doctor` | Checks Node version, config, headless load, simulator and adb availability, and that `.ironbird/` is gitignored. Delivered in M5: `ironbird doctor` (docs/cli.md), which also checks the daemon and bridge ports and that the installed package versions match |
 
 ### P2: design for, don't build yet
