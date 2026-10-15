@@ -56,6 +56,8 @@ describe('serializeSnapshot', () => {
     ['NaN', { n: Number.NaN }, 'n', 'NaN'],
     ['Infinity', { list: [1, Number.POSITIVE_INFINITY] }, 'list.1', 'Infinity'],
     ['-Infinity', { n: Number.NEGATIVE_INFINITY }, 'n', '-Infinity'],
+    ['negative zero', { list: [0, -0] }, 'list.1', '-0'],
+    ['negative zero at the root', -0, '', '-0'],
     ['a Map', { m: new Map([['k', 1]]) }, 'm', 'Map'],
     ['a Set', { s: new Set([1]) }, 's', 'Set'],
     ['a Date', { at: new Date(0) }, 'at', 'Date'],
@@ -73,6 +75,11 @@ describe('serializeSnapshot', () => {
     ['a Map at the root', new Map(), '', 'Map'],
   ])('rejects %s, naming its path and kind', (_label, value, path, reason) => {
     expect(rejection(value)).toMatchObject({ code: 'INVALID_SNAPSHOT', details: { path, reason } });
+  });
+
+  it('round-trips the numbers it accepts through JSON unchanged', () => {
+    const value = { zero: 0, small: Number.MIN_VALUE, big: Number.MAX_SAFE_INTEGER, negative: -1.5, list: [0, 1e-7] };
+    expect(JSON.parse(JSON.stringify(serializeSnapshot(value)))).toStrictEqual(value);
   });
 
   it('names the first lossy path in key order, and <root> in the message for the root', () => {
@@ -153,11 +160,20 @@ describe('serializeSnapshot', () => {
     expect(JSON.stringify(out)).toBe('{"__proto__":{"y":2}}');
   });
 
-  it('property: JSON values round-trip exactly', () => {
+  it('property: JSON values round-trip exactly, and -0, which JSON turns into 0, is refused', () => {
     fc.assert(
       fc.property(fc.jsonValue(), (input) => {
-        expect(JSON.stringify(serializeSnapshot(input))).toBe(JSON.stringify(input));
+        let out: unknown;
+        try {
+          out = serializeSnapshot(input);
+        } catch (error) {
+          expect(isIronbirdError(error) && error.code === 'INVALID_SNAPSHOT' && error.details).toMatchObject({ reason: '-0' });
+          return;
+        }
+        // toStrictEqual tells 0 from -0, so a value that changed on the way through JSON fails here.
+        expect(JSON.parse(JSON.stringify(out))).toStrictEqual(input);
       }),
+      { numRuns: 500 },
     );
   });
 

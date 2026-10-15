@@ -133,6 +133,8 @@ export function serializeSnapshot(value: unknown): unknown {
       case 'boolean':
         return current;
       case 'number':
+        // JSON writes -0 as 0, so a saved -0 would load back as a different number.
+        if (Object.is(current, -0)) return fail(path, '-0');
         if (Number.isFinite(current)) return current;
         return fail(path, Number.isNaN(current) ? 'NaN' : current > 0 ? 'Infinity' : '-Infinity');
       case 'bigint':
