@@ -182,9 +182,9 @@ export function untrackedWrites(calls) {
   });
 }
 
-// Words that name a path: `~`, an absolute path, or a relative path with a `..` segment anywhere in
+// Words that name a path: `~` alone or followed by `/` (`~user` and text like `~0.1` do not expand to $HOME), an absolute path, or a relative path with a `..` segment anywhere in
 // it (`../x`, `./../x`, `src/../../x`). A relative path without `..` stays inside the session.
-const BASH_PATH = /(?:^|[\s=('"<>])(~(?:\/[^\s'";|&<>)]*)?|(?:[\w.~@%+-]+\/)*\.\.(?=\/|[\s'";|&<>)]|$)(?:\/[^\s'";|&<>)]*)?|\/[^\s'";|&<>)]+)/g;
+const BASH_PATH = /(?:^|[\s=('"<>])(~(?=\/|[\s'";|&<>)]|$)(?:\/[^\s'";|&<>)]*)?|(?:[\w.~@%+-]+\/)*\.\.(?=\/|[\s'";|&<>)]|$)(?:\/[^\s'";|&<>)]*)?|\/[^\s'";|&<>)]+)/g;
 const IGNORED_OUTSIDE = new Set(['/dev/null', '/dev/stdout', '/dev/stderr']);
 
 // A heredoc body is file content only when the command plainly writes it to a file. The one shape

@@ -272,3 +272,18 @@ describe('outOfFolderPaths with heredocs', () => {
     expect(hits("cat > a.ts <<'EOF'\n/etc/hosts")).toEqual(hosts);
   });
 });
+
+describe('outOfFolderPaths with tildes', () => {
+  const hits = (command) => outOfFolderPaths(parseTranscript(transcript(use('a', 'Bash', { command }))).calls, [ROOT], HOME);
+
+  it('reports a tilde that expands to the home directory', () => {
+    expect(hits('cat ~/x')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/x' }]);
+    expect(hits('cd ~')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev' }]);
+    expect(hits('ls ~;')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev' }]);
+  });
+
+  it('ignores a tilde inside text or followed by a name', () => {
+    expect(hits("python3 - <<'PY'\nopen('RESULTS.md', 'w').write('| est | ~0.1 | hours |')\nPY")).toEqual([]);
+    expect(hits('echo "| ~0.1 |" ~foo a~=b')).toEqual([]);
+  });
+});
