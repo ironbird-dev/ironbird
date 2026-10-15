@@ -182,9 +182,10 @@ export function untrackedWrites(calls) {
   });
 }
 
-// Words that name a path: `~` alone or followed by `/` (`~user` and text like `~0.1` do not expand to $HOME), an absolute path, or a relative path with a `..` segment anywhere in
+// Words that name a path: a tilde word Bash expands (`~`, `~/x`, `~name`, `~-`, `~+`; a tilde followed
+// by a digit or another character, as in `~0.1`, is text), an absolute path, or a relative path with a `..` segment anywhere in
 // it (`../x`, `./../x`, `src/../../x`). A relative path without `..` stays inside the session.
-const BASH_PATH = /(?:^|[\s=('"<>])(~(?=\/|[\s'";|&<>)]|$)(?:\/[^\s'";|&<>)]*)?|(?:[\w.~@%+-]+\/)*\.\.(?=\/|[\s'";|&<>)]|$)(?:\/[^\s'";|&<>)]*)?|\/[^\s'";|&<>)]+)/g;
+const BASH_PATH = /(?:^|[\s=('"<>])(~(?:[A-Za-z_][A-Za-z0-9._-]*|[-+])?(?=\/|[\s'";|&<>)]|$)(?:\/[^\s'";|&<>)]*)?|(?:[\w.~@%+-]+\/)*\.\.(?=\/|[\s'";|&<>)]|$)(?:\/[^\s'";|&<>)]*)?|\/[^\s'";|&<>)]+)/g;
 const IGNORED_OUTSIDE = new Set(['/dev/null', '/dev/stdout', '/dev/stderr']);
 
 // A heredoc body is file content only when the command plainly writes it to a file. The one shape
@@ -246,7 +247,16 @@ export function stripHeredocs(command) {
 }
 
 function resolvePath(raw, root, home) {
-  if (raw === '~' || raw.startsWith('~/')) return path.join(home, raw.slice(1));
+  const tilde = /^~([A-Za-z_][A-Za-z0-9._-]*|[-+])?(\/.*)?$/s.exec(raw);
+  if (tilde) {
+    const [, word, rest = ''] = tilde;
+    if (word === undefined) return path.join(home, rest);
+    // `~+` is $PWD, the session folder. `~-` is $OLDPWD, which could be anywhere: the sentinel `/~-` is never inside the session.
+    if (word === '+') return path.resolve(root, `.${rest}`);
+    if (word === '-') return path.join('/~-', rest);
+    // `~name` is that user's home; approximated as a sibling of this user's home, never inside the session.
+    return path.join(path.dirname(home), word, rest);
+  }
   return path.resolve(root, raw);
 }
 

@@ -282,8 +282,22 @@ describe('outOfFolderPaths with tildes', () => {
     expect(hits('ls ~;')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev' }]);
   });
 
-  it('ignores a tilde inside text or followed by a name', () => {
+  it('reports another user\'s home, OLDPWD, and PWD tildes', () => {
+    expect(hits('cat ~root/.profile')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/root/.profile' }]);
+    expect(hits('ls ~root')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/root' }]);
+    expect(hits('cat ~-/x')).toEqual([{ index: 0, tool: 'Bash', path: '/~-/x' }]);
+    expect(hits('cd ~-')).toEqual([{ index: 0, tool: 'Bash', path: '/~-' }]);
+    // `~+` is the working directory, so it stays inside the session, like a relative path.
+    expect(hits('cat ~+/x')).toEqual([]);
+    expect(hits('cat ~+/../x')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/.ironbird-eval/sessions/1/x' }]);
+  });
+
+  it('ignores a tilde inside text or followed by a digit or another character', () => {
     expect(hits("python3 - <<'PY'\nopen('RESULTS.md', 'w').write('| est | ~0.1 | hours |')\nPY")).toEqual([]);
-    expect(hits('echo "| ~0.1 |" ~foo a~=b')).toEqual([]);
+    expect(hits('echo "| ~0.1 |" a~=b ~=c ~9')).toEqual([]);
+  });
+
+  it('accepts a quoted tilde as a false positive', () => {
+    expect(hits('cat "~/x"')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/x' }]);
   });
 });
