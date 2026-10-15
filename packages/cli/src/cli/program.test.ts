@@ -608,17 +608,26 @@ describe('snapshot', () => {
 });
 
 describe('watch', () => {
-  it('reads the path after the first state frame and prints the first line, on the target given', async () => {
+  it('reads the path after the first state frame and prints the first line, on the target given; a stream that then ends exits 1', async () => {
     const h = harness(
       { events: { events: [], nextSeq: 4, truncated: false }, getState: { rev: 2, path: 'cart', value: { items: [] } } },
       { streamFrames: [{ kind: 'state', data: { rev: 2 } }], signal: new AbortController().signal },
     );
-    expect(await h.run(['watch', '--path', 'cart', '--target', 'ios'])).toBe(0);
+    expect(await h.run(['watch', '--path', 'cart', '--target', 'ios'])).toBe(1);
     expect(h.calls).toEqual([
       { op: 'events', params: { limit: 0 }, target: 'ios' },
       { op: 'getState', params: { path: 'cart' }, target: 'ios' },
     ]);
-    expect(h.stdout).toEqual(['{"rev":2,"patch":[{"op":"add","path":"","value":{"items":[]}}]}\n']);
+    expect(h.stdout).toEqual([
+      '{"rev":2,"patch":[{"op":"add","path":"","value":{"items":[]}}]}\n',
+      '{"error":{"code":"TARGET_DISCONNECTED","message":"Stream from http://127.0.0.1:4567 ended unexpectedly; the daemon may have shut down","details":{"target":"ios","op":"stream"}}}\n',
+    ]);
+  });
+
+  it('exits 0 without an error line when interrupted', async () => {
+    const h = harness({ events: { events: [], nextSeq: 4, truncated: false } }, { streamFrames: [] });
+    expect(await h.run(['watch'])).toBe(0);
+    expect(h.stdout).toEqual([]);
   });
 
   it('prints an error frame as a JSON line even in a TTY and exits with its code', async () => {

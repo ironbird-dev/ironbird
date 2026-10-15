@@ -10,7 +10,7 @@ export interface WatchOptions {
   target: string | undefined;
   /** Dot path to watch; `''` is the whole state. */
   path: string;
-  /** Aborting it (SIGINT) ends the watch with exit 0. */
+  /** Aborting it (SIGINT) ends the watch with exit 0; a stream that ends any other way is an error. */
   signal: AbortSignal;
   /** Receives each JSON line, newline included. */
   write(line: string): void;
@@ -122,10 +122,13 @@ export async function runWatch(options: WatchOptions): Promise<number> {
         throw error;
       }
     }
-    // The daemon ended the stream without an error frame (it shut down): let a read in flight
-    // print. SIGINT still ends the watch meanwhile; it cancels the read, and the race returns at
-    // once even with a client that ignores the signal.
+    // The daemon ended the stream without an error frame (it shut down, or the connection closed
+    // cleanly): let a read in flight print, then report the end as TARGET_DISCONNECTED, as the
+    // client reports a stream that breaks mid-read. A read that fails meanwhile reports its own
+    // error instead. SIGINT still ends the watch with exit 0; it cancels the read, and the race
+    // returns at once even with a client that ignores the signal.
     if (!stopped) await Promise.race([pumping, halted]);
+    fail({ code: 'TARGET_DISCONNECTED', message: `Stream from ${client.url} ended unexpectedly; the daemon may have shut down`, details: { target, op: 'stream' } });
   } finally {
     signal.removeEventListener('abort', stop);
   }

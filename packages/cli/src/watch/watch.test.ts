@@ -265,15 +265,50 @@ describe('runWatch', () => {
     expect(lines).toEqual([]);
   });
 
-  it('lets a read in flight print when the daemon ends the stream, then returns 0', async () => {
+  const ended = { error: { code: 'TARGET_DISCONNECTED', message: 'Stream from http://fake ended unexpectedly; the daemon may have shut down', details: { target: 'headless', op: 'stream' } } };
+
+  it('reports TARGET_DISCONNECTED with exit 1 when the daemon ends the stream without an error frame', async () => {
+    const d = fakeDaemon();
+    const w = watch(d);
+    await tick();
+    d.frame('state', { rev: 1 });
+    d.reads[0]!.resolve({ rev: 1, path: '', value: { n: 1 } });
+    await tick();
+    d.end();
+    expect(await w.done).toBe(1);
+    expect(w.lines).toEqual([{ rev: 1, patch: [{ op: 'add', path: '', value: { n: 1 } }] }, ended]);
+  });
+
+  it('lets a read in flight print when the daemon ends the stream, then reports TARGET_DISCONNECTED with exit 1', async () => {
     const d = fakeDaemon();
     const w = watch(d);
     await tick();
     d.frame('state', { rev: 1 });
     d.end();
     d.reads[0]!.resolve({ rev: 1, path: '', value: { n: 1 } });
-    expect(await w.done).toBe(0);
-    expect(w.lines).toEqual([{ rev: 1, patch: [{ op: 'add', path: '', value: { n: 1 } }] }]);
+    expect(await w.done).toBe(1);
+    expect(w.lines).toEqual([{ rev: 1, patch: [{ op: 'add', path: '', value: { n: 1 } }] }, ended]);
+  });
+
+  it('reports only the read\'s error when a read in flight fails after the daemon ends the stream', async () => {
+    const d = fakeDaemon();
+    const w = watch(d);
+    await tick();
+    d.frame('state', { rev: 1 });
+    d.end();
+    d.reads[0]!.reject(new IronbirdError('NO_TARGET', 'Daemon unreachable at http://fake; run ironbird serve', { url: 'http://fake' }));
+    expect(await w.done).toBe(5);
+    expect(w.lines).toEqual([{ error: { code: 'NO_TARGET', message: 'Daemon unreachable at http://fake; run ironbird serve', details: { url: 'http://fake' } } }]);
+  });
+
+  it('reports TARGET_DISCONNECTED when the daemon ends the stream before its first frame', async () => {
+    const d = fakeDaemon();
+    const w = watch(d);
+    await tick();
+    d.end();
+    expect(await w.done).toBe(1);
+    expect(w.lines).toEqual([ended]);
+    expect(d.reads).toHaveLength(0);
   });
 
   it('ends with 0 when interrupted during a read still in flight after the daemon ends the stream', { timeout: 1_000 }, async () => {
