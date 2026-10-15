@@ -47,6 +47,13 @@ describe('parseTranscript', () => {
     expect(deniedCalls(parsed)).toBe(1);
   });
 
+  it('keeps every result event in order, with `result` the last', () => {
+    const parsed = parseTranscript(transcript(init, { type: 'result', result: 'first', num_turns: 3 }, { type: 'system', subtype: 'task_notification' }, { type: 'result', result: 'second', num_turns: 1 }));
+    expect(parsed.results.map((event) => event.result)).toEqual(['first', 'second']);
+    expect(parsed.result).toBe(parsed.results[1]);
+    expect(parseTranscript('').results).toEqual([]);
+  });
+
   it('returns an empty parse for an empty transcript', () => {
     const parsed = parseTranscript('');
     expect(parsed).toMatchObject({ events: [], init: undefined, result: undefined, calls: [] });

@@ -17,7 +17,9 @@ export function resultText(content) {
 /**
  * Parses a transcript. Never throws: a line that is not JSON (a session killed mid-write) becomes
  * `{ type: 'unparsed' }`, and a missing init or result event is `undefined`.
- * @returns {{ events: object[], init: object | undefined, result: object | undefined, calls: ToolCall[] }}
+ * `result` is the last `result` event; `results` is every one, in order. A session that wakes again
+ * (a background task finishing after the report) emits one per turn, and `total_cost_usd` is cumulative.
+ * @returns {{ events: object[], init: object | undefined, result: object | undefined, results: object[], calls: ToolCall[] }}
  */
 export function parseTranscript(text) {
   const events = text
@@ -31,7 +33,8 @@ export function parseTranscript(text) {
       }
     });
   const init = events.find((event) => event?.type === 'system' && event.subtype === 'init');
-  const result = events.findLast((event) => event?.type === 'result');
+  const results = events.filter((event) => event?.type === 'result');
+  const result = results.at(-1);
   const calls = [];
   const byId = new Map();
   events.forEach((event, index) => {
@@ -51,7 +54,7 @@ export function parseTranscript(text) {
       }
     }
   });
-  return { events, init, result, calls };
+  return { events, init, result, results, calls };
 }
 
 /** The session's final report: the result event's text, or the last assistant text when the session was cut off. */

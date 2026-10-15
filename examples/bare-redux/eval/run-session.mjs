@@ -16,12 +16,13 @@ import { checkIsolation, userSkillNames } from '../../checkout/eval/lib/isolatio
 import { assertPortsFree, clone, groupAlive, listenerOwners, must, pgidOf, readJson, reapGroup, run, writeJson } from '../../checkout/eval/lib/proc.mjs';
 import { sandboxProfile } from '../../checkout/eval/lib/sandbox.mjs';
 import { sessionVerdict } from '../../checkout/eval/lib/session.mjs';
-import { deniedCalls, outOfFolderPaths, parseTranscript, untrackedWrites } from '../../checkout/eval/lib/transcript.mjs';
+import { outOfFolderPaths, parseTranscript, untrackedWrites } from '../../checkout/eval/lib/transcript.mjs';
 import { budgetFrom, fillPrompt, proxyArgs, proxyEnv } from './lib/args.mjs';
 import { docsRead } from './lib/docs.mjs';
 import { sourcesState, templateStaleness } from './lib/freshness.mjs';
 import { BUDGET_USD, evalDir, evalHome, MODEL, MODEL_PATTERN, PORTS, PROXY_SOURCES, proxyLayout, proxySessionLayout, repoRoot, sessionId, SESSION_LIMIT_MS, TEARDOWN_RESERVE_MS } from './lib/paths.mjs';
 import { classifyListeners, outsideProblems, pidsWithCwdUnder } from './lib/session-rules.mjs';
+import { allDeniedCalls, sessionResult } from './lib/session-totals.mjs';
 
 const { values: options, positionals } = parseArgs({
   allowPositionals: true,
@@ -232,10 +233,9 @@ async function main() {
     }
     if (await exists(S.transcript)) {
       const parsed = parseTranscript(await readFile(S.transcript, 'utf8'));
-      record.result = parsed.result
-        ? { subtype: parsed.result.subtype, isError: parsed.result.is_error, costUsd: parsed.result.total_cost_usd, durationMs: parsed.result.duration_ms, numTurns: parsed.result.num_turns }
-        : null;
-      record.deniedToolCalls = deniedCalls(parsed);
+      // Totals over every result event (a late wake-up adds one), not only the last.
+      record.result = sessionResult(parsed);
+      record.deniedToolCalls = allDeniedCalls(parsed);
       record.outOfFolderPaths = outOfFolderPaths(parsed.calls, [...roots, ...docsRoots], os.homedir());
       const invalidating = outsideProblems(record.outOfFolderPaths);
       if (invalidating.length > 0) record.invalidReasons.push(`outside-folder access: ${invalidating.map((hit) => `${hit.tool} ${hit.path}`).join('; ')}`);

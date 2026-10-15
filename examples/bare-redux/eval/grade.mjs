@@ -10,11 +10,12 @@ import { readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { clone, readJson, run, writeJson } from '../../checkout/eval/lib/proc.mjs';
-import { finalReport, parseTranscript } from '../../checkout/eval/lib/transcript.mjs';
+import { parseTranscript } from '../../checkout/eval/lib/transcript.mjs';
 import { proxyEnv } from './lib/args.mjs';
 import { docsRead } from './lib/docs.mjs';
 import { gradeProject } from './lib/grade-project.mjs';
 import { ACCEPTANCE, exampleDir, proxyGradeLayout, proxyLayout, proxySessionLayout, sessionId } from './lib/paths.mjs';
+import { fullReport } from './lib/session-totals.mjs';
 
 const { values: options, positionals } = parseArgs({ allowPositionals: true, options: { out: { type: 'string' }, project: { type: 'string' }, selftest: { type: 'boolean' } } });
 const L = proxyLayout();
@@ -55,7 +56,7 @@ async function main() {
   const graded = await gradeProject({ project: G.session, acceptance: ACCEPTANCE, out: G.out, env });
   const parsed = parseTranscript(await readFile(S.transcript, 'utf8').catch(() => ''));
   const docs = docsRead(parsed.calls, [S.docs, await realpath(S.docs).catch(() => S.docs)]);
-  await writeFile(G.report, `${finalReport(parsed)}\n`);
+  await writeFile(G.report, `${fullReport(parsed)}\n`);
   const grade = { kind: 'session', session: id, gradedAt: new Date().toISOString(), valid: record.valid, invalidReasons: record.invalidReasons, result: record.result ?? null, ...graded, changes: await changes(G.session), docsRead: docs };
   await writeJson(G.grade, grade);
   process.stdout.write(`${JSON.stringify({ session: id, valid: grade.valid, score: grade.score, passed: grade.passed, docsRead: docs.read.length, grade: G.grade })}\n`);

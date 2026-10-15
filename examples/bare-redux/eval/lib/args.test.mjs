@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { budgetFrom, fillPrompt, proxyArgs, proxyEnv } from './args.mjs';
 
@@ -54,6 +55,21 @@ describe('proxyEnv', () => {
 describe('fillPrompt', () => {
   it('fills the docs and repository folders', () => {
     expect(fillPrompt('read {{docs}}/README.md, not {{repo}}/AGENTS.md', { docs: '/d', repo: '/r' })).toBe('read /d/README.md, not /r/AGENTS.md');
+  });
+});
+
+describe('the proxy prompt', () => {
+  const prompt = fillPrompt(readFileSync(new URL('../prompt.md', import.meta.url), 'utf8').trim(), { docs: DOCS, repo: '/r' });
+
+  it('states the layout of the docs folder and points at the guides by absolute path', () => {
+    expect(prompt).toContain(`${DOCS}/docs/guides/getting-started.md`);
+    expect(prompt).toContain(`${DOCS}/packages/`);
+    expect(prompt).toMatch(/mirrors the repository/);
+    expect(prompt).toMatch(/absolute path/);
+  });
+
+  it('leaves no placeholder unfilled', () => {
+    expect(prompt).not.toMatch(/\{\{/);
   });
 });
 
