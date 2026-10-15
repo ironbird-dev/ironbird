@@ -184,6 +184,32 @@ export function untrackedWrites(calls) {
 const BASH_PATH = /(?:^|[\s=('"<>])(~(?:\/[^\s'";|&<>)]*)?|(?:[\w.~@%+-]+\/)*\.\.(?=\/|[\s'";|&<>)]|$)(?:\/[^\s'";|&<>)]*)?|\/[^\s'";|&<>)]+)/g;
 const IGNORED_OUTSIDE = new Set(['/dev/null', '/dev/stdout', '/dev/stderr']);
 
+// A heredoc operator: `<<WORD`, `<<'WORD'`, `<<"WORD"`, `<<\WORD`, each optionally `<<-`. A here-string
+// (`<<<`) is not one. An unquoted word must start with a letter or `_`, so shift arithmetic such as
+// `$((1 << 3))` is not read as a heredoc that would swallow the rest of the command.
+const HEREDOC_OPERATOR = /(?<!<)<<(?!<)(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|\\?([A-Za-z_][\w.-]*))/g;
+
+/**
+ * Removes heredoc bodies and their terminator lines from a Bash command: a body is file content,
+ * not a path the command touches. The operator line stays, so `cat > /etc/x <<EOF` still names
+ * `/etc/x`. Several heredocs in one command (or on one line) are handled in order; for `<<-` the
+ * terminator may be tab-indented; an unterminated heredoc strips to the end of the command.
+ */
+export function stripHeredocs(command) {
+  const kept = [];
+  let pending = [];
+  for (const line of command.split('\n')) {
+    if (pending.length > 0) {
+      const { word, dash } = pending[0];
+      if ((dash ? line.replace(/^\t+/, '') : line) === word) pending.shift();
+      continue;
+    }
+    kept.push(line);
+    pending = [...line.matchAll(HEREDOC_OPERATOR)].map((match) => ({ dash: match[1] === '-', word: match[2] ?? match[3] ?? match[4] }));
+  }
+  return kept.join('\n');
+}
+
 function resolvePath(raw, root, home) {
   if (raw === '~' || raw.startsWith('~/')) return path.join(home, raw.slice(1));
   return path.resolve(root, raw);
@@ -197,7 +223,7 @@ export function pathsOf(call, root, home) {
   if (typeof input.notebook_path === 'string') found.push(input.notebook_path);
   if ((call.name === 'mcp__ironbird__ironbird_run_scenario' || call.name === 'Glob' || call.name === 'Grep') && typeof input.path === 'string') found.push(input.path);
   if (call.name === 'Glob' && typeof input.pattern === 'string' && /^(\/|~|\.\.)/.test(input.pattern)) found.push(input.pattern.replace(/\/?[^/]*[*?[{].*$/, '') || '/');
-  if (call.name === 'Bash' && typeof input.command === 'string') for (const match of input.command.matchAll(BASH_PATH)) found.push(match[1]);
+  if (call.name === 'Bash' && typeof input.command === 'string') for (const match of stripHeredocs(input.command).matchAll(BASH_PATH)) found.push(match[1]);
   return found.map((raw) => resolvePath(raw, root, home));
 }
 

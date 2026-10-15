@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { captureTarget, deniedCalls, finalReport, iosCaptureAfter, lastEdit, outOfFolderPaths, parseTranscript, reportingCall, scenarioResultsOf, untrackedWrites } from './transcript.mjs';
+import { captureTarget, deniedCalls, finalReport, iosCaptureAfter, lastEdit, outOfFolderPaths, parseTranscript, reportingCall, scenarioResultsOf, stripHeredocs, untrackedWrites } from './transcript.mjs';
 
 const ROOT = '/Users/dev/.ironbird-eval/sessions/1/project';
 const HOME = '/Users/dev';
@@ -171,5 +171,77 @@ describe('outOfFolderPaths', () => {
       { index: 8, tool: 'Grep', path: '/Users/dev/apps/ironbird/examples' },
       { index: 9, tool: 'Glob', path: '/Users/dev/.ironbird-eval/sessions/2/project/src' },
     ]);
+  });
+});
+
+describe('stripHeredocs', () => {
+  it('removes a quoted heredoc body and its terminator, keeps the operator line, and handles several heredocs', () => {
+    const command = [
+      "mkdir -p d && cat > d/a.ts <<'EOF'",
+      "import { store } from '../store/store';",
+      '// the store',
+      'export const a = 1;',
+      'EOF',
+      '&& cat > d/b.ts <<EOF',
+      "import { a } from '../a';",
+      '// b',
+      'EOF',
+      'ls',
+    ].join('\n');
+    expect(stripHeredocs(command)).toBe(["mkdir -p d && cat > d/a.ts <<'EOF'", '&& cat > d/b.ts <<EOF', 'ls'].join('\n'));
+  });
+
+  it('accepts double-quoted and <<- delimiters, and a tab-indented terminator only for <<-', () => {
+    expect(stripHeredocs('cat <<"END"\n../x\nEND\nls')).toBe('cat <<"END"\nls');
+    expect(stripHeredocs('cat <<-EOF\n\t../x\n\tEOF\nls')).toBe('cat <<-EOF\nls');
+    // Without the dash an indented line is body text, so the heredoc runs on.
+    expect(stripHeredocs('cat <<EOF\n../x\n\tEOF\nls')).toBe('cat <<EOF');
+  });
+
+  it('strips an unterminated heredoc to the end of the command', () => {
+    expect(stripHeredocs("cat > a.ts <<'EOF'\nimport '../x';\n// c")).toBe("cat > a.ts <<'EOF'");
+  });
+
+  it('strips two heredocs started on one line, in order', () => {
+    expect(stripHeredocs('cat <<A <<B\n../a\nA\n../b\nB\nls')).toBe('cat <<A <<B\nls');
+  });
+
+  it('does not treat a here-string as a heredoc', () => {
+    const command = 'cat <<< "../x"\nls /etc';
+    expect(stripHeredocs(command)).toBe(command);
+  });
+
+  it('leaves a command without heredocs unchanged', () => {
+    expect(stripHeredocs('ls ../x\ncat /etc/hosts')).toBe('ls ../x\ncat /etc/hosts');
+  });
+});
+
+describe('outOfFolderPaths with heredocs', () => {
+  const hits = (command) => outOfFolderPaths(parseTranscript(transcript(use('a', 'Bash', { command }))).calls, [ROOT], HOME);
+
+  it('ignores import specifiers and comments in heredoc bodies (the proxy-1 shape)', () => {
+    const command = [
+      "mkdir -p d && cat > d/a.ts <<'EOF'",
+      "import { store } from '../store/store';",
+      '// comment',
+      "export * from '../../shared';",
+      'EOF',
+      '&& cat > d/b.ts <<EOF',
+      "import { a } from './a'; // ../nope",
+      'EOF',
+    ].join('\n');
+    expect(hits(command)).toEqual([]);
+  });
+
+  it('still reports a path on the operator line', () => {
+    expect(hits("cat > /etc/x <<'EOF'\nbody ../y\nEOF")).toEqual([{ index: 0, tool: 'Bash', path: '/etc/x' }]);
+  });
+
+  it('still reports a path after the terminator', () => {
+    expect(hits('cat > a.ts <<EOF\n../in-body\nEOF\ncat /etc/hosts')).toEqual([{ index: 0, tool: 'Bash', path: '/etc/hosts' }]);
+  });
+
+  it('still reports a path in a here-string', () => {
+    expect(hits('cat <<< ../x')).toEqual([{ index: 0, tool: 'Bash', path: path.resolve(ROOT, '../x') }]);
   });
 });
