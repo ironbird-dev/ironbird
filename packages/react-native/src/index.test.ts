@@ -216,7 +216,8 @@ describe('startBridge', () => {
       socket.send(JSON.stringify({ type: 'welcome', protocol: 1, targetId: 'ios' }));
       await fixture.until(() => handle!.connected);
       socket.send(JSON.stringify({ type: 'request', id: 'r-1', op: 'reload' }));
-      await fixture.until(() => logs.some((line) => line.startsWith('warn: reload failed')));
+      // The log line and the reply frame race: the reply is sent first, but the socket may deliver it later.
+      await fixture.until(() => fixture!.frames.length >= 2 && logs.some((line) => line.startsWith('warn: reload failed')));
       expect(fixture.frames[1]).toEqual({ type: 'response', id: 'r-1', ok: true, result: {} });
       expect(handle.connected).toBe(true);
       handle.stop();
