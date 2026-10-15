@@ -184,28 +184,60 @@ export function untrackedWrites(calls) {
 const BASH_PATH = /(?:^|[\s=('"<>])(~(?:\/[^\s'";|&<>)]*)?|(?:[\w.~@%+-]+\/)*\.\.(?=\/|[\s'";|&<>)]|$)(?:\/[^\s'";|&<>)]*)?|\/[^\s'";|&<>)]+)/g;
 const IGNORED_OUTSIDE = new Set(['/dev/null', '/dev/stdout', '/dev/stderr']);
 
-// A heredoc operator: `<<WORD`, `<<'WORD'`, `<<"WORD"`, `<<\WORD`, each optionally `<<-`. A here-string
-// (`<<<`) is not one. An unquoted word must start with a letter or `_`, so shift arithmetic such as
-// `$((1 << 3))` is not read as a heredoc that would swallow the rest of the command.
-const HEREDOC_OPERATOR = /(?<!<)<<(?!<)(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|\\?([A-Za-z_][\w.-]*))/g;
+// A heredoc body is file content only when the command plainly writes it to a file. The one shape
+// that is stripped: `[cmd && ]cat > PATH <<'WORD'` (or `>>`, or `tee [-a] PATH`, or `<<-`), with the
+// delimiter fully quoted as one token, the operator last on its line, and a terminator line present.
+// Every other heredoc (`bash <<EOF`, an unquoted body that expands `$(...)`, a partly quoted or
+// backslashed delimiter, a continued operator line) is left in place: a false hit is acceptable, a
+// hidden access is not.
+const FILE_TOKEN = String.raw`[^\s'"\`$\\;&|<>()#]+`;
+const FILE_HEREDOC = new RegExp(
+  String.raw`^(?:[^'"\`\\#<()]*(?:&&|;|\|)\s*)?(?:cat\s+>>?\s*${FILE_TOKEN}|tee(?:\s+-a)?\s+${FILE_TOKEN})\s*<<(-?)(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)")[ \t]*$`,
+);
+
+/** Whether `text` ends inside an open single or double quote (comments and backslash escapes respected). */
+function endsInsideQuote(text) {
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (quote === "'") {
+      if (char === "'") quote = null;
+    } else if (char === '\\') {
+      i += 1;
+    } else if (quote === '"') {
+      if (char === '"') quote = null;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (char === '#' && (i === 0 || /\s/.test(text[i - 1]))) {
+      const end = text.indexOf('\n', i);
+      if (end === -1) return false;
+      i = end;
+    }
+  }
+  return quote !== null;
+}
 
 /**
- * Removes heredoc bodies and their terminator lines from a Bash command: a body is file content,
- * not a path the command touches. The operator line stays, so `cat > /etc/x <<EOF` still names
- * `/etc/x`. Several heredocs in one command (or on one line) are handled in order; for `<<-` the
- * terminator may be tab-indented; an unterminated heredoc strips to the end of the command.
+ * Removes the body and terminator line of a heredoc that writes file content (see FILE_HEREDOC for
+ * the one shape), so import specifiers and comments in it are not read as paths. The operator line
+ * and everything after the terminator are kept. Anything that does not match exactly, including a
+ * heredoc with no terminator or one that starts inside an open quote or after a continued line, is
+ * left whole.
  */
 export function stripHeredocs(command) {
+  const lines = command.split('\n');
   const kept = [];
-  let pending = [];
-  for (const line of command.split('\n')) {
-    if (pending.length > 0) {
-      const { word, dash } = pending[0];
-      if ((dash ? line.replace(/^\t+/, '') : line) === word) pending.shift();
-      continue;
-    }
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
     kept.push(line);
-    pending = [...line.matchAll(HEREDOC_OPERATOR)].map((match) => ({ dash: match[1] === '-', word: match[2] ?? match[3] ?? match[4] }));
+    const match = FILE_HEREDOC.exec(line.trimStart());
+    if (!match) continue;
+    const before = kept.slice(0, -1);
+    if (/(?<!\\)(?:\\\\)*\\$/.test(before.at(-1) ?? '') || endsInsideQuote(before.join('\n') + (before.length > 0 ? '\n' : ''))) continue;
+    const dash = match[1] === '-';
+    const word = match[2] ?? match[3];
+    const end = lines.findIndex((candidate, j) => j > i && (dash ? candidate.replace(/^\t+/, '') : candidate) === word);
+    if (end !== -1) i = end;
   }
   return kept.join('\n');
 }

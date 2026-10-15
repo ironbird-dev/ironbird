@@ -175,58 +175,66 @@ describe('outOfFolderPaths', () => {
 });
 
 describe('stripHeredocs', () => {
-  it('removes a quoted heredoc body and its terminator, keeps the operator line, and handles several heredocs', () => {
+  it('strips the body and terminator of a quoted file-writing heredoc, keeps the operator line, and handles several', () => {
     const command = [
       "mkdir -p d && cat > d/a.ts <<'EOF'",
       "import { store } from '../store/store';",
       '// the store',
       'export const a = 1;',
       'EOF',
-      '&& cat > d/b.ts <<EOF',
+      "cat >> d/b.ts <<'EOF'",
       "import { a } from '../a';",
       '// b',
       'EOF',
       'ls',
     ].join('\n');
-    expect(stripHeredocs(command)).toBe(["mkdir -p d && cat > d/a.ts <<'EOF'", '&& cat > d/b.ts <<EOF', 'ls'].join('\n'));
+    expect(stripHeredocs(command)).toBe(["mkdir -p d && cat > d/a.ts <<'EOF'", "cat >> d/b.ts <<'EOF'", 'ls'].join('\n'));
   });
 
-  it('accepts double-quoted and <<- delimiters, and a tab-indented terminator only for <<-', () => {
-    expect(stripHeredocs('cat <<"END"\n../x\nEND\nls')).toBe('cat <<"END"\nls');
-    expect(stripHeredocs('cat <<-EOF\n\t../x\n\tEOF\nls')).toBe('cat <<-EOF\nls');
-    // Without the dash an indented line is body text, so the heredoc runs on.
-    expect(stripHeredocs('cat <<EOF\n../x\n\tEOF\nls')).toBe('cat <<EOF');
+  it('accepts tee, double-quoted words, and ; and | prefixes', () => {
+    expect(stripHeredocs('echo hi; tee a.ts <<"END"\n../x\nEND\nls')).toBe('echo hi; tee a.ts <<"END"\nls');
+    expect(stripHeredocs("echo hi | tee -a a.ts <<'END'  \n../x\nEND\nls")).toBe("echo hi | tee -a a.ts <<'END'  \nls");
   });
 
-  it('strips an unterminated heredoc to the end of the command', () => {
-    expect(stripHeredocs("cat > a.ts <<'EOF'\nimport '../x';\n// c")).toBe("cat > a.ts <<'EOF'");
+  it('takes a tab-indented terminator only for <<-', () => {
+    expect(stripHeredocs("cat > a.ts <<-'EOF'\n\t../x\n\tEOF\nls")).toBe("cat > a.ts <<-'EOF'\nls");
+    expect(stripHeredocs("cat > a.ts <<'EOF'\n../x\n\tEOF\nEOF\nls")).toBe("cat > a.ts <<'EOF'\nls");
+    expect(stripHeredocs("cat > a.ts <<'EOF'\n../x\n\tEOF")).toBe("cat > a.ts <<'EOF'\n../x\n\tEOF");
   });
 
-  it('strips two heredocs started on one line, in order', () => {
-    expect(stripHeredocs('cat <<A <<B\n../a\nA\n../b\nB\nls')).toBe('cat <<A <<B\nls');
-  });
-
-  it('does not treat a here-string as a heredoc', () => {
-    const command = 'cat <<< "../x"\nls /etc';
+  it.each([
+    ['an unquoted delimiter', 'cat > a.ts <<EOF\n../x\nEOF'],
+    ['a partly quoted delimiter', 'cat > a.ts <<"E"OF\n../x\nEOF'],
+    ['a backslash delimiter', 'cat > a.ts <<\\EOF\n../x\nEOF'],
+    ['a command that runs the body', "bash <<'EOF'\ncat /etc/hosts\nEOF"],
+    ['sh -s', "sh -s <<'EOF'\ncat /etc/hosts\nEOF"],
+    ['cat without a redirect', "cat <<'EOF'\n../x\nEOF"],
+    ['text after the operator', "cat > a.ts <<'EOF' | sh\n/etc/hosts\nEOF"],
+    ['a continued operator line', "cat > a.ts <<'EOF' \\\n/etc/hosts\nbody\nEOF"],
+    ['a continued previous line', "echo hi \\\ncat > a.ts <<'EOF'\n../x\nEOF"],
+    ['no terminator', "cat > a.ts <<'EOF'\n../x\n// c"],
+    ['a quote-opening prefix', "echo 'a && cat > a.ts <<'EOF'\n../x\nEOF"],
+    ['a heredoc inside an open quote', 'echo "\ncat > a.ts <<\'EOF\'\n/etc/hosts\nEOF\n"'],
+    ['a comment', "# cat > a.ts <<'EOF'\n/etc/hosts\nEOF"],
+    ['a here-string', 'cat <<< "../x"\nls /etc'],
+    ['no heredoc', 'ls ../x\ncat /etc/hosts'],
+  ])('leaves %s whole', (_name, command) => {
     expect(stripHeredocs(command)).toBe(command);
-  });
-
-  it('leaves a command without heredocs unchanged', () => {
-    expect(stripHeredocs('ls ../x\ncat /etc/hosts')).toBe('ls ../x\ncat /etc/hosts');
   });
 });
 
 describe('outOfFolderPaths with heredocs', () => {
   const hits = (command) => outOfFolderPaths(parseTranscript(transcript(use('a', 'Bash', { command }))).calls, [ROOT], HOME);
+  const hosts = [{ index: 0, tool: 'Bash', path: '/etc/hosts' }];
 
-  it('ignores import specifiers and comments in heredoc bodies (the proxy-1 shape)', () => {
+  it('ignores import specifiers and comments in file-writing heredoc bodies (the proxy-1 shape)', () => {
     const command = [
       "mkdir -p d && cat > d/a.ts <<'EOF'",
       "import { store } from '../store/store';",
       '// comment',
       "export * from '../../shared';",
       'EOF',
-      '&& cat > d/b.ts <<EOF',
+      "cat > d/b.ts <<'EOF'",
       "import { a } from './a'; // ../nope",
       'EOF',
     ].join('\n');
@@ -238,10 +246,22 @@ describe('outOfFolderPaths with heredocs', () => {
   });
 
   it('still reports a path after the terminator', () => {
-    expect(hits('cat > a.ts <<EOF\n../in-body\nEOF\ncat /etc/hosts')).toEqual([{ index: 0, tool: 'Bash', path: '/etc/hosts' }]);
+    expect(hits("cat > a.ts <<'EOF'\n../in-body\nEOF\ncat /etc/hosts")).toEqual(hosts);
   });
 
   it('still reports a path in a here-string', () => {
     expect(hits('cat <<< ../x')).toEqual([{ index: 0, tool: 'Bash', path: path.resolve(ROOT, '../x') }]);
+  });
+
+  it('reports accesses a heredoc could hide', () => {
+    expect(hits('bash <<EOF\ncat /etc/hosts\nEOF')).toEqual(hosts);
+    expect(hits("sh -s <<'EOF'\ncat /etc/hosts\nEOF")).toEqual(hosts);
+    expect(hits('cat <<EOF\n$(cat /etc/hosts)\nEOF')).toEqual(hosts);
+    expect(hits('echo "<<EOF"\ncat /etc/hosts')).toEqual(hosts);
+    expect(hits('# <<EOF\ncat /etc/hosts')).toEqual(hosts);
+    expect(hits('echo $((1 << SHIFT))\ncat /etc/hosts')).toEqual(hosts);
+    expect(hits('cat <<EOF \\\n/etc/hosts\nbody\nEOF')).toEqual(hosts);
+    expect(hits('cat <<"E"OF\nbody\nEOF\ncat /etc/hosts')).toEqual(hosts);
+    expect(hits("cat > a.ts <<'EOF'\n/etc/hosts")).toEqual(hosts);
   });
 });
