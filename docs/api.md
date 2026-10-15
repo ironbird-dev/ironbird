@@ -1,12 +1,12 @@
-# ironbird: API Reference (draft)
+# ironbird: API Reference
 
 | | |
 |---|---|
-| Status | Draft; signatures will change during M0–M2 |
-| Last updated | 2026-10-04 |
+| Status | The 0.1 API: what 0.1.0 ships. Before 1.0, semver's pre-1.0 rule applies: a minor release such as 0.2 may change these signatures, and its changelog lists each change; patch releases don't break them |
+| Last updated | 2026-10-14 |
 | Related | [protocol.md](protocol.md) for wire types and error codes · [cli.md](cli.md) for the CLI |
 
-Priority markers match [spec.md](spec.md): **P0** ships in 0.1, **P1** is planned for 0.1 if milestones hold. Sections marked **M1** or **M2** describe APIs planned for those milestones ([roadmap.md](roadmap.md)); they are not in the repository yet.
+Priority markers match [spec.md](spec.md): **P0** ships in 0.1, **P1** is planned for 0.1 if milestones hold. A milestone marker such as **M1** names the milestone that built the section ([roadmap.md](roadmap.md)).
 
 ## @ironbird/core
 
