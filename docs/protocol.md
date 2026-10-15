@@ -4,7 +4,7 @@
 |---|---|
 | Status | Draft |
 | `PROTOCOL_VERSION` | `1` |
-| Last updated | 2026-10-04 |
+| Last updated | 2026-10-14 |
 | Related | [architecture.md](architecture.md) · [cli.md](cli.md) · [api.md](api.md) |
 
 ironbird has two transports that carry the same operations:
@@ -280,7 +280,7 @@ Capabilities say which operations a target supports, and an operation whose capa
 | `AMBIGUOUS_DEVICE` | Several booted devices and none was chosen | `{ devices }` |
 | `SCREENSHOT_FAILED` | The host capture tool failed, or the capture or device resolution timed out (a wedged `simctl`/`adb`/`resolveDevice`) | `{ tool, stderr }`; from `step`, plus `applied: true` when the dispatch already applied |
 | `HEADLESS_LOAD_FAILED` | The headless entry failed to load, at start or on `reload` | `{ entry, message, importChain? }` |
-| `INVALID_CONFIG` | `ironbird.config.ts` is missing a default export or fails validation; or `defineCommands`, or a fake's `create`, was given a schema that isn't a Zod 4.2+ schema (raised in the app when the commands are defined; a headless entry that throws it fails to load with `HEADLESS_LOAD_FAILED` carrying the message) | `{ file, issues }`; for a schema, `{ name, reason }` |
+| `INVALID_CONFIG` | `ironbird.config.ts` is missing a default export or fails validation; or `defineCommands`, or a fake's `create`, was given a schema that isn't a Zod 4.2+ schema (raised in the app when the commands are defined; a headless entry that throws it while its modules load fails to load with `HEADLESS_LOAD_FAILED` carrying the message, while one thrown inside the headless definition's `create` factory at start keeps `INVALID_CONFIG`, and on `reload` both are `HEADLESS_LOAD_FAILED`) | `{ file, issues }`; for a schema, `{ name, reason }` |
 | `INVALID_SCENARIO` | A scenario file fails to parse or validate; raised by the CLI before any operation is sent, never by a target | `{ file, issues }` |
 | `INVALID_SNAPSHOT` | `snapshotSave` found a value it can't save losslessly, or `snapshotLoad`'s snapshot failed the target's validation or couldn't be applied | `{ path, reason }`; `path` is a dot path into the snapshot, `''` at the root or when the failure isn't tied to one path; `reason` names the kind, such as `Map` or `cycle`, or carries the target's message |
 | `CLOCK_RUNAWAY` | `clockAdvance` exceeded 10,000 timer firings | `{ labels }` |
