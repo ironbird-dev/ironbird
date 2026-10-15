@@ -1,6 +1,6 @@
 import { IronbirdError, messageOf, suggestNames, toErrorShape, type Description, type FakeCallsResult, type SettleResult, type StepResult, type TargetInfo } from '@ironbird/core';
 import { Command, CommanderError, InvalidArgumentError } from 'commander';
-import { createDaemonClient, resolveDaemon, type DaemonClient } from './client';
+import { createDaemonClient, resolveDaemon, unexpectedStreamEnd, type DaemonClient } from './client';
 import type { runServe } from './commands/serve';
 import type { McpServerOptions } from '../mcp/server';
 import type { DoctorEnvironment } from '../doctor/environment';
@@ -216,14 +216,17 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
         if (!opts.follow) return { value: withTarget(envelope) };
         for (const event of envelope.result.events) io.stdout(`${JSON.stringify(event)}\n`);
         let followExit = 0;
+        let ended = false;
+        const followSignal = signal();
         await ctx.client.stream({
           target: ctx.target,
           since: envelope.result.nextSeq,
-          signal: signal(),
+          signal: followSignal,
           onMessage: (kind, data) => {
             if (kind === 'event') {
               io.stdout(`${JSON.stringify(data)}\n`);
             } else if (kind === 'error') {
+              ended = true;
               const shape = asErrorShape(data);
               if (shape) {
                 io.stdout(`${JSON.stringify({ error: shape })}\n`);
@@ -235,6 +238,13 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
             }
           },
         });
+        // Only SIGINT or SIGTERM, or the daemon's error frame, ends a follow on purpose; a stream the
+        // daemon closed without one (it shut down, or the connection dropped) is an error, as in `watch`.
+        if (!ended && !followSignal.aborted) {
+          const shape = unexpectedStreamEnd(ctx.client.url, ctx.target ?? envelope.target);
+          io.stdout(`${JSON.stringify({ error: shape })}\n`);
+          followExit = exitCodeForError(shape.code);
+        }
         return { exit: followExit };
       }),
     );

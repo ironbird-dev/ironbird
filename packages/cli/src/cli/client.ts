@@ -16,6 +16,15 @@ export interface CallOptions {
 
 export const DEFAULT_DAEMON_URL = 'http://127.0.0.1:4567';
 
+/**
+ * What `watch` and `events --follow` report when the daemon closes their stream without the
+ * terminal `error` frame, as when it shuts down: the same code and details as a stream that breaks
+ * mid-read in `stream` below. An interrupt is not this; the commands check their signal first.
+ */
+export function unexpectedStreamEnd(url: string, target: string | undefined): ErrorShape {
+  return { code: 'TARGET_DISCONNECTED', message: `Stream from ${url} ended unexpectedly; the daemon may have shut down`, details: { target, op: 'stream' } };
+}
+
 type RpcEnvelope = { ok: true; target?: string; result: unknown } | { ok: false; error: ErrorShape };
 
 /** Recognizes a parsed JSON body shaped like the protocol's failure envelope, `{ ok: false, error }`,

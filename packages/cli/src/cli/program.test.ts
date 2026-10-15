@@ -139,6 +139,43 @@ describe('buildProgram', () => {
     expect(h.stdout).toEqual(['{"seq":4,"t":0,"source":"s","name":"a"}\n', '{"seq":9,"name":"streamed"}\n']);
   });
 
+  it('events --follow reports TARGET_DISCONNECTED and exits 1 when the stream ends without an error frame', async () => {
+    const h = harness({ events: { events: [{ seq: 4, t: 0, source: 's', name: 'a' }], nextSeq: 4, truncated: false } }, { signal: new AbortController().signal });
+    expect(await h.run(['events', '--follow', '--target', 'ios'])).toBe(1);
+    expect(h.stdout).toEqual([
+      '{"seq":4,"t":0,"source":"s","name":"a"}\n',
+      '{"seq":9,"name":"streamed"}\n',
+      '{"error":{"code":"TARGET_DISCONNECTED","message":"Stream from http://127.0.0.1:4567 ended unexpectedly; the daemon may have shut down","details":{"target":"ios","op":"stream"}}}\n',
+    ]);
+  });
+
+  it('events --follow names the target the daemon picked when the stream ends unexpectedly', async () => {
+    const h = harness({ events: { events: [], nextSeq: 0, truncated: false } }, { streamFrames: [], signal: new AbortController().signal });
+    expect(await h.run(['events', '--follow'])).toBe(1);
+    expect(JSON.parse(h.stdout[0] ?? '')).toMatchObject({ error: { code: 'TARGET_DISCONNECTED', details: { target: 'headless', op: 'stream' } } });
+  });
+
+  it('events --follow exits 0 without an error line when interrupted', async () => {
+    const controller = new AbortController();
+    const stdout: string[] = [];
+    const client: DaemonClient = {
+      url: 'http://127.0.0.1:4567',
+      call: async <T,>() => ({ target: 'headless', result: { events: [], nextSeq: 0, truncated: false } as T }),
+      rpc: async () => {
+        throw new Error('unexpected rpc');
+      },
+      stream: ({ signal, onMessage }) =>
+        new Promise<void>((resolve) => {
+          onMessage('event', { seq: 1, name: 'a' });
+          signal.addEventListener('abort', () => resolve(), { once: true });
+          controller.abort();
+        }),
+    };
+    const { run } = buildProgram({ cwd: '/tmp/nowhere', env: {}, isTTY: false, stdout: (t) => stdout.push(t), stderr: () => {}, version: '0.0.0-test', createClient: () => client, signal: controller.signal });
+    expect(await run(['events', '--follow'])).toBe(0);
+    expect(stdout).toEqual(['{"seq":1,"name":"a"}\n']);
+  });
+
   it('events --follow prints an error frame then resolves with its mapped exit code', async () => {
     const h = harness(
       { events: { events: [], nextSeq: 0, truncated: false } },

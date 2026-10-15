@@ -173,6 +173,8 @@ ironbird events [--since <seq>] [--limit <n>] [--follow]
 
 Prints `{ events, nextSeq, truncated }`. With `--follow`, the backlog and every later event print as JSON lines regardless of TTY, until interrupted.
 
+With `--follow`, SIGINT ends it with exit 0, without an error line. Anything else that ends it prints `{ "error": ... }` as the last line and exits with that error's code: an `error` frame, such as `TARGET_DISCONNECTED` when the followed app goes away, or a stream that the daemon closes without an `error` frame, because it shut down or the connection dropped, which is `TARGET_DISCONNECTED` with `{ target, op: "stream" }` (exit 1). `events --follow` doesn't reconnect.
+
 ### fake
 
 ```text

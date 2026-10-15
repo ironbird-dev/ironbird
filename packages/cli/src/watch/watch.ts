@@ -1,5 +1,5 @@
 import { toErrorShape, type ErrorShape } from '@ironbird/core';
-import type { DaemonClient } from '../cli/client';
+import { unexpectedStreamEnd, type DaemonClient } from '../cli/client';
 import { exitCodeForError } from '../cli/exit-codes';
 import { asErrorShape } from '../cli/output';
 import { patchBetween, type Presence } from './diff';
@@ -128,7 +128,7 @@ export async function runWatch(options: WatchOptions): Promise<number> {
     // error instead. SIGINT still ends the watch with exit 0; it cancels the read, and the race
     // returns at once even with a client that ignores the signal.
     if (!stopped) await Promise.race([pumping, halted]);
-    fail({ code: 'TARGET_DISCONNECTED', message: `Stream from ${client.url} ended unexpectedly; the daemon may have shut down`, details: { target, op: 'stream' } });
+    fail(unexpectedStreamEnd(client.url, target));
   } finally {
     signal.removeEventListener('abort', stop);
   }

@@ -276,7 +276,7 @@ Capabilities say which operations a target supports, and an operation whose capa
 | `UNSUPPORTED` | The operation isn't available on this target, or the route is unknown (HTTP 404, `target: null`) | `{ op, target }` |
 | `NO_TARGET` | No target is connected or configured | `{ available }` |
 | `AMBIGUOUS_TARGET` | Several targets qualify and none was chosen, or a remote `reload` found another connected target with the same app id and platform | `{ available }` |
-| `TARGET_DISCONNECTED` | The connection dropped before a response, a stream ended without its terminal `error` frame (the CLI raises this for `watch`, with `op: 'stream'`), the request timeout elapsed, a reset, reload, or dispose abandoned the operation, or a reloaded app didn't reconnect within `timeoutMs` | `{ target, op }`; for a reload that timed out, `{ target, op: 'reload', timeoutMs }` |
+| `TARGET_DISCONNECTED` | The connection dropped before a response, a stream ended without its terminal `error` frame (the CLI raises this for `watch` and `events --follow`, with `op: 'stream'`), the request timeout elapsed, a reset, reload, or dispose abandoned the operation, or a reloaded app didn't reconnect within `timeoutMs` | `{ target, op }`; for a reload that timed out, `{ target, op: 'reload', timeoutMs }` |
 | `AMBIGUOUS_DEVICE` | Several booted devices and none was chosen | `{ devices }` |
 | `SCREENSHOT_FAILED` | The host capture tool failed, or the capture or device resolution timed out (a wedged `simctl`/`adb`/`resolveDevice`) | `{ tool, stderr }`; from `step`, plus `applied: true` when the dispatch already applied |
 | `HEADLESS_LOAD_FAILED` | The headless entry failed to load, at start or on `reload` | `{ entry, message, importChain? }` |
