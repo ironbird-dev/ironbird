@@ -215,11 +215,12 @@ export async function moveDir(from, to) {
  * Regenerates the copy at `outDir` without ever leaving it missing or half written. It generates
  * once into a temporary folder, which also runs the marker and leak checks, and only then swaps
  * the result in: the committed copy is moved aside, the new one moved into place, and the old one
- * deleted. If moving the new copy in fails, the old one is moved back. The old copy is deleted only
- * once a complete copy is in place: if it cannot be put back, or moving it aside stopped partway,
- * it is kept and the error names where.
+ * deleted. If moving the new copy in fails, what it left at `outDir` is cleared and the old one is
+ * moved back. From the moment the old copy is moved aside until a complete copy is at `outDir`
+ * again, the old copy is the only complete one, so any failure in between keeps it and the error
+ * names where; so does a move aside that stopped partway.
  */
-export async function replaceExercise({ exampleDir, outDir, generate = generateExercise, move = moveDir }) {
+export async function replaceExercise({ exampleDir, outDir, generate = generateExercise, move = moveDir, remove = (dir) => rm(dir, { recursive: true, force: true }) }) {
   const work = await mkdtemp(path.join(os.tmpdir(), 'exercise-'));
   const staging = path.join(work, 'new');
   const previous = path.join(work, 'previous');
@@ -235,21 +236,25 @@ export async function replaceExercise({ exampleDir, outDir, generate = generateE
         keepPrevious = true;
         throw new Error(`Could not move ${outDir} aside (${error.message}); what was moved is kept at ${previous}`, { cause: error });
       }
+      keepPrevious = true;
     }
     try {
       await move(staging, outDir);
     } catch (error) {
-      await rm(outDir, { recursive: true, force: true });
-      if (hadCopy) {
-        try {
-          await move(previous, outDir);
-        } catch (restoreError) {
-          keepPrevious = true;
-          throw new Error(`Could not move the new copy into ${outDir} (${error.message}) or put the old copy back (${restoreError.message}); the old copy is kept at ${previous}`, { cause: restoreError });
-        }
+      if (!hadCopy) {
+        await remove(outDir);
+        throw error;
       }
+      try {
+        await remove(outDir);
+        await move(previous, outDir);
+      } catch (restoreError) {
+        throw new Error(`Could not move the new copy into ${outDir} (${error.message}) or put the old copy back (${restoreError.message}); the old copy is kept at ${previous}`, { cause: restoreError });
+      }
+      keepPrevious = false;
       throw error;
     }
+    keepPrevious = false;
     return result;
   } finally {
     await rm(keepPrevious ? staging : work, { recursive: true, force: true });

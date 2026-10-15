@@ -217,6 +217,31 @@ describe('replaceExercise', () => {
     expect(await readdir(path.dirname(kept))).toEqual(['previous']);
   });
 
+  it('keeps the old copy and names it when clearing a half-moved new copy fails before the old one is put back', async () => {
+    const outDir = await committedCopy();
+    let moves = 0;
+    const move = async (from, to) => {
+      moves += 1;
+      if (moves === 2) {
+        await mkdir(to, { recursive: true });
+        await writeFile(path.join(to, 'partial.txt'), 'partial');
+        throw new Error('disk full');
+      }
+      await rename(from, to);
+    };
+    const remove = async (dir) => {
+      if (dir === outDir) throw new Error('permission denied');
+      await rm(dir, { recursive: true, force: true });
+    };
+    const failure = await replaceExercise({ exampleDir, outDir, generate: writes('new.txt'), move, remove }).catch((error) => error);
+    expect(moves).toBe(2);
+    expect(failure.message).toMatch(/^Could not move the new copy into .* \(disk full\) or put the old copy back \(permission denied\); the old copy is kept at /);
+    const kept = failure.message.split('the old copy is kept at ')[1];
+    made.push(path.dirname(kept));
+    expect(await readdir(kept)).toEqual(['old.txt']);
+    expect(await readFile(path.join(kept, 'old.txt'), 'utf8')).toBe('old');
+  });
+
   it('keeps what was moved aside when moving the old copy aside stops partway', async () => {
     const outDir = await committedCopy();
     const move = async (from, to) => {
