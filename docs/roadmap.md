@@ -121,7 +121,7 @@ Gate failed on 2026-10-03 after two batches; see docs/evals/m3-agent-interface.m
 
 **Exit criteria**
 
-- [ ] A developer other than the author wires ironbird into a copy of `examples/bare-redux` that doesn't include it yet, using only the docs, in ≤ 1 day (pending human trial; the proxy produced no valid session, and its three invalid sessions each scored 5/5 when graded for the record only; see docs/evals/m5-adapters-and-0.1.md)
+- [ ] A developer other than the author wires ironbird into a copy of `examples/bare-redux` that doesn't include it yet, using only the docs, in ≤ 1 day (pending human trial; the proxy scored 5/5 in its one valid session, the fifth, run after harness fixes; see docs/evals/m5-adapters-and-0.1.md)
 - [x] CI passes on the two most recent React Native minor versions and the current Expo SDK
 - [x] Zod 3 support question (Q8) closed, and the migration note published if support is dropped
 
