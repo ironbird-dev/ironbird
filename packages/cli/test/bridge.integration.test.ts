@@ -32,7 +32,7 @@ interface App {
 
 const commandsOf = () => defineCommands({ 'counter.add': z.object({ by: z.number().int() }), 'data.load': z.object({}) });
 
-function app(): App {
+function app(options: { snapshots?: boolean } = {}): App {
   const clock = createRealClock();
   const tracker = createTracker({ clock });
   const recorder = createEventRecorder({ clock });
@@ -70,6 +70,12 @@ function app(): App {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    ...(options.snapshots
+      ? {
+          persist: () => state,
+          restore: (snapshot: unknown) => set(z.strictObject({ count: z.number().int(), status: z.string() }).parse(snapshot)),
+        }
+      : {}),
   });
   // Test-only instrumentation: count active target.subscribe() listeners so a test can wait for
   // waitFor's subscription (see the App.subscribers doc comment) instead of sleeping.
@@ -159,6 +165,25 @@ describe('bridge against daemon', () => {
     expect(await rpc(d, { op: 'dispatch', params: { name: 'counter.add', payload: { by: 'x' } } })).toMatchObject({ ok: false, error: { code: 'INVALID_PAYLOAD' } });
   });
 
+  it('saves and loads snapshots through the bridge, which checks the app id they came from', async () => {
+    const d = await boot();
+    bridge(d, app({ snapshots: true }));
+    await until(() => d.targets().some((t) => t.id === 'ios'), 'the bridge to connect');
+    await rpc(d, { op: 'dispatch', params: { name: 'counter.add', payload: { by: 2 }, settle: false } });
+    expect(await rpc(d, { op: 'snapshotSave' })).toMatchObject({ ok: true, target: 'ios', result: { rev: 1, snapshot: { count: 2, status: 'idle' } } });
+    expect(await rpc(d, { op: 'snapshotLoad', params: { snapshot: { count: 9, status: 'idle' }, app: 'com.example.other' } })).toMatchObject({
+      ok: false,
+      error: { code: 'APP_MISMATCH', details: { expected: 'com.example.test', received: 'com.example.other' } },
+    });
+    expect(await rpc(d, { op: 'snapshotLoad', params: { snapshot: { count: 'nine' }, app: 'com.example.test' } })).toMatchObject({ ok: false, error: { code: 'INVALID_SNAPSHOT', details: { path: '' } } });
+    expect(await rpc(d, { op: 'getState', params: { path: 'count' } })).toMatchObject({ ok: true, result: { value: 2 } });
+    expect(await rpc(d, { op: 'snapshotLoad', params: { snapshot: { count: 9, status: 'idle' }, app: 'com.example.test' } })).toMatchObject({
+      ok: true,
+      target: 'ios',
+      result: { path: '', value: { count: 9, status: 'idle' } },
+    });
+  });
+
   it('forwards notifications to the stream and ends it when its target disconnects', async () => {
     const d = await boot();
     const a = app();
@@ -176,10 +201,12 @@ describe('bridge against daemon', () => {
         text += decoder.decode(value, { stream: true });
       }
     };
-    await readUntil(': connected');
+    // Wait for the initial state frame before dispatching: `: connected` is written before the
+    // backlog read crosses the bridge, so a dispatch sent on it could land before the state
+    // subscription and make the initial frame carry rev 1.
+    await readUntil('event: state\ndata: {"rev":0}\n\n');
     await rpc(d, { op: 'dispatch', params: { name: 'counter.add', payload: { by: 1 }, settle: false } });
-    await readUntil('event: state');
-    expect(text).toContain('data: {"rev":1}');
+    await readUntil('event: state\ndata: {"rev":1}\n\n');
     a.recorder.record('analytics', 'opened');
     await readUntil('"name":"opened"');
     handle.stop();

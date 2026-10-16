@@ -59,7 +59,7 @@ The daemon is the only long-lived process. CLI invocations and the MCP server ar
 | `@ironbird/cli` | Node 22+ | core; WebSocket server, YAML parser, TypeScript loader, MCP SDK (confirm in M0) | Daemon, CLI commands, scenario runner, device helpers, `verify-bundle`, MCP server |
 | `ironbird` | Node 22+ | `@ironbird/cli` | Wrapper that exposes the `ironbird` binary for `npx ironbird` |
 | `@ironbird/testing` | Node 22+, under Vitest or Jest | core; cli through `@ironbird/cli/runner`; fast-check; yaml | In-process test target, scenario runner for test suites, model-based testing helper (`modelTest`), JSON-Schema payload generator |
-| `@ironbird/xstate`, `@ironbird/redux` (P1) | Node, Hermes | core; the library (peer) | `Target` adapters |
+| `@ironbird/xstate`, `@ironbird/redux` | Node, Hermes | core, `zod`, and `xstate` ^5 or `redux` ^5 (all peers) | `Target` adapters: `fromActor`, `fromStore`, `withIronbirdRestore` |
 
 Dependencies point one way. Every package may depend on core, and core depends on nothing but Zod. The CLI never imports `@ironbird/react-native`.
 
@@ -214,7 +214,7 @@ When `--target` is omitted, operations use `defaultTarget` from config, which is
 | `@ironbird/core` in a release bundle | Expected, because app code imports its `Clock`; core has no I/O, no network code, and no bridge marker, and its tracker and recorder are created with `enabled: __DEV__` |
 | Code injection through the agent surface | No evaluation operations exist; only declared commands and controls, validated inside the app ([ADR-0001](adr/0001-commands-only-agent-surface.md)) |
 | Malformed or hostile daemon messages | The bridge validates message shapes and payloads and rejects unknown operations |
-| Sensitive data in artifacts | State, events, and screenshots may contain personal data; `.ironbird/` is gitignored by the setup template, and `doctor` warns if it isn't |
+| Sensitive data in artifacts | State, events, and screenshots may contain personal data; `.ironbird/` is gitignored by the setup template, and `ironbird doctor` fails its required `gitignore` check if it isn't |
 
 ## 10. Performance budgets
 

@@ -8,4 +8,4 @@ export { loadScenarioFiles, parseScenario } from './scenario/parse';
 export type { Scenario, ScenarioStep } from './scenario/parse';
 export { runScenario } from './scenario/run';
 export type { RunScenarioOptions } from './scenario/run';
-export type { DaemonClient } from './cli/client';
+export type { CallOptions, DaemonClient } from './cli/client';

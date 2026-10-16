@@ -4,7 +4,7 @@
 |---|---|
 | Status | Draft |
 | Version | 0.1 (pre-implementation) |
-| Last updated | 2026-10-04 |
+| Last updated | 2026-10-15 |
 | Related | [architecture.md](architecture.md) · [roadmap.md](roadmap.md) |
 
 ## Problem statement
@@ -141,12 +141,12 @@ On 2026-09-10 Shopify described its answer for native apps: business logic decou
 |---|---|---|
 | R13 | MCP server (`ironbird mcp`) | Tools mirror the CLI; `ironbird_step` returns the screenshot as image content. Delivered in M3 as software: `ironbird mcp` (docs/cli.md, docs/agents.md) |
 | R14 | Agent skill | A skill file that teaches the loop: describe, send, wait, then escalate to device checks. Delivered in M3 as software: `packages/cli/skills/ironbird/`, installed by `ironbird agent setup` (docs/agents.md) |
-| R15 | Snapshots | `snapshot save` and `load` for targets that implement `persist` and `restore`; others return `UNSUPPORTED` |
+| R15 | Snapshots | `snapshot save` and `load` for targets that implement `persist` and `restore`; others return `UNSUPPORTED`. Delivered in M5: snapshotSave and snapshotLoad are P0 on both targets, with a strict serializer and INVALID_SNAPSHOT (docs/protocol.md) |
 | R16 | Fake call log | `ironbird fake <name> --calls` lists recorded port calls with arguments and outcomes. Delivered in M2 with the D13 cursor shape; see docs/evals/m2-fakes-and-scenarios.md |
-| R17 | `watch` | Streams state revisions and JSON Patch diffs until interrupted. Moved from M3 to M5 (M3 design D3) |
+| R17 | `watch` | Streams state revisions and JSON Patch diffs until interrupted. Moved from M3 to M5 (M3 design D3). Delivered in M5: ironbird watch [--path] (docs/cli.md) |
 | R18 | `@ironbird/testing` | Runs scenarios in Vitest or Jest; model-based testing helper built on fast-check. Delivered in M4; the model-based helper rediscovers the planted race in 10 of 10 seeds (gate met), see docs/evals/m4-testing-package.md |
-| R19 | Adapters | `@ironbird/xstate` and `@ironbird/redux` targets, with persistence where the library supports it |
-| R20 | `doctor` | Checks Node version, config, headless load, simulator and adb availability, and that `.ironbird/` is gitignored |
+| R19 | Adapters | `@ironbird/xstate` and `@ironbird/redux` targets, with persistence where the library supports it. Delivered in M5: @ironbird/redux and @ironbird/xstate, with snapshots (docs/api.md) |
+| R20 | `doctor` | Checks Node version, config, headless load, simulator and adb availability, and that `.ironbird/` is gitignored. Delivered in M5: `ironbird doctor` (docs/cli.md), which also checks the daemon and bridge ports and that the installed package versions match |
 
 ### P2: design for, don't build yet
 
@@ -188,7 +188,7 @@ These targets are hypotheses to revisit after the first pilots.
 | Q5 | ~~Are JS-only signals enough to settle around UI-thread animations (for example Reanimated), layout animations, and image decoding, or is an optional native add-on needed?~~ **Resolved 2026-09-20 at the M1 gate (ADR-0005 accepted):** yes with motion reduced. JS-only signals cannot see native-driver animations: in the clean gate run, Android's fast capture landed mid-fade on 50 of 60 full-motion `payment.start` steps, while the full-motion iOS 0% is capture timing, not detection, because the iOS capture is slower than the 400 ms fade. With motion reduced, no app content differed in any capture on either platform in either run, so a native add-on is not warranted; agent-driven development builds run with motion reduced | Engineering | Resolved |
 | Q6 | ~~Should fast-check arbitraries be derived from Zod schemas with an existing library or a minimal in-house generator?~~ **Resolved 2026-10-04 (M4 design D3):** a minimal in-house generator, `arbitraryFromSchema` in `@ironbird/testing`, derives arbitraries from the JSON Schema `describe()` emits, so tests and agents explore the same payload space and the helper does not depend on the Zod version; per-command and per-control overrides cover what a schema can't say. The maintained Zod-to-fast-check libraries target Zod 3 | Engineering | Resolved |
 | Q7 | ~~License: MIT or Apache-2.0?~~ **Resolved 2026-09-12:** MIT. `LICENSE` sits at the repository root and in each published package, and every `package.json` declares `"license": "MIT"` | Maintainer | Resolved |
-| Q8 | Do we support apps still on Zod 3, and how? | Engineering | Before 0.1 |
+| Q8 | ~~Do we support apps still on Zod 3, and how?~~ **Resolved 2026-10-04 (M5 design D9):** no. ironbird requires the installed `zod` package at ^4.2: `@ironbird/core`, `@ironbird/redux`, `@ironbird/xstate`, and `@ironbird/testing` declare `zod ^4.2.0` as a peer, because command and control schemas rely on Zod 4.2's `toJSONSchema` (ADR-0004), and `defineCommands` rejects any other schema with `INVALID_CONFIG`. Apps on Zod 3 install `zod@^4.2`, keep unmigrated schemas on its `zod/v3` subpath, and write ironbird schemas against Zod 4; `zod` 3.25.x does not satisfy the peer range. See [migrating-from-zod-3.md](migrating-from-zod-3.md) | Engineering | Resolved |
 | Q9 | ~~Does the bridge work in Expo Go?~~ **Resolved 2026-09-18:** yes; the example runs in Expo Go with no native code, and every M1 measurement was taken there | Engineering | Resolved |
 | Q10 | ~~Is "ironbird" clear of trademark conflicts for a developer tool?~~ **Resolved 2026-09-13:** the trademark search found no conflict in software or developer tools; the name is cleared for publishing | Maintainer | Resolved |
 

@@ -26,14 +26,16 @@ describe('IronbirdError', () => {
   it('wraps unknown errors as INTERNAL', () => {
     expect(toErrorShape(new Error('disk on fire'))).toEqual({ code: 'INTERNAL', message: 'disk on fire', details: { message: 'disk on fire' } });
     expect(toErrorShape('a string')).toEqual({ code: 'INTERNAL', message: 'a string', details: { message: 'a string' } });
+    expect(toErrorShape(Object.create(null))).toEqual({ code: 'INTERNAL', message: '[unprintable error]', details: { message: '[unprintable error]' } });
     expect(toErrorShape(new IronbirdError('NO_TARGET', 'none', { available: [] }))).toEqual({ code: 'NO_TARGET', message: 'none', details: { available: [] } });
   });
 
   it('lists every documented code once', () => {
-    expect(new Set(ERROR_CODES).size).toBe(21);
+    expect(new Set(ERROR_CODES).size).toBe(22);
     expect(ERROR_CODES).toContain('APP_MISMATCH');
     expect(ERROR_CODES).toContain('INVALID_CONFIG');
     expect(ERROR_CODES).toContain('INVALID_SCENARIO');
+    expect(ERROR_CODES).toContain('INVALID_SNAPSHOT');
     expect(ERROR_CODES).toContain('INVARIANT_FAILED');
     expect(PROTOCOL_VERSION).toBe(1);
   });

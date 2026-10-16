@@ -1,0 +1,39 @@
+{
+  "name": "@ironbird/xstate",
+  "version": "0.0.0",
+  "description": "Drive an XState actor with ironbird: validated commands, projected state, and snapshots through a core Target",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ironbird-dev/ironbird.git",
+    "directory": "packages/xstate"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup && node scripts/verify-build.mjs",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+    "test": "vitest run --project unit"
+  },
+  "peerDependencies": {
+    "@ironbird/core": ">=0.0.3",
+    "xstate": "^5.0.0",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@ironbird/core": "workspace:*",
+    "@ironbird/testing": "workspace:*",
+    "xstate": "^5.33.2",
+    "zod": "^4.2.0"
+  }
+}

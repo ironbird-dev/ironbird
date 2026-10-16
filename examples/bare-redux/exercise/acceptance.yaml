@@ -1,0 +1,27 @@
+name: Acknowledgements arrive out of order
+description: Two edits to one to-do are saved back to back and the sync API acknowledges the newer save first. Once both arrive, the to-do must show as saved at its latest revision. Fails at the last step with PLANT_BUG=1. Runs on a fresh app.
+steps:
+  - fake: sync
+    control: setAcks
+    payload: { mode: manual }
+  - send: todos.add
+    payload: { title: Buy milk }
+    settle: false   # a device's settle waits for every pending save, and this one is held until release
+  - send: todos.toggle
+    payload: { id: t1 }
+    settle: false
+  - expect: sync.inFlight
+    equals: 2
+  - fake: sync
+    control: release
+    payload: { order: newest }   # the rev 2 acknowledgement
+    settle: false                # the rev 1 save is still held
+  - fake: sync
+    control: release
+    payload: { order: newest }   # then the older rev 1 acknowledgement; nothing is held after it
+  - expect: sync.inFlight
+    equals: 0
+  - expect: todos.items.0.rev
+    equals: 2
+  - expect: todos.items.0.syncedRev
+    equals: 2

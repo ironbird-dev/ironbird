@@ -119,12 +119,35 @@ describe('startDaemon', () => {
         text += decoder.decode(value, { stream: true });
       }
     };
-    await readUntil(': connected');
+    // The initial frame carries the revision the earlier dispatch left; later changes coalesce
+    // under the throttle, so only the last revision is certain to appear.
+    await readUntil('event: state\ndata: {"rev":1}\n\n');
     await rpc(d, { op: 'dispatch', params: { name: 'data.load' } });
     await rpc(d, { op: 'clockAdvance', params: { ms: 500 } });
     await readUntil('"name":"loaded"');
-    expect(text).toContain('event: state\ndata: {"rev":2}');
+    await readUntil('event: state\ndata: {"rev":3}\n\n');
     expect(text).toContain('event: event\ndata: {"seq":1,');
+    controller.abort();
+  });
+
+  it('sends a state frame with the current revision once the state subscription is live, after the event backlog', async () => {
+    const d = await boot();
+    await rpc(d, { op: 'dispatch', params: { name: 'data.load' } });
+    await rpc(d, { op: 'clockAdvance', params: { ms: 500 } });
+    const controller = new AbortController();
+    const response = await fetch(`${d.url}/v1/stream?target=headless&since=0`, { signal: controller.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    while (!text.includes('event: state\ndata: {"rev":2}\n\n')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    const frames = text.split('\n\n').filter((frame) => frame.startsWith('event: '));
+    expect(frames).toHaveLength(2);
+    expect(frames[0]).toMatch(/^event: event\ndata: \{"seq":1,.*"name":"loaded"/);
+    expect(frames[1]).toBe('event: state\ndata: {"rev":2}');
     controller.abort();
   });
 
@@ -285,6 +308,9 @@ describe('startDaemon', () => {
       }
     };
     await drain(50);
+    // The initial state frame arrives before the burst; the bound below is about the burst alone.
+    expect(text).toContain('event: state\ndata: {"rev":0}\n\n');
+    const beforeBurst = text.length;
     const t0 = Date.now();
     // Spread the burst across several 100 ms throttle windows (12 dispatches, 30 ms apart, 360 ms
     // total) instead of firing it all at once, so a throttle that doesn't cap correctly per
@@ -299,7 +325,7 @@ describe('startDaemon', () => {
     }
     await drain(200);
     const elapsed = Date.now() - t0;
-    const stateFrames = text.split('\n\n').filter((frame) => frame.startsWith('event: state'));
+    const stateFrames = text.slice(beforeBurst).split('\n\n').filter((frame) => frame.startsWith('event: state'));
     // A correct throttle (write immediately, then re-arm only while something is still pending)
     // produces 2 + floor(burstSpan / 100) frames for a sustained burst, and burstSpan grows with
     // rpc round-trip latency, so a fixed frame-count cap is inherently flaky on a slower machine.

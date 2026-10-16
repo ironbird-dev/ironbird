@@ -1,4 +1,4 @@
-import { IronbirdError, messageOf } from './errors';
+import { IronbirdError, isIronbirdError, messageOf } from './errors';
 import type { CommandOf, CommandRegistry } from './registry';
 
 export interface TargetDefinition<R extends CommandRegistry, S> {
@@ -67,14 +67,33 @@ export function createTarget<R extends CommandRegistry, S>(definition: TargetDef
     },
   };
 
+  // A definition's own IronbirdError passes through (the adapters throw INVALID_SNAPSHOT with the
+  // path that failed validation); anything else is the snapshot's problem, not ironbird's, so it
+  // becomes INVALID_SNAPSHOT rather than INTERNAL (M5 design §4).
+  const snapshotError = (verb: 'saved' | 'restored', error: unknown): IronbirdError => {
+    if (isIronbirdError(error)) return error as IronbirdError;
+    const reason = messageOf(error);
+    return new IronbirdError('INVALID_SNAPSHOT', `Snapshot could not be ${verb}: ${reason}`, { path: '', reason });
+  };
+
   if (definition.persist) {
     const persist = definition.persist;
-    target.persist = () => persist();
+    target.persist = () => {
+      try {
+        return persist();
+      } catch (error) {
+        throw snapshotError('saved', error);
+      }
+    };
   }
   if (definition.restore) {
     const restore = definition.restore;
     target.restore = async (snapshot) => {
-      await restore(snapshot);
+      try {
+        await restore(snapshot);
+      } catch (error) {
+        throw snapshotError('restored', error);
+      }
       if (!hasSubscribe) bump();
     };
   }

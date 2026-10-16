@@ -26,7 +26,7 @@ const coreForbiddenTimers = [
 ];
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/node_modules/**', '**/.ironbird/**', '**/coverage/**', '**/.superpowers/**', '**/.claude/**', '**/test/fixtures/**', '**/.stryker-tmp/**', 'reports/**'] },
+  { ignores: ['**/dist/**', '**/node_modules/**', '**/.ironbird/**', '**/coverage/**', '**/.superpowers/**', '**/.claude/**', '**/test/fixtures/**', '**/.stryker-tmp/**', 'reports/**', '**/ios/Pods/**', '**/ios/build/**', '**/android/build/**', '**/android/app/build/**', '**/vendor/bundle/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { files: ['**/*.{js,mjs,cjs}'], languageOptions: { globals: { ...globals.node } } },
@@ -87,6 +87,65 @@ export default tseslint.config(
     languageOptions: { globals: { ...globals['react-native'] } },
     rules: {
       '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
+  {
+    // The bare React Native example and its generated exercise copy: Metro's entry, where `__DEV__`
+    // is a Metro-injected global and the dev-only require() must stay synchronous so release bundles
+    // drop it, and the CommonJS config files Metro and Babel load.
+    files: [
+      'examples/bare-redux/index.js',
+      'examples/bare-redux/*.config.js',
+      'examples/bare-redux/integration-exercise/index.js',
+      'examples/bare-redux/integration-exercise/*.config.js',
+    ],
+    languageOptions: { globals: { ...globals.node, ...globals['react-native'] } },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
+  {
+    // AGENTS.md rule 9 for the bare example's app logic, wired and generated: time comes from an
+    // injected clock. The one platform-timer call allowed is the exercise copy's real-clock adapter,
+    // src/sync/real-timers.ts; in the wired app that file uses @ironbird/core's real clock instead.
+    files: ['examples/bare-redux/App.tsx', 'examples/bare-redux/src/**/*.ts', 'examples/bare-redux/integration-exercise/App.tsx', 'examples/bare-redux/integration-exercise/src/**/*.ts'],
+    ignores: ['examples/bare-redux/**/*.test.ts', 'examples/bare-redux/integration-exercise/src/sync/real-timers.ts'],
+    rules: {
+      'no-restricted-globals': [
+        'error',
+        ...['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'setImmediate'].map((name) => ({
+          name,
+          message: 'Take time from the injected clock (AGENTS.md hard rule 9); only the real-clock adapter, src/sync/real-timers.ts, may call the platform timer.',
+        })),
+      ],
+      'no-restricted-properties': ['error', { object: 'Date', property: 'now', message: 'Take time from the injected clock (AGENTS.md hard rule 9).' }],
+    },
+  },
+  {
+    // The adapters run in Node and Hermes. At runtime they import only @ironbird/core and, for
+    // @ironbird/xstate, the xstate peer; redux and zod are type imports (M5 design D3). Library code
+    // takes no time from globals (AGENTS.md rule 9). This block covers packages/xstate too.
+    files: ['packages/redux/src/**/*.ts', 'packages/xstate/src/**/*.ts'],
+    ignores: ['packages/redux/src/**/*.test.ts', 'packages/xstate/src/**/*.test.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            { name: 'zod', allowTypeImports: true, message: 'Adapters reach zod only through the schemas the app passes (M5 design D3).' },
+            { name: 'redux', allowTypeImports: true, message: '@ironbird/redux imports redux for types only (M5 design D3).' },
+            { name: '@reduxjs/toolkit', message: 'The adapter works with any Redux 5 store; Redux Toolkit is a test dependency only.' },
+          ],
+          patterns: [
+            {
+              group: ['node:*', 'react-native', 'react-native/*', 'react', 'react/*', 'fs', 'path', 'os', 'http', 'https', 'net', 'child_process', 'url', 'util', 'events', 'stream', 'crypto', 'worker_threads'],
+              message: 'Adapters run in Hermes too.',
+            },
+          ],
+        },
+      ],
+      'no-restricted-globals': ['error', ...coreForbiddenTimers],
+      'no-restricted-properties': ['error', { object: 'Date', property: 'now', message: 'Adapters take no time from globals (AGENTS.md rule 9).' }],
     },
   },
   {

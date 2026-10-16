@@ -22,6 +22,7 @@ export { conditionHolds, deepEqual, parseCondition } from './conditions';
 export type { Condition } from './conditions';
 export { serializeState } from './serialize';
 export type { SerializationWarning } from './serialize';
+export { parseSnapshotLoadParams, serializeSnapshot } from './snapshot';
 export { defineCommands, suggestNames } from './registry';
 export type { CommandOf, CommandRegistry, Schemas } from './registry';
 export { MAX_FIRINGS_PER_ADVANCE, createManualClock, createRealClock } from './clock';

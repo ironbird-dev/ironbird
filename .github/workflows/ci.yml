@@ -24,15 +24,56 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm build
+      # What each published package would ship (docs/releasing.md): README, LICENSE, both builds and
+      # declarations, no sources or tests, no workspace ranges. Needs the build above.
+      - run: node scripts/release/check-packs.mjs
       - run: pnpm typecheck
       - run: pnpm test
       # @ironbird/testing under Jest, from its CommonJS build (M4 design D9). Needs the build above.
       - run: pnpm --filter @ironbird/testing test:jest
-  # Branch protection requires a status named `check`. The matrix reports `test (node 22)` and `test (node 26)`,
-  # so this job carries the required name and passes only when every matrix leg passed.
+  # The compatibility matrix (M5 design D8 and §8): JavaScript-bundle evidence that the packed
+  # packages install, typecheck, bundle, and stay out of production bundles on the two most recent
+  # React Native minors, each in a freshly generated bare project, and on Expo SDK 57 through the
+  # checkout example. It is not native-build evidence: bare-redux's iOS build is verified by hand.
+  compat:
+    name: compat (${{ matrix.leg }})
+    runs-on: ubuntu-latest
+    # From Task 5 Step 6's cold-run measurement: ceil(1.5 × W) + 5 + I + N minutes, where W is the
+    # slowest bare leg's cold wall time, 5 covers checkout, pnpm install, and pnpm build, and I and N
+    # are STEP_TIMEOUT_MS.init and .install in minutes, so a leg whose init and install each stall
+    # once, are killed at their limits, and are retried still finishes inside the job's limit.
+    timeout-minutes: 22
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Each React Native leg pins the exact patch and the community CLI that version's
+          # @react-native-community/template declares (template 0.86.3: CLI 20.1.0; 0.87.2: CLI 20.2.0).
+          - leg: rn-0.86
+            rn: 0.86.3
+            cli: 20.1.0
+          - leg: rn-0.87
+            rn: 0.87.1
+            cli: 20.2.0
+          - leg: expo-57
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - if: matrix.leg != 'expo-57'
+        run: node scripts/compat/bare-leg.mjs --react-native ${{ matrix.rn }} --cli ${{ matrix.cli }}
+      - if: matrix.leg == 'expo-57'
+        run: node scripts/compat/expo-leg.mjs
+  # Branch protection requires a status named `check`. The matrices report `test (node 22)`, `test (node 26)`,
+  # and one `compat (...)` per leg, so this job carries the required name and passes only when every leg passed.
   check:
     if: always()
-    needs: test
+    needs: [test, compat]
     runs-on: ubuntu-latest
     steps:
-      - run: test "${{ needs.test.result }}" = "success"
+      - run: test "${{ needs.test.result }}" = "success" && test "${{ needs.compat.result }}" = "success"

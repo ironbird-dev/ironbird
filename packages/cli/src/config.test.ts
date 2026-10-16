@@ -1,9 +1,9 @@
 import { isIronbirdError } from '@ironbird/core';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { configSchema, findConfigFile, loadConfig } from './config';
+import { configSchema, defaultConfig, findConfigFile, loadConfig } from './config';
 
 let dir: string;
 afterEach(async () => {
@@ -27,6 +27,21 @@ describe('loadConfig', () => {
       artifactsDir: '.ironbird',
       artifactsPath: path.join(dir, '.ironbird'),
     });
+  });
+
+  it('bundles into cacheDir when one is given, leaving .ironbird/cache alone', async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-config-'));
+    await writeFile(path.join(dir, 'ironbird.config.ts'), `export default { appId: 'cached' };`);
+    const cacheDir = path.join(dir, 'scratch');
+    const config = await loadConfig({ cwd: dir, cacheDir });
+    expect(config.appId).toBe('cached');
+    expect(await readdir(cacheDir)).toEqual(['config.mjs']);
+    await expect(stat(path.join(dir, '.ironbird'))).rejects.toThrow();
+  });
+
+  it('defaultConfig is what loadConfig returns when there is no config file', async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-config-'));
+    expect(defaultConfig(dir)).toEqual(await loadConfig({ cwd: dir }));
   });
 
   it('finds the nearest ironbird.config.ts walking up, loads it, and resolves paths against it', async () => {

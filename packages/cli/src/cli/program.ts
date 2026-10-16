@@ -1,17 +1,21 @@
-import { IronbirdError, messageOf, suggestNames, toErrorShape, type Description, type ErrorShape, type FakeCallsResult, type SettleResult, type StepResult } from '@ironbird/core';
+import { IronbirdError, messageOf, suggestNames, toErrorShape, type Description, type FakeCallsResult, type SettleResult, type StepResult, type TargetInfo } from '@ironbird/core';
 import { Command, CommanderError, InvalidArgumentError } from 'commander';
 import { createDaemonClient, resolveDaemon, type DaemonClient } from './client';
 import type { runServe } from './commands/serve';
 import type { McpServerOptions } from '../mcp/server';
+import type { DoctorEnvironment } from '../doctor/environment';
 import { UsageError, parseDuration } from './durations';
 import { exitCodeForError, exitCodeForStep } from './exit-codes';
+import { runFollow } from './follow';
 import { createOutput, withTarget, type Output } from './output';
 import { parseJsonOrString, parsePayload } from './values';
+import { formatSnapshotFile, parseSnapshotFile } from './snapshot-file';
 import { formatScenarioResult } from '../scenario/format';
-import { access } from 'node:fs/promises';
+import { access, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findMarker } from '../verify-bundle';
+import { runWatch } from '../watch/watch';
 
 export interface ProgramIo {
   cwd: string;
@@ -25,6 +29,8 @@ export interface ProgramIo {
   serve?: typeof runServe;
   /** Test hook replacing `runMcpStdio`, which would take over this process's stdin and stdout. */
   mcp?: (options: McpServerOptions) => Promise<void>;
+  /** Test hook replacing parts of the environment `doctor` probes: ports, host tools, installed packages. */
+  doctor?: Partial<DoctorEnvironment>;
 }
 
 interface GlobalOptions {
@@ -46,14 +52,6 @@ interface Context {
 }
 
 type Outcome = { value?: unknown; exit?: number } | undefined;
-
-/** Recognizes a stream frame shaped like an ErrorShape (an object with string `code` and `message`). */
-function asErrorShape(data: unknown): ErrorShape | undefined {
-  if (data === null || typeof data !== 'object') return undefined;
-  const candidate = data as { code?: unknown; message?: unknown };
-  if (typeof candidate.code !== 'string' || typeof candidate.message !== 'string') return undefined;
-  return candidate as ErrorShape;
-}
 
 const integer = (value: string): number => {
   const parsed = Number(value);
@@ -215,32 +213,18 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
         const params: Record<string, unknown> = {};
         if (opts.since !== undefined) params['since'] = opts.since;
         if (opts.limit !== undefined) params['limit'] = opts.limit;
+        // --follow prints JSON lines whatever the TTY, its errors included (runFollow).
+        if (opts.follow) return { exit: await runFollow({ client: ctx.client, target: ctx.target, params, signal: signal(), write: io.stdout }) };
         const envelope = await ctx.client.call<{ events: unknown[]; nextSeq: number; truncated: boolean }>('events', params, ctx.target);
-        if (!opts.follow) return { value: withTarget(envelope) };
-        for (const event of envelope.result.events) io.stdout(`${JSON.stringify(event)}\n`);
-        let followExit = 0;
-        await ctx.client.stream({
-          target: ctx.target,
-          since: envelope.result.nextSeq,
-          signal: signal(),
-          onMessage: (kind, data) => {
-            if (kind === 'event') {
-              io.stdout(`${JSON.stringify(data)}\n`);
-            } else if (kind === 'error') {
-              const shape = asErrorShape(data);
-              if (shape) {
-                io.stdout(`${JSON.stringify({ error: shape })}\n`);
-                followExit = exitCodeForError(shape.code);
-              } else {
-                io.stdout(`${JSON.stringify({ error: { code: 'INTERNAL', message: 'Malformed error frame from daemon' } })}\n`);
-                followExit = 1;
-              }
-            }
-          },
-        });
-        return { exit: followExit };
+        return { value: withTarget(envelope) };
       }),
     );
+
+  program
+    .command('watch')
+    .description('Print { rev, patch } JSON lines as the state at a path changes, until interrupted')
+    .option('--path <path>', 'watch only this subtree of state', '')
+    .action(wrap(async (ctx, opts: { path: string }) => ({ exit: await runWatch({ client: ctx.client, target: ctx.target, path: opts.path, signal: signal(), write: io.stdout }) })));
 
   program
     .command('fake <fake> [control] [payload]')
@@ -282,6 +266,45 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
       wrap(async (ctx, opts: { timeout?: string }) => ({
         value: withTarget(await ctx.client.call('reload', opts.timeout === undefined ? {} : { timeoutMs: parseDuration(opts.timeout) }, ctx.target)),
       })),
+    );
+
+  const snapshot = program.command('snapshot').description('Save and load snapshots of targets that persist and restore');
+  snapshot
+    .command('save <file>')
+    .description("Write the target's persisted state to a file as { app, target, rev, snapshot }")
+    .action(
+      wrap(async (ctx, file: string) => {
+        const saved = await ctx.client.call<{ rev: number; snapshot: unknown }>('snapshotSave', {}, ctx.target);
+        const targetId = saved.target ?? ctx.target ?? '';
+        // The app id comes from the target's status entry, so `load` can refuse another app's file.
+        const { targets } = await ctx.client.rpc<{ targets: TargetInfo[] }>('status');
+        const entry = targets.find((candidate) => candidate.id === targetId);
+        if (!entry) throw new IronbirdError('TARGET_DISCONNECTED', `Target ${targetId} disconnected before its snapshot was written`, { target: targetId, op: 'snapshotSave' });
+        const out = path.resolve(io.cwd, file);
+        try {
+          await writeFile(out, formatSnapshotFile({ app: entry.appId, target: targetId, rev: saved.result.rev, snapshot: saved.result.snapshot }));
+        } catch (error) {
+          throw new UsageError(`Cannot write ${out}: ${messageOf(error)}`);
+        }
+        return { value: { target: targetId, app: entry.appId, rev: saved.result.rev, file: out } };
+      }),
+    );
+  snapshot
+    .command('load <file>')
+    .description('Validate a snapshot file, then restore the target from it')
+    .action(
+      wrap(async (ctx, file: string) => {
+        const from = path.resolve(io.cwd, file);
+        let text: string;
+        try {
+          text = await readFile(from, 'utf8');
+        } catch (error) {
+          throw new UsageError(`Cannot read ${from}: ${messageOf(error)}`);
+        }
+        // Validated before anything is sent, so a bad file never reaches the target (M5 design §4).
+        const record = parseSnapshotFile(text, from);
+        return { value: withTarget(await ctx.client.call('snapshotLoad', { snapshot: record.snapshot, app: record.app }, ctx.target)) };
+      }),
     );
 
   program
@@ -334,6 +357,26 @@ export function buildProgram(io: ProgramIo): { program: Command; run(argv: strin
         return { exit: failed ? 4 : 0 };
       }),
     );
+
+  program
+    .command('doctor')
+    .description('Check Node, the config, the headless entry, ports, .gitignore, package versions, and device tools; needs no daemon')
+    .action(async (_opts: unknown, command: Command) => {
+      const globals = command.optsWithGlobals<GlobalOptions>();
+      const output = createOutput({ json: Boolean(globals.json) || !io.isTTY, write: io.stdout });
+      try {
+        // Loaded on demand: the checks pull in esbuild and the config schema, which the client
+        // commands never need.
+        const { doctorExitCode, runDoctor } = await import('../doctor/run');
+        const report = await runDoctor({ cwd: io.cwd, configPath: globals.config, version: io.version, environment: io.doctor });
+        output.result(report);
+        exitCode = doctorExitCode(report);
+      } catch (error) {
+        // Only an internal fault gets here: every check reports its own failure in the report.
+        output.error(toErrorShape(error));
+        exitCode = 1;
+      }
+    });
 
   program
     .command('verify-bundle <path...>')

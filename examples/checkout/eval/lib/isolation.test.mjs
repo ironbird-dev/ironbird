@@ -158,3 +158,46 @@ describe('userSkillNames', () => {
     expect(await userSkillNames(path.join(dir, 'missing'))).toEqual([]);
   });
 });
+
+describe('checkIsolation with ironbird absent (the M5 integration proxy)', () => {
+  const proxyInit = (overrides = {}) => sessionInit({ mcp_servers: [], skills: ['verify', 'debug', 'code-review'], ...overrides });
+  const absent = (init, overrides = {}) => check(init, { ironbird: 'absent', ...overrides });
+
+  it('accepts a session with no MCP server and no ironbird skill', () => {
+    expect(absent(proxyInit())).toEqual({ valid: true, problems: [] });
+  });
+
+  it('rejects any MCP server, the ironbird one included, and an ironbird skill', () => {
+    const init = proxyInit({ mcp_servers: [{ name: 'ironbird', status: 'connected' }, { name: 'slack', status: 'connected' }], skills: ['verify', 'ironbird'] });
+    expect(absent(init).problems).toEqual(['MCP server ironbird is loaded', 'MCP server slack is loaded', 'the ironbird skill is loaded']);
+  });
+
+  it('rejects a server entry that has no string name, labelled <unnamed>', () => {
+    expect(absent(proxyInit({ mcp_servers: [{}] })).problems).toEqual(['MCP server <unnamed> is loaded']);
+    expect(absent(proxyInit({ mcp_servers: [{ status: 'connected' }, null, { name: 'slack' }] })).problems).toEqual([
+      'MCP server <unnamed> is loaded',
+      'MCP server <unnamed> is loaded',
+      'MCP server slack is loaded',
+    ]);
+  });
+
+  it('still applies the plugin, user-skill, namespaced-skill, memory, and model rules', () => {
+    const init = proxyInit({
+      model: 'claude-opus-5',
+      skills: ['verify', 'synced', 'superpowers:brainstorming'],
+      plugins: [...BUILTIN, { name: 'superpowers', source: 'superpowers@claude-plugins-official' }],
+    });
+    expect(absent(init, { memoryEntries: ['MEMORY.md'] }).problems).toEqual([
+      'skill synced is loaded, and the user skills folder has a skill of that name',
+      'skill superpowers:brainstorming is loaded from a plugin',
+      'plugin {"name":"superpowers","source":"superpowers@claude-plugins-official"} is not built in',
+      'the auto-memory folder /Users/dev/.claude/projects/-x-sessions-1-project/memory is not empty: MEMORY.md',
+      'the session runs on claude-opus-5, not a model matching /^claude-sonnet-/',
+    ]);
+  });
+
+  it('keeps requiring ironbird by default, and rejects an unknown mode', () => {
+    expect(check(proxyInit()).problems).toEqual(['the ironbird MCP server is not loaded', 'the ironbird skill is not loaded']);
+    expect(() => check(proxyInit(), { ironbird: 'maybe' })).toThrow(TypeError);
+  });
+});

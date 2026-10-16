@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { captureTarget, deniedCalls, finalReport, iosCaptureAfter, lastEdit, outOfFolderPaths, parseTranscript, reportingCall, scenarioResultsOf, untrackedWrites } from './transcript.mjs';
+import { captureTarget, deniedCalls, finalReport, iosCaptureAfter, lastEdit, outOfFolderPaths, parseTranscript, reportingCall, scenarioResultsOf, stripHeredocs, untrackedWrites } from './transcript.mjs';
 
 const ROOT = '/Users/dev/.ironbird-eval/sessions/1/project';
 const HOME = '/Users/dev';
@@ -45,6 +45,13 @@ describe('parseTranscript', () => {
     expect(parsed.calls.map((call) => call.resultIndex)).toEqual([3, undefined]);
     expect(finalReport(parsed)).toBe('The total is set late.');
     expect(deniedCalls(parsed)).toBe(1);
+  });
+
+  it('keeps every result event in order, with `result` the last', () => {
+    const parsed = parseTranscript(transcript(init, { type: 'result', result: 'first', num_turns: 3 }, { type: 'system', subtype: 'task_notification' }, { type: 'result', result: 'second', num_turns: 1 }));
+    expect(parsed.results.map((event) => event.result)).toEqual(['first', 'second']);
+    expect(parsed.result).toBe(parsed.results[1]);
+    expect(parseTranscript('').results).toEqual([]);
   });
 
   it('returns an empty parse for an empty transcript', () => {
@@ -171,5 +178,159 @@ describe('outOfFolderPaths', () => {
       { index: 8, tool: 'Grep', path: '/Users/dev/apps/ironbird/examples' },
       { index: 9, tool: 'Glob', path: '/Users/dev/.ironbird-eval/sessions/2/project/src' },
     ]);
+  });
+});
+
+describe('stripHeredocs', () => {
+  it('strips the body and terminator of a quoted file-writing heredoc, keeps the operator line, and handles several', () => {
+    const command = [
+      "mkdir -p d && cat > d/a.ts <<'EOF'",
+      "import { store } from '../store/store';",
+      '// the store',
+      'export const a = 1;',
+      'EOF',
+      "cat >> d/b.ts <<'EOF'",
+      "import { a } from '../a';",
+      '// b',
+      'EOF',
+      'ls',
+    ].join('\n');
+    expect(stripHeredocs(command)).toBe(["mkdir -p d && cat > d/a.ts <<'EOF'", "cat >> d/b.ts <<'EOF'", 'ls'].join('\n'));
+  });
+
+  it('accepts tee, double-quoted words, and ; and | prefixes', () => {
+    expect(stripHeredocs('echo hi; tee a.ts <<"END"\n../x\nEND\nls')).toBe('echo hi; tee a.ts <<"END"\nls');
+    expect(stripHeredocs("echo hi | tee -a a.ts <<'END'  \n../x\nEND\nls")).toBe("echo hi | tee -a a.ts <<'END'  \nls");
+  });
+
+  it('takes a tab-indented terminator only for <<-', () => {
+    expect(stripHeredocs("cat > a.ts <<-'EOF'\n\t../x\n\tEOF\nls")).toBe("cat > a.ts <<-'EOF'\nls");
+    expect(stripHeredocs("cat > a.ts <<'EOF'\n../x\n\tEOF\nEOF\nls")).toBe("cat > a.ts <<'EOF'\nls");
+    expect(stripHeredocs("cat > a.ts <<'EOF'\n../x\n\tEOF")).toBe("cat > a.ts <<'EOF'\n../x\n\tEOF");
+  });
+
+  it.each([
+    ['an unquoted delimiter', 'cat > a.ts <<EOF\n../x\nEOF'],
+    ['a partly quoted delimiter', 'cat > a.ts <<"E"OF\n../x\nEOF'],
+    ['a backslash delimiter', 'cat > a.ts <<\\EOF\n../x\nEOF'],
+    ['a command that runs the body', "bash <<'EOF'\ncat /etc/hosts\nEOF"],
+    ['sh -s', "sh -s <<'EOF'\ncat /etc/hosts\nEOF"],
+    ['cat without a redirect', "cat <<'EOF'\n../x\nEOF"],
+    ['text after the operator', "cat > a.ts <<'EOF' | sh\n/etc/hosts\nEOF"],
+    ['a continued operator line', "cat > a.ts <<'EOF' \\\n/etc/hosts\nbody\nEOF"],
+    ['a continued previous line', "echo hi \\\ncat > a.ts <<'EOF'\n../x\nEOF"],
+    ['no terminator', "cat > a.ts <<'EOF'\n../x\n// c"],
+    ['a quote-opening prefix', "echo 'a && cat > a.ts <<'EOF'\n../x\nEOF"],
+    ['a heredoc inside an open quote', 'echo "\ncat > a.ts <<\'EOF\'\n/etc/hosts\nEOF\n"'],
+    ['a comment', "# cat > a.ts <<'EOF'\n/etc/hosts\nEOF"],
+    ['a here-string', 'cat <<< "../x"\nls /etc'],
+    ['no heredoc', 'ls ../x\ncat /etc/hosts'],
+  ])('leaves %s whole', (_name, command) => {
+    expect(stripHeredocs(command)).toBe(command);
+  });
+});
+
+describe('outOfFolderPaths with heredocs', () => {
+  const hits = (command) => outOfFolderPaths(parseTranscript(transcript(use('a', 'Bash', { command }))).calls, [ROOT], HOME);
+  const hosts = [{ index: 0, tool: 'Bash', path: '/etc/hosts' }];
+
+  it('ignores import specifiers and comments in file-writing heredoc bodies (the proxy-1 shape)', () => {
+    const command = [
+      "mkdir -p d && cat > d/a.ts <<'EOF'",
+      "import { store } from '../store/store';",
+      '// comment',
+      "export * from '../../shared';",
+      'EOF',
+      "cat > d/b.ts <<'EOF'",
+      "import { a } from './a'; // ../nope",
+      'EOF',
+    ].join('\n');
+    expect(hits(command)).toEqual([]);
+  });
+
+  it('still reports a path on the operator line', () => {
+    expect(hits("cat > /etc/x <<'EOF'\nbody ../y\nEOF")).toEqual([{ index: 0, tool: 'Bash', path: '/etc/x' }]);
+  });
+
+  it('still reports a path after the terminator', () => {
+    expect(hits("cat > a.ts <<'EOF'\n../in-body\nEOF\ncat /etc/hosts")).toEqual(hosts);
+  });
+
+  it('still reports a path in a here-string', () => {
+    expect(hits('cat <<< ../x')).toEqual([{ index: 0, tool: 'Bash', path: path.resolve(ROOT, '../x') }]);
+  });
+
+  it('reports accesses a heredoc could hide', () => {
+    expect(hits('bash <<EOF\ncat /etc/hosts\nEOF')).toEqual(hosts);
+    expect(hits("sh -s <<'EOF'\ncat /etc/hosts\nEOF")).toEqual(hosts);
+    expect(hits('cat <<EOF\n$(cat /etc/hosts)\nEOF')).toEqual(hosts);
+    expect(hits('echo "<<EOF"\ncat /etc/hosts')).toEqual(hosts);
+    expect(hits('# <<EOF\ncat /etc/hosts')).toEqual(hosts);
+    expect(hits('echo $((1 << SHIFT))\ncat /etc/hosts')).toEqual(hosts);
+    expect(hits('cat <<EOF \\\n/etc/hosts\nbody\nEOF')).toEqual(hosts);
+    expect(hits('cat <<"E"OF\nbody\nEOF\ncat /etc/hosts')).toEqual(hosts);
+    expect(hits("cat > a.ts <<'EOF'\n/etc/hosts")).toEqual(hosts);
+  });
+});
+
+describe('outOfFolderPaths with tildes', () => {
+  const hits = (command) => outOfFolderPaths(parseTranscript(transcript(use('a', 'Bash', { command }))).calls, [ROOT], HOME);
+
+  it('reports a tilde that expands to the home directory', () => {
+    expect(hits('cat ~/x')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/x' }]);
+    expect(hits('cd ~')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev' }]);
+    expect(hits('ls ~;')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev' }]);
+  });
+
+  it('reports every tilde prefix that could expand, as an outside path that .. cannot normalize back inside', () => {
+    const sentinel = (_word, prefix) => [{ index: 0, tool: 'Bash', path: `/~${prefix}` }];
+    expect(hits('cat ~root/.profile')).toEqual(sentinel('~root', 'root'));
+    expect(hits('ls ~root')).toEqual(sentinel('~root', 'root'));
+    expect(hits('cat ~-/x')).toEqual(sentinel('~-', '-'));
+    expect(hits('cd ~-')).toEqual(sentinel('~-', '-'));
+    expect(hits('cd ~0')).toEqual(sentinel('~0', '0'));
+    expect(hits('cat ~+0/../x')).toEqual(sentinel('~+0', '+0'));
+    expect(hits('cat ~-1/x')).toEqual(sentinel('~-1', '-1'));
+    expect(hits(`cat ~-/../${path.basename(path.dirname(ROOT))}/project/x`)).toEqual(sentinel('~-', '-'));
+    expect(hits(`cat ~-/../../${path.basename(path.dirname(ROOT))}/project/x`)).toEqual(sentinel('~-', '-'));
+  });
+
+  it('finds tildes after braces, commas and assignment colons', () => {
+    expect(hits('ls {~,foo}')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev' }]);
+    expect(hits('ls {foo,~/x}')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/x' }]);
+    expect(hits('ls {~root,foo}')).toEqual([{ index: 0, tool: 'Bash', path: '/~root' }]);
+    expect(hits('p=~root:foo')).toEqual([{ index: 0, tool: 'Bash', path: '/~root' }]);
+    expect(hits('ls {~root,daemon}')).toEqual([{ index: 0, tool: 'Bash', path: '/~root' }]);
+    expect(hits('ls ~{root,daemon}')).toEqual([{ index: 0, tool: 'Bash', path: '/~{root' }]);
+    expect(hits('PATH=/a:~/b')).toEqual([{ index: 0, tool: 'Bash', path: '/a:~/b' }, { index: 0, tool: 'Bash', path: '/Users/dev/b' }]);
+    // The word before the colon can be inside the session; the tilde after it is still found.
+    expect(hits(`PATH=${ROOT}/x:~/b`)).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/b' }]);
+    expect(hits('PATH=~/a:~root/b')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/a' }, { index: 0, tool: 'Bash', path: '/~root' }]);
+    expect(hits('ls {/etc/a,/etc/b}')).toEqual([{ index: 0, tool: 'Bash', path: '/etc/a,/etc/b}' }]);
+    expect(hits('ls {~0.1,foo} a:~0.1')).toEqual([]);
+  });
+
+  it('keeps colons and braces inside absolute and .. words, so a path that climbs out is found', () => {
+    expect(hits(`cat ${ROOT}/dir:foo/../../outside`)).toEqual([{ index: 0, tool: 'Bash', path: path.resolve(ROOT, '../outside') }]);
+    expect(hits(`cat ${ROOT}/dir}foo/../../outside`)).toEqual([{ index: 0, tool: 'Bash', path: path.resolve(ROOT, '../outside') }]);
+  });
+
+  it('does not read a URL port as an assignment colon', () => {
+    expect(hits('curl http://127.0.0.1:4567/status')).toEqual([]);
+  });
+
+  it('resolves ~+ against the session folder like a relative path', () => {
+    expect(hits('cat ~+/x')).toEqual([]);
+    expect(hits('cat ~+')).toEqual([]);
+    expect(hits('cat ~+/../x')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/.ironbird-eval/sessions/1/x' }]);
+  });
+
+  it('ignores a tilde inside text or followed by a digit or another character', () => {
+    expect(hits("python3 - <<'PY'\nopen('RESULTS.md', 'w').write('| est | ~0.1 | hours |')\nPY")).toEqual([]);
+    expect(hits('echo "| ~0.1 |" a~=b ~=c ~9a ~0.1/x')).toEqual([]);
+  });
+
+  it('accepts a quoted tilde as a false positive', () => {
+    expect(hits('cat "~/x"')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/x' }]);
   });
 });
