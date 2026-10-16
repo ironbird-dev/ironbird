@@ -186,12 +186,15 @@ export function untrackedWrites(calls) {
 // is text), an absolute path, or a relative path with a `..` segment anywhere in
 // it (`../x`, `./../x`, `src/../../x`). A relative path without `..` stays inside the session.
 const TILDE_WORD = String.raw`~[^\s'";|&<>)/,}:]*(?:\/[^\s'";|&<>),}:]*)?`;
-// Brace expansion (`{~,foo}`) and assignments (`PATH=/a:~/b`) put a tilde word after `{`, `,` or `:`; `:` ends a tilde word and
-// is not allowed before the other kinds, where it would turn `http://host:80/x` into a path.
+// Only a tilde word ends at `,` `}` or `:`; other words end as they always did. A tilde word may follow
+// `{` or `,` (brace expansion) like any word, and `:` (an assignment such as `PATH=/a:~/b`) in a second
+// scan, TILDE_AFTER_COLON, because the word before the colon swallows it. Accepted false positives:
+// `a:~root`, `subject:~root` and `https://x/a:~/f` read as tilde words.
 const BASH_PATH = new RegExp(
-  String.raw`(?:^|[\s=('"<>{,])(${TILDE_WORD}|(?:[\w.~@%+-]+\/)*\.\.(?=\/|[\s'";|&<>),}:]|$)(?:\/[^\s'";|&<>),}:]*)?|\/[^\s'";|&<>),}:]+)|:(${TILDE_WORD})`,
+  String.raw`(?:^|[\s=('"<>{,])(${TILDE_WORD}|(?:[\w.~@%+-]+\/)*\.\.(?=\/|[\s'";|&<>)]|$)(?:\/[^\s'";|&<>)]*)?|\/[^\s'";|&<>)]+)`,
   'g',
 );
+const TILDE_AFTER_COLON = new RegExp(String.raw`:(${TILDE_WORD})`, 'g');
 const IGNORED_OUTSIDE = new Set(['/dev/null', '/dev/stdout', '/dev/stderr']);
 
 // A heredoc body is file content only when the command plainly writes it to a file. The one shape
@@ -253,12 +256,12 @@ export function stripHeredocs(command) {
 }
 
 // What Bash expands after a tilde, up to the first `/`: nothing (home), `+` (PWD), `-` (OLDPWD), a
-// directory-stack index (`N`, `+N`, `-N`), or a login name. Anything else (`~0.1`, `~=`) stays text.
+// directory-stack index (`N`, `+N`, `-N`), a login name, or a brace expansion (`~{root,daemon}`). Anything else (`~0.1`, `~=`) stays text.
 const TILDE_PREFIX = /^(?:[+-]?\d*|[A-Za-z_][A-Za-z0-9._-]*)$/;
 
 function resolvePath(raw, root, home) {
   const tilde = /^~([^/]*)(\/.*)?$/s.exec(raw);
-  if (tilde && TILDE_PREFIX.test(tilde[1])) {
+  if (tilde && (TILDE_PREFIX.test(tilde[1]) || tilde[1].includes('{'))) {
     const [, prefix, rest = ''] = tilde;
     if (prefix === '') return path.join(home, rest);
     // `~+` is $PWD, the session folder: resolved like a relative path.
@@ -278,7 +281,11 @@ export function pathsOf(call, root, home) {
   if (typeof input.notebook_path === 'string') found.push(input.notebook_path);
   if ((call.name === 'mcp__ironbird__ironbird_run_scenario' || call.name === 'Glob' || call.name === 'Grep') && typeof input.path === 'string') found.push(input.path);
   if (call.name === 'Glob' && typeof input.pattern === 'string' && /^(\/|~|\.\.)/.test(input.pattern)) found.push(input.pattern.replace(/\/?[^/]*[*?[{].*$/, '') || '/');
-  if (call.name === 'Bash' && typeof input.command === 'string') for (const match of stripHeredocs(input.command).matchAll(BASH_PATH)) found.push(match[1] ?? match[2]);
+  if (call.name === 'Bash' && typeof input.command === 'string') {
+    const command = stripHeredocs(input.command);
+    for (const match of command.matchAll(BASH_PATH)) found.push(match[1]);
+    for (const match of command.matchAll(TILDE_AFTER_COLON)) found.push(match[1]);
+  }
   return found.map((raw) => resolvePath(raw, root, home));
 }
 

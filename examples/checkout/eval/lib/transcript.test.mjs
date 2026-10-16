@@ -300,9 +300,19 @@ describe('outOfFolderPaths with tildes', () => {
     expect(hits('ls {foo,~/x}')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/x' }]);
     expect(hits('ls {~root,foo}')).toEqual([{ index: 0, tool: 'Bash', path: '/~root' }]);
     expect(hits('p=~root:foo')).toEqual([{ index: 0, tool: 'Bash', path: '/~root' }]);
-    expect(hits('PATH=/a:~/b')).toEqual([{ index: 0, tool: 'Bash', path: '/a' }, { index: 0, tool: 'Bash', path: '/Users/dev/b' }]);
+    expect(hits('ls {~root,daemon}')).toEqual([{ index: 0, tool: 'Bash', path: '/~root' }]);
+    expect(hits('ls ~{root,daemon}')).toEqual([{ index: 0, tool: 'Bash', path: '/~{root' }]);
+    expect(hits('PATH=/a:~/b')).toEqual([{ index: 0, tool: 'Bash', path: '/a:~/b' }, { index: 0, tool: 'Bash', path: '/Users/dev/b' }]);
+    // The word before the colon can be inside the session; the tilde after it is still found.
+    expect(hits(`PATH=${ROOT}/x:~/b`)).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/b' }]);
     expect(hits('PATH=~/a:~root/b')).toEqual([{ index: 0, tool: 'Bash', path: '/Users/dev/a' }, { index: 0, tool: 'Bash', path: '/~root' }]);
+    expect(hits('ls {/etc/a,/etc/b}')).toEqual([{ index: 0, tool: 'Bash', path: '/etc/a,/etc/b}' }]);
     expect(hits('ls {~0.1,foo} a:~0.1')).toEqual([]);
+  });
+
+  it('keeps colons and braces inside absolute and .. words, so a path that climbs out is found', () => {
+    expect(hits(`cat ${ROOT}/dir:foo/../../outside`)).toEqual([{ index: 0, tool: 'Bash', path: path.resolve(ROOT, '../outside') }]);
+    expect(hits(`cat ${ROOT}/dir}foo/../../outside`)).toEqual([{ index: 0, tool: 'Bash', path: path.resolve(ROOT, '../outside') }]);
   });
 
   it('does not read a URL port as an assignment colon', () => {
