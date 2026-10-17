@@ -1,0 +1,26 @@
+# @ironbird/testing
+
+## 0.1.0
+
+### Minor Changes
+
+- e929a6b: 0.1.0: the first published version. Runs scenario files and model-based tests against a headless definition from Vitest or Jest, in process, with no daemon.
+
+### Patch Changes
+
+- c096b90: New package. `@ironbird/testing` runs ironbird from Vitest or Jest against a headless definition in process, with no daemon. `createTestTarget` serves the CLI's `DaemonClient` interface over a headless target. `runScenario(file, { headless, env?, artifacts? })` runs one scenario file and returns its `ScenarioResult`, with `passed: false` rather than a throw when a step fails. `modelTest` generates random sequences of commands, fake controls, and clock advances with fast-check 4, checks named invariants against the whole state after every step, shrinks a failure to a minimal sequence, throws `INVARIANT_FAILED` with the seed, path, and steps, and writes the steps as a replayable `.trace.yaml` scenario file; when a step the app rejected changed state anyway, the trace is still written but `traceReplayable` is `false` and its description says which steps. Payloads come from each command's JSON Schema through `arbitraryFromSchema`, which refuses keywords it can't honor rather than guessing; pass a `payload` override for those. For `oneOf`, branches of listable values (`const`, `enum`, boolean, null) contribute exactly their values that match one branch. ESM and CommonJS builds, Node 22 or later, `zod` 4 as a peer.
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+- Updated dependencies [c096b90]
+- Updated dependencies [c096b90]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+  - @ironbird/core@0.1.0
+  - @ironbird/cli@0.1.0

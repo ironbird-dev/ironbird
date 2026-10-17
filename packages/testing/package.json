@@ -1,6 +1,6 @@
 {
   "name": "@ironbird/testing",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Run ironbird scenarios and model-based tests against a headless app from Vitest or Jest",
   "license": "MIT",
   "repository": {
