@@ -7,7 +7,7 @@
 // SBPL evaluates every rule and the last matching one wins, so the profile allows everything, then
 // denies reading and writing the repository and the eval home, then re-allows stat on the session
 // folder's ancestors inside the eval home (so resolving the working directory never fails) and
-// full access to the session folder itself.
+// full access to the session folder itself, and read-only access to any read-only folder.
 import path from 'node:path';
 
 /** An SBPL string literal. */
@@ -28,20 +28,26 @@ export function ancestorsWithin(inner, outer) {
 }
 
 /**
- * The profile text. `denied` and `allowed` are real (symlink-free) absolute paths, since the
- * sandbox matches resolved paths. Throws when a path is relative or an allowed folder is outside
- * every denied one (the rule would be pointless and probably a mistake).
+ * The profile text. `denied`, `allowed`, and `readOnly` are real (symlink-free) absolute paths, since
+ * the sandbox matches resolved paths. An `allowed` folder is re-allowed for reading and writing; a
+ * `readOnly` folder for reading only, and its rules come last, so it stays read-only even inside an
+ * allowed folder. Throws when a path is relative or a re-allowed folder is outside every denied one
+ * (the rule would be pointless and probably a mistake).
  */
-export function sandboxProfile({ denied, allowed }) {
-  for (const dir of [...denied, ...allowed]) if (!path.isAbsolute(dir)) throw new Error(`sandbox paths must be absolute: ${dir}`);
+export function sandboxProfile({ denied, allowed, readOnly = [] }) {
+  for (const dir of [...denied, ...allowed, ...readOnly]) if (!path.isAbsolute(dir)) throw new Error(`sandbox paths must be absolute: ${dir}`);
   const lines = ['(version 1)', '(allow default)'];
   for (const dir of denied) lines.push(`(deny file-read* file-write* (subpath ${sbplString(dir)}))`);
-  for (const dir of allowed) {
+  for (const dir of [...allowed, ...readOnly]) {
     const outer = denied.find((candidate) => isWithin(dir, candidate));
     if (!outer) throw new Error(`${dir} is not inside a denied folder`);
-    for (const ancestor of ancestorsWithin(dir, outer)) lines.push(`(allow file-read-metadata (literal ${sbplString(ancestor)}))`);
+    for (const ancestor of ancestorsWithin(dir, outer)) {
+      const line = `(allow file-read-metadata (literal ${sbplString(ancestor)}))`;
+      if (!lines.includes(line)) lines.push(line);
+    }
   }
   for (const dir of allowed) lines.push(`(allow file-read* file-write* (subpath ${sbplString(dir)}))`);
+  for (const dir of readOnly) lines.push(`(allow file-read* (subpath ${sbplString(dir)}))`, `(deny file-write* (subpath ${sbplString(dir)}))`);
   return `${lines.join('\n')}\n`;
 }
 

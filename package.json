@@ -14,6 +14,7 @@
     "gate:m4": "pnpm build && vitest run --project gate",
     "mutation": "stryker run",
     "lint": "eslint .",
+    "release:check": "pnpm build && node scripts/release/check-packs.mjs",
     "typecheck": "pnpm -r run typecheck",
     "example:ios": "pnpm --filter @ironbird-examples/checkout start:ios",
     "example:android": "pnpm --filter @ironbird-examples/checkout start:android",

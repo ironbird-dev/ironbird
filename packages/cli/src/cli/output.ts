@@ -31,3 +31,11 @@ export function withTarget(envelope: { target?: string; result: unknown }): Reco
   const result = envelope.result as Record<string, unknown>;
   return envelope.target === undefined || 'target' in result ? result : { target: envelope.target, ...result };
 }
+
+/** Recognizes a stream frame shaped like an ErrorShape (an object with string `code` and `message`). */
+export function asErrorShape(data: unknown): ErrorShape | undefined {
+  if (data === null || typeof data !== 'object') return undefined;
+  const candidate = data as { code?: unknown; message?: unknown };
+  if (typeof candidate.code !== 'string' || typeof candidate.message !== 'string') return undefined;
+  return candidate as ErrorShape;
+}

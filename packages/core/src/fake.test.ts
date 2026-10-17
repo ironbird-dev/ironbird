@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { z as z3 } from 'zod/v3';
 import { createManualClock } from './clock';
 import { IronbirdError, isIronbirdError } from './errors';
 import { defineFake } from './fake';
@@ -140,5 +141,20 @@ describe('defineFake', () => {
       create: () => ({ port: {}, controls: { emit: () => {} } as never }),
     });
     expect(() => missing.create({ clock })).toThrow(/declares the control setEcho/);
+  });
+
+  it('fails create with INVALID_CONFIG when a control schema is not a Zod 4.2+ schema (M5 design D9)', () => {
+    const legacy = defineFake('legacy', {
+      controls: { emit: z3.object({ event: z3.string() }) as unknown as z.ZodType },
+      create: () => ({ port: {}, controls: { emit: () => {} } }),
+    });
+    let error: unknown;
+    try {
+      legacy.create({ clock: createManualClock() });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(isIronbirdError(error) && error.code).toBe('INVALID_CONFIG');
+    expect(isIronbirdError(error) && error.details).toEqual({ name: 'emit', reason: "it is a Zod 3 schema (from zod 3, or from 'zod/v3')" });
   });
 });

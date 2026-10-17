@@ -3,6 +3,8 @@ import {
   conditionHolds,
   getAtPath,
   parseCondition,
+  parseSnapshotLoadParams,
+  serializeSnapshot,
   serializeState,
   suggestNames,
   type Capability,
@@ -150,12 +152,15 @@ export function createHandlers(ctx: HandlerContext): Record<string, Handler> {
     fakeCalls: async (params) => fakeNamed(str(params['fake'])).calls(num(params['since'], 0), num(params['limit'], Number.POSITIVE_INFINITY)),
     snapshotSave: async () => {
       if (!ctx.target.persist) return unsupported('snapshotSave');
-      const { value } = serializeState(ctx.target.persist());
-      return { rev: ctx.target.revision(), snapshot: value };
+      const rev = ctx.target.revision();
+      // Strict, unlike state reads: a placeholder would load back as corrupt state (M5 design D4).
+      return { rev, snapshot: serializeSnapshot(ctx.target.persist()) };
     },
     snapshotLoad: async (params) => {
       if (!ctx.target.restore) return unsupported('snapshotLoad');
-      await ctx.target.restore(params['snapshot']);
+      // Never trust the daemon (AGENTS.md rule 4): the app check and the params come before restore.
+      const request = parseSnapshotLoadParams(params, ctx.app.id);
+      await ctx.target.restore(request.snapshot);
       return { rev: ctx.target.revision(), path: '', value: snapshot('') };
     },
     clockAdvance: async () => unsupported('clockAdvance'),

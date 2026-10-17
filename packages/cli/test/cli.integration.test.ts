@@ -1,5 +1,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -96,5 +98,101 @@ describe('ironbird CLI against the example app', () => {
     const settle = await ironbird('settle');
     expect(settle.code).toBe(0);
     expect(settle.json).toMatchObject({ target: 'headless', idle: true });
+  });
+
+  // The waits below are bounded (two 10 s polls, 5 s for the exit, 2 s to reap) and fit in this timeout,
+  // so the finally block always runs before the test is abandoned.
+  it('watch prints the first value and each change as JSON lines, and exits 0 on SIGINT', { timeout: 30_000 }, async () => {
+    await ironbird('reset');
+    const child = spawn('node', [bin, 'watch', '--path', 'cart.items'], { cwd: example, env, stdio: ['ignore', 'pipe', 'inherit'] });
+    const lines: Array<{ rev: number; patch: Array<{ op: string; path: string; value?: unknown }> }> = [];
+    let buffer = '';
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      buffer += chunk;
+      for (let end = buffer.indexOf('\n'); end !== -1; end = buffer.indexOf('\n')) {
+        lines.push(JSON.parse(buffer.slice(0, end)) as (typeof lines)[number]);
+        buffer = buffer.slice(end + 1);
+      }
+    });
+    const exitCode = new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
+    const exitWithin = async (ms: number): Promise<number | null | 'timeout'> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), ms);
+      });
+      try {
+        return await Promise.race([exitCode, timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const until = async (ready: () => boolean, what: string): Promise<void> => {
+      for (let i = 0; i < 1_000 && !ready(); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      if (!ready()) throw new Error(`timed out waiting for ${what}`);
+    };
+    try {
+      await until(() => lines.length === 1, 'the first line');
+      expect(lines[0]).toEqual({ rev: 0, patch: [{ op: 'add', path: '', value: [] }] });
+      await ironbird('send', 'cart.addItem', '{"sku":"cut-45","qty":1}');
+      await until(() => lines.length === 2, 'the change');
+      expect(lines[1]?.patch).toEqual([{ op: 'add', path: '/0', value: expect.objectContaining({ sku: 'cut-45' }) }]);
+      child.kill('SIGINT');
+      expect(await exitWithin(5_000)).toBe(0);
+    } finally {
+      // Whatever failed above, don't leave a watch process running into the rest of the serial suite.
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+        await exitWithin(2_000);
+      }
+    }
+  });
+});
+
+describe('ironbird watch against a daemon that never answers', () => {
+  // Every wait is bounded (10 s for the request, 5 s for the exit, 2 s to reap) within this timeout,
+  // so the finally block always closes the server and reaps the child.
+  it('exits 0 on SIGINT while its first request is still pending', { timeout: 20_000 }, async () => {
+    let received!: () => void;
+    const requested = new Promise<void>((resolve) => {
+      received = resolve;
+    });
+    const stalled = createServer(() => received());
+    await new Promise<void>((resolve) => stalled.listen(0, '127.0.0.1', resolve));
+    const url = `http://127.0.0.1:${(stalled.address() as AddressInfo).port}`;
+    const child = spawn('node', [bin, 'watch', '--daemon', url], { cwd: example, env, stdio: ['ignore', 'pipe', 'inherit'] });
+    let stdout = '';
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    const exitCode = new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
+    const within = async <T>(promise: Promise<T>, ms: number): Promise<T | 'timeout'> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), ms);
+      });
+      try {
+        return await Promise.race([promise, timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const exitWithin = (ms: number): Promise<number | null | 'timeout'> => within(exitCode, ms);
+    try {
+      // The child may exit, or never connect, before its first request: fail instead of waiting forever.
+      const first = await within(Promise.race([requested.then(() => 'requested' as const), exitCode.then((code) => `exited with ${code}`)]), 10_000);
+      expect(first).toBe('requested');
+      child.kill('SIGINT');
+      expect(await exitWithin(5_000)).toBe(0);
+      expect(stdout).toBe('');
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+        await exitWithin(2_000);
+      }
+      stalled.closeAllConnections();
+      await new Promise<void>((resolve) => stalled.close(() => resolve()));
+    }
   });
 });

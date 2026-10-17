@@ -7,6 +7,8 @@ import {
   getAtPath,
   messageOf,
   parseCondition,
+  parseSnapshotLoadParams,
+  serializeSnapshot,
   serializeState,
   suggestNames,
   type Description,
@@ -294,6 +296,18 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
     definition = loaded;
     session = next;
     bootError = undefined;
+    // Revisions restart with the new session, and nothing in it has notified yet, so tell the
+    // streams: without this a `watch` would keep showing the old session's state (M5 design §5).
+    // A listener that throws is skipped, as createTarget does, so it can't fail a transition that
+    // already installed its session.
+    const rev = next.app.target.revision();
+    for (const listener of stateListeners) {
+      try {
+        listener(rev);
+      } catch (error) {
+        log(`a state listener threw after ${kind} and was skipped: ${messageOf(error)}`);
+      }
+    }
     return next;
   };
 
@@ -393,6 +407,25 @@ export async function createHeadlessTarget(options: HeadlessTargetOptions): Prom
       return { ...result, now: current.clock.now() };
     },
     clockNow: () => ({ now: requireSession('clockNow').clock.now() }),
+    snapshotSave: () => {
+      const current = requireSession('snapshotSave');
+      const appTarget = current.app.target;
+      if (!appTarget.persist) throw new IronbirdError('UNSUPPORTED', "The headless target doesn't support snapshotSave: the app doesn't persist", { op: 'snapshotSave', target: 'headless' });
+      const rev = appTarget.revision();
+      // Strict, unlike state reads: a placeholder would load back as corrupt state (M5 design D4).
+      return { rev, snapshot: serializeSnapshot(appTarget.persist()) };
+    },
+    snapshotLoad: async (params) => {
+      const startedEpoch = queue.epoch;
+      const current = requireSession('snapshotLoad');
+      const appTarget = current.app.target;
+      if (!appTarget.restore) throw new IronbirdError('UNSUPPORTED', "The headless target doesn't support snapshotLoad: the app doesn't restore", { op: 'snapshotLoad', target: 'headless' });
+      // The app check and the params come first, so a refused snapshot never reaches `restore`.
+      const request = parseSnapshotLoadParams(params, options.appId);
+      await queue.raceAbandon('snapshotLoad', appTarget.restore(request.snapshot));
+      if (queue.epoch !== startedEpoch) throw queue.abandoned('snapshotLoad');
+      return { rev: appTarget.revision(), path: '', value: snapshotOf(current, '') };
+    },
     reset: () => requestTransition('reset'),
     ...(options.loadDefinition ? { reload: () => requestTransition('reload') } : {}),
   };

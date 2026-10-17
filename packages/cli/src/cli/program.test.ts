@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DaemonClient } from './client';
 import type { McpServerOptions } from '../mcp/server';
 import { buildProgram } from './program';
+import type { DoctorEnvironment } from '../doctor/environment';
+import { FAKE_VERSION, execFailure, fakeEnvironment } from '../doctor/fake-environment';
 
 interface Call {
   op: string;
@@ -20,7 +22,7 @@ interface StreamFrame {
   data: unknown;
 }
 
-function harness(responses: Record<string, Responder>, options: { isTTY?: boolean; streamFrames?: StreamFrame[]; createClient?: () => DaemonClient; cwd?: string } = {}) {
+function harness(responses: Record<string, Responder>, options: { isTTY?: boolean; streamFrames?: StreamFrame[]; createClient?: () => DaemonClient; cwd?: string; signal?: AbortSignal } = {}) {
   const calls: Call[] = [];
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -50,7 +52,7 @@ function harness(responses: Record<string, Responder>, options: { isTTY?: boolea
     stderr: (t) => stderr.push(t),
     version: '0.0.0-test',
     createClient: options.createClient ?? (() => client),
-    signal: AbortSignal.abort(),
+    signal: options.signal ?? AbortSignal.abort(),
   });
   return { run, calls, stdout, stderr, out: () => JSON.parse(stdout.join('')) as Record<string, unknown> };
 }
@@ -127,14 +129,28 @@ describe('buildProgram', () => {
     expect(h.out()).toEqual({});
   });
 
-  it('events pages with since and limit, and --follow prints JSON lines from the stream', async () => {
+  it('events pages with since and limit', async () => {
     const h = harness({ events: { events: [{ seq: 4, t: 0, source: 's', name: 'a' }], nextSeq: 4, truncated: false } });
     await h.run(['events', '--since', '3', '--limit', '2']);
     expect(h.calls[0]?.params).toEqual({ since: 3, limit: 2 });
     expect(h.out()).toEqual({ target: 'headless', events: [{ seq: 4, t: 0, source: 's', name: 'a' }], nextSeq: 4, truncated: false });
-    h.stdout.length = 0;
-    expect(await h.run(['events', '--follow'])).toBe(0);
-    expect(h.stdout).toEqual(['{"seq":4,"t":0,"source":"s","name":"a"}\n', '{"seq":9,"name":"streamed"}\n']);
+  });
+
+  it('events --follow reports TARGET_DISCONNECTED and exits 1 when the stream ends without an error frame', async () => {
+    const h = harness({ events: { events: [{ seq: 4, t: 0, source: 's', name: 'a' }], nextSeq: 4, truncated: false } }, { signal: new AbortController().signal });
+    expect(await h.run(['events', '--follow', '--target', 'ios', '--since', '3'])).toBe(1);
+    expect(h.calls).toEqual([{ op: 'events', params: { since: 3 }, target: 'ios' }]);
+    expect(h.stdout).toEqual([
+      '{"seq":4,"t":0,"source":"s","name":"a"}\n',
+      '{"seq":9,"name":"streamed"}\n',
+      '{"error":{"code":"TARGET_DISCONNECTED","message":"Stream from http://127.0.0.1:4567 ended unexpectedly; the daemon may have shut down","details":{"target":"ios","op":"stream"}}}\n',
+    ]);
+  });
+
+  it('events --follow names the target the daemon picked when the stream ends unexpectedly', async () => {
+    const h = harness({ events: { events: [], nextSeq: 0, truncated: false } }, { streamFrames: [], signal: new AbortController().signal });
+    expect(await h.run(['events', '--follow'])).toBe(1);
+    expect(JSON.parse(h.stdout[0] ?? '')).toMatchObject({ error: { code: 'TARGET_DISCONNECTED', details: { target: 'headless', op: 'stream' } } });
   });
 
   it('events --follow prints an error frame then resolves with its mapped exit code', async () => {
@@ -145,6 +161,7 @@ describe('buildProgram', () => {
           { kind: 'event', data: { seq: 9, name: 'streamed' } },
           { kind: 'error', data: { code: 'TARGET_DISCONNECTED', message: 'gone' } },
         ],
+        signal: new AbortController().signal,
       },
     );
     expect(await h.run(['events', '--follow'])).toBe(1);
@@ -152,7 +169,7 @@ describe('buildProgram', () => {
   });
 
   it('events --follow reports a malformed error frame as INTERNAL and exits 1', async () => {
-    const h = harness({ events: { events: [], nextSeq: 0, truncated: false } }, { streamFrames: [{ kind: 'error', data: 'nope' }] });
+    const h = harness({ events: { events: [], nextSeq: 0, truncated: false } }, { streamFrames: [{ kind: 'error', data: 'nope' }], signal: new AbortController().signal });
     expect(await h.run(['events', '--follow'])).toBe(1);
     expect(h.stdout).toEqual(['{"error":{"code":"INTERNAL","message":"Malformed error frame from daemon"}}\n']);
   });
@@ -166,6 +183,7 @@ describe('buildProgram', () => {
           { kind: 'event', data: { seq: 9, name: 'streamed' } },
           { kind: 'error', data: { code: 'TARGET_DISCONNECTED', message: 'gone' } },
         ],
+        signal: new AbortController().signal,
       },
     );
     expect(await h.run(['events', '--follow'])).toBe(1);
@@ -174,6 +192,116 @@ describe('buildProgram', () => {
       '{"seq":9,"name":"streamed"}\n',
       '{"error":{"code":"TARGET_DISCONNECTED","message":"gone"}}\n',
     ]);
+  });
+
+  describe('events --follow ends', () => {
+    /** A scripted client for one follow: `backlog` answers the events read, `stream` plays the stream. */
+    function follow(script: { backlog?: (signal: AbortSignal | undefined) => Promise<unknown>; stream?: DaemonClient['stream'] }, options: { isTTY?: boolean } = {}) {
+      const controller = new AbortController();
+      const stdout: string[] = [];
+      const signals: Array<AbortSignal | undefined> = [];
+      const client: DaemonClient = {
+        url: 'http://127.0.0.1:4567',
+        call: async <T,>(_op: string, _params?: Record<string, unknown>, _target?: string, callOptions: { signal?: AbortSignal } = {}) => {
+          signals.push(callOptions.signal);
+          const result = script.backlog ? await script.backlog(callOptions.signal) : { events: [], nextSeq: 0, truncated: false };
+          return { target: 'headless', result: result as T };
+        },
+        rpc: async () => {
+          throw new Error('unexpected rpc');
+        },
+        stream: script.stream ?? (() => new Promise<void>(() => {})),
+      };
+      const { run } = buildProgram({ cwd: '/tmp/nowhere', env: {}, isTTY: options.isTTY ?? false, stdout: (t) => stdout.push(t), stderr: (t) => stdout.push(`stderr: ${t}`), version: '0.0.0-test', createClient: () => client, signal: controller.signal });
+      return { run: () => run(['events', '--follow']), controller, stdout, signals };
+    }
+
+    it('with 0 and no error line when interrupted during the stream', async () => {
+      const f = follow({
+        stream: ({ signal, onMessage }) =>
+          new Promise<void>((resolve) => {
+            onMessage('event', { seq: 1, name: 'a' });
+            signal.addEventListener('abort', () => resolve(), { once: true });
+            f.controller.abort();
+          }),
+      });
+      expect(await f.run()).toBe(0);
+      expect(f.stdout).toEqual(['{"seq":1,"name":"a"}\n']);
+    });
+
+    it('with 0 and no output when interrupted while the backlog read stalls, cancelling that read', { timeout: 5_000 }, async () => {
+      let reading: () => void = () => {};
+      const read = new Promise<void>((resolve) => (reading = resolve));
+      const f = follow({
+        backlog: () => {
+          reading();
+          return new Promise(() => {});
+        },
+      });
+      const done = f.run();
+      // The program reaches the read only after resolving the daemon, which reads files.
+      await read;
+      expect(f.signals).toHaveLength(1);
+      expect(f.signals[0]?.aborted).toBe(false);
+      f.controller.abort();
+      expect(await done).toBe(0);
+      expect(f.signals[0]?.aborted).toBe(true);
+      expect(f.stdout).toEqual([]);
+    });
+
+    it('with a JSON error line, even in a TTY, when the backlog read fails', async () => {
+      const f = follow({ backlog: () => Promise.reject(new IronbirdError('NO_TARGET', 'Daemon unreachable at http://127.0.0.1:4567; run ironbird serve', { url: 'http://127.0.0.1:4567' })) }, { isTTY: true });
+      expect(await f.run()).toBe(5);
+      expect(f.stdout).toEqual(['{"error":{"code":"NO_TARGET","message":"Daemon unreachable at http://127.0.0.1:4567; run ironbird serve","details":{"url":"http://127.0.0.1:4567"}}}\n']);
+    });
+
+    it('with a JSON error line, even in a TTY, when the stream fails', async () => {
+      const f = follow(
+        {
+          stream: async ({ onMessage }) => {
+            onMessage('event', { seq: 1, name: 'a' });
+            throw new IronbirdError('TARGET_DISCONNECTED', 'Stream from http://127.0.0.1:4567 ended unexpectedly: socket hang up', { op: 'stream' });
+          },
+        },
+        { isTTY: true },
+      );
+      expect(await f.run()).toBe(1);
+      expect(f.stdout).toEqual(['{"seq":1,"name":"a"}\n', '{"error":{"code":"TARGET_DISCONNECTED","message":"Stream from http://127.0.0.1:4567 ended unexpectedly: socket hang up","details":{"op":"stream"}}}\n']);
+    });
+
+    it('with the error frame\'s code when an interrupt follows it before the stream settles', async () => {
+      const f = follow({
+        stream: async ({ onMessage }) => {
+          onMessage('error', { code: 'UNAUTHORIZED', message: 'Token missing or wrong for this daemon' });
+          f.controller.abort();
+        },
+      });
+      expect(await f.run()).toBe(2);
+      expect(f.stdout).toEqual(['{"error":{"code":"UNAUTHORIZED","message":"Token missing or wrong for this daemon"}}\n']);
+    });
+
+    it('with 0 when the interrupt comes before a stream that ignores it settles, and ignores frames after it', async () => {
+      const f = follow({
+        stream: async ({ onMessage }) => {
+          f.controller.abort();
+          onMessage('event', { seq: 2, name: 'late' });
+          onMessage('error', { code: 'INTERNAL', message: 'late' });
+        },
+      });
+      expect(await f.run()).toBe(0);
+      expect(f.stdout).toEqual([]);
+    });
+
+    it('with TARGET_DISCONNECTED when the stream settled before an interrupt that arrives while the error is written', async () => {
+      const f = follow({ stream: async () => {} });
+      const write = f.stdout.push.bind(f.stdout);
+      f.stdout.push = (...lines: string[]) => {
+        f.controller.abort();
+        return write(...lines);
+      };
+      expect(await f.run()).toBe(1);
+      expect(JSON.parse(f.stdout[0] ?? '')).toMatchObject({ error: { code: 'TARGET_DISCONNECTED', details: { target: 'headless', op: 'stream' } } });
+    });
   });
 
   it('exits 5 when the daemon is unreachable and 2 for unknown commands', async () => {
@@ -476,5 +604,164 @@ describe('agent setup', () => {
     expect(await h.run(['agent', 'setup'])).toBe(2);
     expect(h.out()).toMatchObject({ error: { code: 'INVALID_CONFIG', details: { file: path.join(dir, '.mcp.json') } } });
     await expect(stat(path.join(dir, '.claude'))).rejects.toThrow();
+  });
+});
+
+describe('doctor', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-doctor-cli-'));
+    await writeFile(path.join(dir, 'ironbird.config.ts'), `export default { appId: 'com.example.doctor' };\n`);
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const doctor = async (argv: string[], environment: Partial<DoctorEnvironment>, isTTY = false): Promise<{ code: number; text: string }> => {
+    const stdout: string[] = [];
+    const { run } = buildProgram({
+      cwd: dir,
+      env: {},
+      isTTY,
+      stdout: (text) => stdout.push(text),
+      stderr: () => {},
+      version: FAKE_VERSION,
+      createClient: () => {
+        throw new Error('doctor must not talk to a daemon');
+      },
+      doctor: environment,
+      signal: AbortSignal.abort(),
+    });
+    const code = await run(['doctor', ...argv]);
+    return { code, text: stdout.join('') };
+  };
+
+  it('prints every check as one JSON line without a daemon, and exits 0 when the required checks pass', async () => {
+    const { code, text } = await doctor([], fakeEnvironment());
+    expect(code).toBe(0);
+    expect(text.endsWith('\n')).toBe(true);
+    expect(text.trim().split('\n')).toHaveLength(1);
+    const report = JSON.parse(text) as { checks: Array<Record<string, unknown>> };
+    expect(report.checks.map((check) => check['id'])).toEqual(['node', 'config', 'headless', 'port', 'gitignore', 'versions', 'simctl', 'adb']);
+    expect(Object.keys(report.checks[0] ?? {})).toEqual(['id', 'ok', 'required', 'detail']);
+  });
+
+  it('exits 1 when a required check fails', async () => {
+    const { code, text } = await doctor([], fakeEnvironment({ nodeVersion: '20.11.1' }));
+    expect(code).toBe(1);
+    expect((JSON.parse(text) as { checks: Array<{ id: string; ok: boolean; fix?: string }> }).checks[0]).toMatchObject({ id: 'node', ok: false, fix: 'Install Node 22 or newer, for example the current LTS from nodejs.org' });
+  });
+
+  it('exits 0 when only optional checks fail', async () => {
+    const env = fakeEnvironment({
+      platform: 'linux',
+      exec: async (file) => {
+        if (file === 'adb') throw execFailure('ENOENT');
+        return { stdout: Buffer.from(''), stderr: '' };
+      },
+    });
+    expect((await doctor([], env)).code).toBe(0);
+  });
+
+  it('honors --config', async () => {
+    const { code, text } = await doctor(['--config', 'missing.config.ts'], fakeEnvironment());
+    expect(code).toBe(1);
+    expect((JSON.parse(text) as { checks: Array<{ id: string; detail: string }> }).checks[1]).toMatchObject({ id: 'config', detail: 'missing.config.ts does not exist' });
+  });
+
+  it('prints indented JSON in a TTY', async () => {
+    const { text } = await doctor([], fakeEnvironment(), true);
+    expect(text.startsWith('{\n  "checks": [')).toBe(true);
+  });
+});
+
+describe('snapshot', () => {
+  let dir: string;
+  const status = (targets: Array<{ id: string; appId: string }>) => ({
+    version: '1',
+    protocol: 1,
+    uptimeMs: 1,
+    targets: targets.map((t) => ({ ...t, platform: 'ios', connectedAt: 0, rev: 4 })),
+  });
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'ironbird-snapshot-cli-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('save writes { app, target, rev, snapshot } with the app from status, and prints where', async () => {
+    const h = harness({ snapshotSave: { rev: 4, snapshot: { notes: ['milk'] } }, status: status([{ id: 'ios', appId: 'com.example.notes' }]) }, { cwd: dir });
+    expect(await h.run(['snapshot', 'save', 'notes.json', '--target', 'ios'])).toBe(0);
+    expect(h.calls.map((call) => [call.op, call.target])).toEqual([
+      ['snapshotSave', 'ios'],
+      ['status', undefined],
+    ]);
+    expect(h.out()).toEqual({ target: 'ios', app: 'com.example.notes', rev: 4, file: path.join(dir, 'notes.json') });
+    expect(JSON.parse(await readFile(path.join(dir, 'notes.json'), 'utf8'))).toEqual({ app: 'com.example.notes', target: 'ios', rev: 4, snapshot: { notes: ['milk'] } });
+  });
+
+  it('save fails with TARGET_DISCONNECTED and writes nothing when the target left before status', async () => {
+    const h = harness({ snapshotSave: { rev: 4, snapshot: {} }, status: status([]) }, { cwd: dir });
+    expect(await h.run(['snapshot', 'save', 'notes.json'])).toBe(1);
+    expect(h.out()).toMatchObject({ error: { code: 'TARGET_DISCONNECTED', details: { target: 'headless', op: 'snapshotSave' } } });
+    await expect(stat(path.join(dir, 'notes.json'))).rejects.toThrow();
+  });
+
+  it('load validates the file before sending anything, then sends its snapshot and app', async () => {
+    await writeFile(path.join(dir, 'bad.json'), '{"app":"","target":1,"rev":-1}');
+    const h = harness({ snapshotLoad: { rev: 9, path: '', value: { notes: [] } } }, { cwd: dir });
+    expect(await h.run(['snapshot', 'load', 'bad.json'])).toBe(1);
+    expect(h.calls).toEqual([]);
+    expect(h.out()).toMatchObject({ error: { code: 'INVALID_PAYLOAD', details: { name: 'snapshotLoad', issues: [{ path: ['app'] }, { path: ['target'] }, { path: ['rev'] }, { path: ['snapshot'] }] } } });
+    h.stdout.length = 0;
+    await writeFile(path.join(dir, 'good.json'), JSON.stringify({ app: 'com.example.notes', target: 'ios', rev: 3, snapshot: { notes: [] } }));
+    expect(await h.run(['snapshot', 'load', 'good.json'])).toBe(0);
+    expect(h.calls).toEqual([{ op: 'snapshotLoad', target: undefined, params: { snapshot: { notes: [] }, app: 'com.example.notes' } }]);
+    expect(h.out()).toEqual({ target: 'headless', rev: 9, path: '', value: { notes: [] } });
+  });
+
+  it('exits 2 when the file cannot be read or written', async () => {
+    const h = harness({ snapshotSave: { rev: 1, snapshot: {} }, status: status([{ id: 'headless', appId: 'com.example.notes' }]) }, { cwd: dir });
+    expect(await h.run(['snapshot', 'load', 'missing.json'])).toBe(2);
+    expect(h.stderr.join('')).toContain(`Cannot read ${path.join(dir, 'missing.json')}`);
+    expect(await h.run(['snapshot', 'save', 'no/such/dir/notes.json'])).toBe(2);
+    expect(h.stderr.join('')).toContain(`Cannot write ${path.join(dir, 'no/such/dir/notes.json')}`);
+    expect(h.stdout).toEqual([]);
+  });
+});
+
+describe('watch', () => {
+  it('reads the path after the first state frame and prints the first line, on the target given; a stream that then ends exits 1', async () => {
+    const h = harness(
+      { events: { events: [], nextSeq: 4, truncated: false }, getState: { rev: 2, path: 'cart', value: { items: [] } } },
+      { streamFrames: [{ kind: 'state', data: { rev: 2 } }], signal: new AbortController().signal },
+    );
+    expect(await h.run(['watch', '--path', 'cart', '--target', 'ios'])).toBe(1);
+    expect(h.calls).toEqual([
+      { op: 'events', params: { limit: 0 }, target: 'ios' },
+      { op: 'getState', params: { path: 'cart' }, target: 'ios' },
+    ]);
+    expect(h.stdout).toEqual([
+      '{"rev":2,"patch":[{"op":"add","path":"","value":{"items":[]}}]}\n',
+      '{"error":{"code":"TARGET_DISCONNECTED","message":"Stream from http://127.0.0.1:4567 ended unexpectedly; the daemon may have shut down","details":{"target":"ios","op":"stream"}}}\n',
+    ]);
+  });
+
+  it('exits 0 without an error line when interrupted', async () => {
+    const h = harness({ events: { events: [], nextSeq: 4, truncated: false } }, { streamFrames: [] });
+    expect(await h.run(['watch'])).toBe(0);
+    expect(h.stdout).toEqual([]);
+  });
+
+  it('prints an error frame as a JSON line even in a TTY and exits with its code', async () => {
+    const h = harness(
+      { events: { events: [], nextSeq: 0, truncated: false } },
+      { isTTY: true, streamFrames: [{ kind: 'error', data: { code: 'TARGET_DISCONNECTED', message: 'gone' } }], signal: new AbortController().signal },
+    );
+    expect(await h.run(['watch'])).toBe(1);
+    expect(h.stdout).toEqual(['{"error":{"code":"TARGET_DISCONNECTED","message":"gone"}}\n']);
   });
 });

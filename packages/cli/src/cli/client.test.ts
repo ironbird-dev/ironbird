@@ -117,6 +117,21 @@ describe('createDaemonClient.rpc', () => {
 });
 
 describe('createDaemonClient.call', () => {
+  it('cancels a request when its signal aborts and rejects with the signal reason', async () => {
+    const fetchMock: FetchMock = vi.fn(
+      (_url: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+        }),
+    );
+    const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: fetchMock });
+    const controller = new AbortController();
+    const pending = client.call('events', { limit: 0 }, undefined, { signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toBe(controller.signal.reason);
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[1].signal).toBe(controller.signal);
+  });
+
   it('call exposes the envelope target', async () => {
     const client = createDaemonClient({ url: 'http://127.0.0.1:4567', fetch: vi.fn(async () => jsonResponse({ ok: true, target: 'headless', result: { rev: 1 } })) });
     await expect(client.call('getState')).resolves.toEqual({ target: 'headless', result: { rev: 1 } });

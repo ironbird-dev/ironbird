@@ -2,6 +2,7 @@ import { IronbirdError, createTarget, defineCommands, defineFake, defineHeadless
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { counterDefinition as definition, type CounterState as State } from '../test/helpers/counter-app';
+import { notesDefinition } from '../test/helpers/snapshot-app';
 import { createHeadlessTarget, type HeadlessTarget } from './headless-target';
 
 let target: HeadlessTarget;
@@ -203,6 +204,22 @@ describe('createHeadlessTarget', () => {
     await t.run('clockAdvance', { ms: 500 });
     expect(events).toEqual(['loaded']);
     expect(revs).toEqual([1, 2]);
+  });
+
+  it('notifies state listeners with the new revision after a reset and after a reload', async () => {
+    const t = await boot();
+    const revs: number[] = [];
+    t.onState((rev) => revs.push(rev));
+    await t.run('dispatch', { name: 'counter.add', payload: { by: 1 } });
+    await t.run('reset', {});
+    expect(revs).toEqual([1, 0]);
+    await t.dispose();
+    const reloading = await reloadable().boot();
+    const reloaded: number[] = [];
+    reloading.onState((rev) => reloaded.push(rev));
+    await reloading.run('dispatch', { name: 'count.add' });
+    await reloading.run('reload', {});
+    expect(reloaded).toEqual([1, 0]);
   });
 
   it('describe lists wired fakes with their controls', async () => {
@@ -923,5 +940,68 @@ describe('createHeadlessTarget', () => {
     await expect(reloading).rejects.toMatchObject({ code: 'HEADLESS_LOAD_FAILED' });
     await expect(during).rejects.toMatchObject({ code: 'UNSUPPORTED', message: 'Target is disposed' });
     expect(r.log).toEqual(['boot v1', 'dispose v1', 'load v2']);
+  });
+});
+
+describe('snapshots on the headless target', () => {
+  const bootNotes = async (): Promise<HeadlessTarget> => {
+    target = await createHeadlessTarget({ definition: notesDefinition, appId: 'com.example.notes', settleTimeoutMs: 100, env: {}, log: (line) => logs.push(line) });
+    return target;
+  };
+  const refusal = (promise: Promise<unknown>): Promise<unknown> => promise.catch((error: unknown) => error);
+
+  it('declares persist and restore, and saves the root state with its revision', async () => {
+    const t = await bootNotes();
+    expect(((await t.run('describe', {})) as { capabilities: string[] }).capabilities).toEqual(['settle', 'events', 'clock', 'reset', 'persist', 'restore']);
+    await t.run('dispatch', { name: 'note.add', payload: { text: 'milk' } });
+    expect(await t.run('snapshotSave', {})).toEqual({ rev: 1, snapshot: { notes: ['milk'], status: 'idle' } });
+  });
+
+  it('fails a save that would need a placeholder with INVALID_SNAPSHOT naming the path', async () => {
+    const t = await bootNotes();
+    await t.run('dispatch', { name: 'state.junk', payload: {} });
+    expect(await refusal(t.run('snapshotSave', {}))).toMatchObject({ code: 'INVALID_SNAPSHOT', details: { path: 'junk', reason: 'Map' } });
+  });
+
+  it('restores a snapshot, with or without the matching app, and returns the whole state', async () => {
+    const t = await bootNotes();
+    await t.run('dispatch', { name: 'note.add', payload: { text: 'milk' } });
+    const saved = (await t.run('snapshotSave', {})) as { snapshot: unknown };
+    await t.run('dispatch', { name: 'note.add', payload: { text: 'eggs' } });
+    expect(await t.run('snapshotLoad', { snapshot: saved.snapshot, app: 'com.example.notes' })).toEqual({ rev: 3, path: '', value: { notes: ['milk'], status: 'idle' } });
+    expect(await t.run('snapshotLoad', { snapshot: { notes: ['x'], status: 'saving' } })).toEqual({ rev: 4, path: '', value: { notes: ['x'], status: 'saving' } });
+  });
+
+  it('runs snapshotLoad in the mutating queue, in arrival order', async () => {
+    const t = await bootNotes();
+    const adding = t.run('dispatch', { name: 'note.add', payload: { text: 'a' } });
+    const loading = t.run('snapshotLoad', { snapshot: { notes: ['z'], status: 'idle' } });
+    const after = t.run('dispatch', { name: 'note.add', payload: { text: 'b' }, path: 'notes' });
+    await Promise.all([adding, loading]);
+    expect(((await after) as StepResult).state).toEqual(['z', 'b']);
+  });
+
+  it('checks app before anything else and leaves the state and revision unchanged on every refusal', async () => {
+    const t = await bootNotes();
+    await t.run('dispatch', { name: 'note.add', payload: { text: 'milk' } });
+    const refusals: Array<[Record<string, unknown>, Record<string, unknown>]> = [
+      [{ snapshot: { notes: [], status: 'idle' }, app: 'com.example.other' }, { code: 'APP_MISMATCH', details: { expected: 'com.example.notes', received: 'com.example.other' } }],
+      [{ app: 'com.example.other' }, { code: 'APP_MISMATCH' }],
+      [{ snapshot: {}, app: 42 }, { code: 'INVALID_PAYLOAD', details: { name: 'snapshotLoad', issues: [{ path: ['app'], message: 'expected a string' }] } }],
+      [{}, { code: 'INVALID_PAYLOAD', details: { name: 'snapshotLoad', issues: [{ path: ['snapshot'], message: 'required' }] } }],
+      [{ snapshot: { notes: 'milk', status: 'idle' } }, { code: 'INVALID_SNAPSHOT', details: { path: '' } }],
+      [{ snapshot: { notes: [], status: 'idle', extra: 1 }, app: 'com.example.notes' }, { code: 'INVALID_SNAPSHOT', details: { path: '' } }],
+    ];
+    for (const [params, expected] of refusals) {
+      expect(await refusal(t.run('snapshotLoad', params))).toMatchObject(expected);
+    }
+    expect(await t.run('getState', {})).toEqual({ rev: 1, path: '', value: { notes: ['milk'], status: 'idle' } });
+  });
+
+  it('answers UNSUPPORTED for both operations when the app neither persists nor restores', async () => {
+    const t = await boot();
+    for (const op of ['snapshotSave', 'snapshotLoad']) {
+      expect(await refusal(t.run(op, { snapshot: {} }))).toMatchObject({ code: 'UNSUPPORTED', details: { op, target: 'headless' } });
+    }
   });
 });

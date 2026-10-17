@@ -17,7 +17,9 @@ export function resultText(content) {
 /**
  * Parses a transcript. Never throws: a line that is not JSON (a session killed mid-write) becomes
  * `{ type: 'unparsed' }`, and a missing init or result event is `undefined`.
- * @returns {{ events: object[], init: object | undefined, result: object | undefined, calls: ToolCall[] }}
+ * `result` is the last `result` event; `results` is every one, in order. A session that wakes again
+ * (a background task finishing after the report) emits one per turn, and `total_cost_usd` is cumulative.
+ * @returns {{ events: object[], init: object | undefined, result: object | undefined, results: object[], calls: ToolCall[] }}
  */
 export function parseTranscript(text) {
   const events = text
@@ -31,7 +33,8 @@ export function parseTranscript(text) {
       }
     });
   const init = events.find((event) => event?.type === 'system' && event.subtype === 'init');
-  const result = events.findLast((event) => event?.type === 'result');
+  const results = events.filter((event) => event?.type === 'result');
+  const result = results.at(-1);
   const calls = [];
   const byId = new Map();
   events.forEach((event, index) => {
@@ -51,7 +54,7 @@ export function parseTranscript(text) {
       }
     }
   });
-  return { events, init, result, calls };
+  return { events, init, result, results, calls };
 }
 
 /** The session's final report: the result event's text, or the last assistant text when the session was cut off. */
@@ -179,13 +182,94 @@ export function untrackedWrites(calls) {
   });
 }
 
-// Words that name a path: `~`, an absolute path, or a relative path with a `..` segment anywhere in
+// Words that name a path: a tilde word (whether its prefix expands is decided in resolvePath; `~0.1`
+// is text), an absolute path, or a relative path with a `..` segment anywhere in
 // it (`../x`, `./../x`, `src/../../x`). A relative path without `..` stays inside the session.
-const BASH_PATH = /(?:^|[\s=('"<>])(~(?:\/[^\s'";|&<>)]*)?|(?:[\w.~@%+-]+\/)*\.\.(?=\/|[\s'";|&<>)]|$)(?:\/[^\s'";|&<>)]*)?|\/[^\s'";|&<>)]+)/g;
+const TILDE_WORD = String.raw`~[^\s'";|&<>)/,}:]*(?:\/[^\s'";|&<>),}:]*)?`;
+// Only a tilde word ends at `,` `}` or `:`; other words end as they always did. A tilde word may follow
+// `{` or `,` (brace expansion) like any word, and `:` (an assignment such as `PATH=/a:~/b`) in a second
+// scan, TILDE_AFTER_COLON, because the word before the colon swallows it. Accepted false positives:
+// `a:~root`, `subject:~root` and `https://x/a:~/f` read as tilde words.
+const BASH_PATH = new RegExp(
+  String.raw`(?:^|[\s=('"<>{,])(${TILDE_WORD}|(?:[\w.~@%+-]+\/)*\.\.(?=\/|[\s'";|&<>)]|$)(?:\/[^\s'";|&<>)]*)?|\/[^\s'";|&<>)]+)`,
+  'g',
+);
+const TILDE_AFTER_COLON = new RegExp(String.raw`:(${TILDE_WORD})`, 'g');
 const IGNORED_OUTSIDE = new Set(['/dev/null', '/dev/stdout', '/dev/stderr']);
 
+// A heredoc body is file content only when the command plainly writes it to a file. The one shape
+// that is stripped: `[cmd && ]cat > PATH <<'WORD'` (or `>>`, or `tee [-a] PATH`, or `<<-`), with the
+// delimiter fully quoted as one token, the operator last on its line, and a terminator line present.
+// Every other heredoc (`bash <<EOF`, an unquoted body that expands `$(...)`, a partly quoted or
+// backslashed delimiter, a continued operator line) is left in place: a false hit is acceptable, a
+// hidden access is not.
+const FILE_TOKEN = String.raw`[^\s'"\`$\\;&|<>()#]+`;
+const FILE_HEREDOC = new RegExp(
+  String.raw`^(?:[^'"\`\\#<()]*(?:&&|;|\|)\s*)?(?:cat\s+>>?\s*${FILE_TOKEN}|tee(?:\s+-a)?\s+${FILE_TOKEN})\s*<<(-?)(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)")[ \t]*$`,
+);
+
+/** Whether `text` ends inside an open single or double quote (comments and backslash escapes respected). */
+function endsInsideQuote(text) {
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (quote === "'") {
+      if (char === "'") quote = null;
+    } else if (char === '\\') {
+      i += 1;
+    } else if (quote === '"') {
+      if (char === '"') quote = null;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (char === '#' && (i === 0 || /\s/.test(text[i - 1]))) {
+      const end = text.indexOf('\n', i);
+      if (end === -1) return false;
+      i = end;
+    }
+  }
+  return quote !== null;
+}
+
+/**
+ * Removes the body and terminator line of a heredoc that writes file content (see FILE_HEREDOC for
+ * the one shape), so import specifiers and comments in it are not read as paths. The operator line
+ * and everything after the terminator are kept. Anything that does not match exactly, including a
+ * heredoc with no terminator or one that starts inside an open quote or after a continued line, is
+ * left whole.
+ */
+export function stripHeredocs(command) {
+  const lines = command.split('\n');
+  const kept = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    kept.push(line);
+    const match = FILE_HEREDOC.exec(line.trimStart());
+    if (!match) continue;
+    const before = kept.slice(0, -1);
+    if (/(?<!\\)(?:\\\\)*\\$/.test(before.at(-1) ?? '') || endsInsideQuote(before.join('\n') + (before.length > 0 ? '\n' : ''))) continue;
+    const dash = match[1] === '-';
+    const word = match[2] ?? match[3];
+    const end = lines.findIndex((candidate, j) => j > i && (dash ? candidate.replace(/^\t+/, '') : candidate) === word);
+    if (end !== -1) i = end;
+  }
+  return kept.join('\n');
+}
+
+// What Bash expands after a tilde, up to the first `/`: nothing (home), `+` (PWD), `-` (OLDPWD), a
+// directory-stack index (`N`, `+N`, `-N`), a login name, or a brace expansion (`~{root,daemon}`). Anything else (`~0.1`, `~=`) stays text.
+const TILDE_PREFIX = /^(?:[+-]?\d*|[A-Za-z_][A-Za-z0-9._-]*)$/;
+
 function resolvePath(raw, root, home) {
-  if (raw === '~' || raw.startsWith('~/')) return path.join(home, raw.slice(1));
+  const tilde = /^~([^/]*)(\/.*)?$/s.exec(raw);
+  if (tilde && (TILDE_PREFIX.test(tilde[1]) || tilde[1].includes('{'))) {
+    const [, prefix, rest = ''] = tilde;
+    if (prefix === '') return path.join(home, rest);
+    // `~+` is $PWD, the session folder: resolved like a relative path.
+    if (prefix === '+') return path.resolve(root, `.${rest}`);
+    // Every other expansion (OLDPWD, a stack entry, another user's home) could be anywhere. The
+    // sentinel `/~<prefix>` is never inside the session and the rest is dropped, so `..` cannot climb back in.
+    return `/~${prefix}`;
+  }
   return path.resolve(root, raw);
 }
 
@@ -197,7 +281,11 @@ export function pathsOf(call, root, home) {
   if (typeof input.notebook_path === 'string') found.push(input.notebook_path);
   if ((call.name === 'mcp__ironbird__ironbird_run_scenario' || call.name === 'Glob' || call.name === 'Grep') && typeof input.path === 'string') found.push(input.path);
   if (call.name === 'Glob' && typeof input.pattern === 'string' && /^(\/|~|\.\.)/.test(input.pattern)) found.push(input.pattern.replace(/\/?[^/]*[*?[{].*$/, '') || '/');
-  if (call.name === 'Bash' && typeof input.command === 'string') for (const match of input.command.matchAll(BASH_PATH)) found.push(match[1]);
+  if (call.name === 'Bash' && typeof input.command === 'string') {
+    const command = stripHeredocs(input.command);
+    for (const match of command.matchAll(BASH_PATH)) found.push(match[1]);
+    for (const match of command.matchAll(TILDE_AFTER_COLON)) found.push(match[1]);
+  }
   return found.map((raw) => resolvePath(raw, root, home));
 }
 

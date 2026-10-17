@@ -1,16 +1,16 @@
-# ironbird: API Reference (draft)
+# ironbird: API Reference
 
 | | |
 |---|---|
-| Status | Draft; signatures will change during M0–M2 |
-| Last updated | 2026-10-03 |
+| Status | The 0.1 API: what 0.1.0 ships. Before 1.0, semver's pre-1.0 rule applies: a minor release such as 0.2 may change these signatures, and its changelog lists each change; patch releases don't break them |
+| Last updated | 2026-10-14 |
 | Related | [protocol.md](protocol.md) for wire types and error codes · [cli.md](cli.md) for the CLI |
 
-Priority markers match [spec.md](spec.md): **P0** ships in 0.1, **P1** is planned for 0.1 if milestones hold. Sections marked **M1** or **M2** describe APIs planned for those milestones ([roadmap.md](roadmap.md)); they are not in the repository yet.
+Priority markers match [spec.md](spec.md): **P0** ships in 0.1, **P1** is planned for 0.1 if milestones hold. A milestone marker such as **M1** names the milestone that built the section ([roadmap.md](roadmap.md)).
 
 ## @ironbird/core
 
-Runs unmodified in Node and Hermes. Peer dependency: `zod@^4.2`. Core imports zod only as a type: JSON Schema comes from each schema's own `toJSONSchema` method, so importing `@ironbird/core` does not load zod.
+Runs unmodified in Node and Hermes. Peer dependency: `zod@^4.2`. Core imports zod only as a type: JSON Schema comes from each schema's own `toJSONSchema` method, so importing `@ironbird/core` does not load zod. Apps still on Zod 3: see [migrating-from-zod-3.md](migrating-from-zod-3.md).
 
 ### defineCommands (P0)
 
@@ -47,6 +47,8 @@ export const commands = defineCommands({
 });
 ```
 
+Every schema must be a Zod 4.2+ schema from `zod` or `zod/v4`. `defineCommands` checks each one when it is called and throws `IronbirdError` with code `INVALID_CONFIG` and details `{ name, reason }` for a Zod 3 schema (from `zod` 3 or `zod/v3`), a `zod/mini` schema, or anything else, so a schema the registry can't describe fails before an agent asks for it; `defineFake` applies the same check to its controls in `create`. TypeScript rejects those schemas too. Apps still on Zod 3: see [migrating-from-zod-3.md](migrating-from-zod-3.md).
+
 ### createTarget (P0)
 
 ```ts
@@ -77,7 +79,7 @@ interface Target<S = unknown> {
 }
 ```
 
-`TargetDefinition` is exported alongside `createTarget`. `persist` and `restore` ship today: a definition that provides either gets the matching method and capability on the `Target`. What is P1 is the pair of protocol operations that use them, `snapshotSave` and `snapshotLoad`; see [protocol.md §4.1](protocol.md#41-target-operations).
+`TargetDefinition` is exported alongside `createTarget`. A definition that provides `persist` or `restore` gets the matching method and capability on the `Target`, and the `snapshotSave` and `snapshotLoad` operations use them; see [protocol.md §4.1](protocol.md#41-target-operations). `persist` should return plain JSON data: `snapshotSave` passes it through `serializeSnapshot`, which refuses a `Map`, a `Date`, a class instance, a cycle, `-0` (JSON writes it as `0`), and the like rather than saving something that loads back wrong. `restore` receives `unknown`, whatever the definition's state type, because it comes from a file or the wire: validate it, for example with a Zod schema for the whole state, before applying it, and apply nothing when it doesn't fit (AGENTS.md rule 4). A plain error that `persist` or `restore` throws reaches the caller as `INVALID_SNAPSHOT` with `{ path: '', reason: <its message> }`; an `IronbirdError` passes through unchanged, so a `restore` can report the path that failed with its own `INVALID_SNAPSHOT`.
 
 `capabilities` lists only what the `Target` itself provides. The daemon and bridge add `settle`, `events`, `fakes`, `clock`, `reset`, and `reload` as appropriate when they describe the target; see [protocol.md §5](protocol.md#5-types). A subscriber that throws is skipped with a `console.warn`; it never prevents later subscribers from running or the dispatch from completing.
 
@@ -340,6 +342,8 @@ const PROTOCOL_VERSION: 1;
 | `getAtPath` | Reads a dot path out of a state value, `undefined` when it doesn't resolve |
 | `parsePath` | Splits a dot path into segments; the empty path is no segments |
 | `serializeState` | JSON-safe copy plus the `SerializationWarning[]` for what it replaced |
+| `serializeSnapshot` | JSON-safe copy of a persisted snapshot, or `INVALID_SNAPSHOT` with `{ path, reason }` for the first value it can't save losslessly; never substitutes a placeholder (see [protocol.md §7](protocol.md#7-serialization)) |
+| `parseSnapshotLoadParams` | `(params, appId) => { snapshot }` for a target applying `snapshotLoad`: `INVALID_PAYLOAD` for a non-string `app` or a missing `snapshot`, `APP_MISMATCH` with `{ expected, received }` when `app` is another app's id |
 | `parseCondition` | Reads exactly one of `equals`, `notEquals`, `exists`, `matches` from a `waitFor` params object; throws `INVALID_PAYLOAD` otherwise (M1: moved here from `@ironbird/cli`, which re-exports it) |
 | `conditionHolds` | Whether a value satisfies a parsed `Condition` |
 | `deepEqual` | Structural equality used by `equals` and `notEquals` |
@@ -440,6 +444,23 @@ if (__DEV__) {
 
 Keep the `require` inside the `__DEV__` branch so production bundles drop the bridge, then prove it with `ironbird verify-bundle` in CI. Dev builds that should exercise fakes on a simulator, for example to test reader failures without hardware, wire fakes in `instance.ts` and pass them as `fakes`.
 
+In a bare React Native app, Metro can fail on the first dev bundle that reaches your command schemas with `Export namespace should be first transformed by @babel/plugin-transform-export-namespace-from`, naming a file under `zod/v4/`. Metro picks zod's `import` condition, an ESM build that uses `export * as`, and the React Native Babel preset does not transform files inside `node_modules`. Resolve zod to its CommonJS build in `metro.config.js`:
+
+```js
+const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
+
+const isZod = (name) => name === 'zod' || name.startsWith('zod/');
+
+module.exports = mergeConfig(getDefaultConfig(__dirname), {
+  resolver: {
+    resolveRequest: (context, moduleName, platform) =>
+      context.resolveRequest(isZod(moduleName) ? { ...context, isESMImport: false } : context, moduleName, platform),
+  },
+});
+```
+
+Expo apps (`examples/checkout`) don't need this; `examples/bare-redux/metro.config.js` carries the same setting.
+
 ### Reduce motion in agent-driven builds (P0)
 
 Settle sees work that runs through JavaScript: tracked promises and timers, and rendered frames. It cannot see an animation that runs on the UI thread (`Animated` with the native driver, Reanimated), a `LayoutAnimation`, or an image decode, so a screenshot taken right after settle can catch that motion mid-flight. In the M1 measurement a 400 ms native-driver fade was still running in 50 of 60 Android captures, and with motion reduced no app content differed in any capture on either platform ([evals/m1-remote-mode.md](evals/m1-remote-mode.md), [ADR-0005](adr/0005-pure-javascript-no-native-code.md)).
@@ -470,7 +491,7 @@ useEffect(() => {
 
 ## @ironbird/cli
 
-The binary is documented in [cli.md](cli.md). The package also exports the pieces the binary is built from, for embedding a daemon in another process: `loadConfig`, `loadTypeScriptModule`, `createHeadlessTarget`, `startDaemon`, `readDaemonInfo` / `writeDaemonInfo` / `removeDaemonInfo`, `buildProgram`, `runServe`, `isLoopbackHost`, `parseCondition` / `conditionHolds`, and the scenario runner: `parseScenario` and `loadScenarioFiles` turn a file (or a directory of them) into a validated `Scenario`, made of `ScenarioStep`s and reporting any authoring error as a `ScenarioIssue`; `runScenario` runs one `Scenario` against a `DaemonClient` and returns its `ScenarioResult`, per its `RunScenarioOptions`, whose `reset` resets a target that declares the `reset` capability before the first step (design D14; `scenario run` always sets it). `createHeadlessTarget` takes an optional `loadDefinition`, which the `reload` operation calls to load the headless entry again (`runServe` passes one that re-bundles the configured entry under a fresh label); a target created without it doesn't declare `reload`. For agents, `createMcpServer` builds the `ironbird mcp` server, an `McpServer` from `@modelcontextprotocol/server` with the sixteen tools in [cli.md](cli.md#mcp-tools), from `McpServerOptions`: its `version`, the `cwd` that scenario paths resolve against, a `resolve` called on every tool call that returns a `DaemonClient` and the artifacts directory, and an optional `readImage` for screenshots. `agentSetup` does what `ironbird agent setup` does, given `AgentSetupOptions` (`cwd`, `skillsDir?`, and the `packageRoot` holding `skills/ironbird/`), and returns an `AgentSetupResult`. The headless target and the scenario engine are also published as the subpath `@ironbird/cli/runner`, in ESM and CommonJS with type declarations, for CommonJS callers such as Jest (the main entry is ESM only): it exports `createHeadlessTarget`, `loadScenarioFiles`, `parseScenario`, and `runScenario`, and the `HeadlessTarget`, `HeadlessTargetOptions`, `Scenario`, `ScenarioStep`, `RunScenarioOptions`, and `DaemonClient` types. `@ironbird/testing` reaches the CLI only through it.
+The binary is documented in [cli.md](cli.md). The package also exports the pieces the binary is built from, for embedding a daemon in another process: `loadConfig`, `loadTypeScriptModule`, `createHeadlessTarget`, `startDaemon`, `readDaemonInfo` / `writeDaemonInfo` / `removeDaemonInfo`, `buildProgram`, `runServe`, `isLoopbackHost`, `parseCondition` / `conditionHolds`, and the scenario runner: `parseScenario` and `loadScenarioFiles` turn a file (or a directory of them) into a validated `Scenario`, made of `ScenarioStep`s and reporting any authoring error as a `ScenarioIssue`; `runScenario` runs one `Scenario` against a `DaemonClient` and returns its `ScenarioResult`, per its `RunScenarioOptions`, whose `reset` resets a target that declares the `reset` capability before the first step (design D14; `scenario run` always sets it). `createHeadlessTarget` takes an optional `loadDefinition`, which the `reload` operation calls to load the headless entry again (`runServe` passes one that re-bundles the configured entry under a fresh label); a target created without it doesn't declare `reload`. For agents, `createMcpServer` builds the `ironbird mcp` server, an `McpServer` from `@modelcontextprotocol/server` with the sixteen tools in [cli.md](cli.md#mcp-tools), from `McpServerOptions`: its `version`, the `cwd` that scenario paths resolve against, a `resolve` called on every tool call that returns a `DaemonClient` and the artifacts directory, and an optional `readImage` for screenshots. `agentSetup` does what `ironbird agent setup` does, given `AgentSetupOptions` (`cwd`, `skillsDir?`, and the `packageRoot` holding `skills/ironbird/`), and returns an `AgentSetupResult`. The headless target and the scenario engine are also published as the subpath `@ironbird/cli/runner`, in ESM and CommonJS with type declarations, for CommonJS callers such as Jest (the main entry is ESM only): it exports `createHeadlessTarget`, `loadScenarioFiles`, `parseScenario`, and `runScenario`, and the `HeadlessTarget`, `HeadlessTargetOptions`, `Scenario`, `ScenarioStep`, `RunScenarioOptions`, `DaemonClient`, and `CallOptions` types. `@ironbird/testing` reaches the CLI only through it. `DaemonClient`'s `call` and `rpc` take an optional fourth argument, `CallOptions` (`{ signal?: AbortSignal }`): aborting the signal cancels the request, which then rejects with the signal's reason.
 
 ### defineConfig (P0)
 
@@ -631,32 +652,109 @@ A fast-check arbitrary for the JSON Schema `describe()` reports for a payload, t
 
 `description`, `title`, `default`, `examples`, `$schema`, `deprecated`, and `readOnly` are ignored. Any other keyword, such as `pattern` (`.regex`), `format` (`z.email()`), `multipleOf`, `propertyNames` (`z.record`), `prefixItems` (`z.tuple`), or `$ref`, and a schema with no type at all (`z.unknown()`, `z.date()`), throws `INVALID_PAYLOAD` with details `{ name, issues: [{ path, message }] }`, where `name` is `options.name` (the command, or `<fake>.<control>`; default `payload`) and `path` is the schema path, such as `['properties', 'sku', 'pattern']`. Pass a `payload` override for that step instead: the generator never guesses.
 
-## Adapters (P1)
+## Adapters
 
-### @ironbird/xstate
-
-```ts
-function fromActor<R extends CommandRegistry>(
-  actor: AnyActorRef,
-  options: {
-    commands: R;
-    toEvent?: (command: CommandOf<R>) => EventObject;   // default: { type: name, ...payload }
-    select?: (snapshot: AnyMachineSnapshot) => unknown; // default: { value, context }
-  },
-): Target;
-```
-
-Supports `persist` through `getPersistedSnapshot()`. `restore` requires recreating the actor, so the adapter exposes it only when given an actor factory.
+`@ironbird/redux` and `@ironbird/xstate` turn a state container into a core `Target`, so the daemon, the bridge, `@ironbird/testing`, and snapshots work with it unchanged. Both run in Node and Hermes and ship ESM and CommonJS builds with type declarations. Each lists `@ironbird/core`, `zod` ^4.2, and its library as peers. At runtime they import only `@ironbird/core`, plus `createActor` from `xstate`. Commands go through the registry first, so `toAction` and `toEvent` only ever see validated payloads.
 
 ### @ironbird/redux
 
 ```ts
-function fromStore<R extends CommandRegistry, S>(
-  store: Store<S>,
-  options: {
-    commands: R;
-    toAction?: (command: CommandOf<R>) => UnknownAction; // default: { type: name, payload }
-    select?: (state: S) => unknown;                      // default: identity
-  },
+function fromStore<R extends CommandRegistry, S, A extends Action = UnknownAction>(
+  store: Store<S, A>,
+  options: FromStoreOptions<R, S, A>,
 ): Target;
+
+interface FromStoreOptions<R extends CommandRegistry, S, A extends Action = UnknownAction> {
+  commands: R;
+  toAction?: (command: CommandOf<R>) => A; // default: { type: name, payload }
+  select?: (state: S) => unknown;          // default: the whole state
+  restore?: { schema: z.ZodType<S> };      // requires withIronbirdRestore
+}
+
+function withIronbirdRestore<S, A extends Action, P = S>(reducer: Reducer<S, A, P>): Reducer<S, A, P>;
 ```
+
+```ts
+import { fromStore, withIronbirdRestore } from '@ironbird/redux';
+import { configureStore } from '@reduxjs/toolkit';
+
+export const store = configureStore({ reducer: withIronbirdRestore(rootReducer) });
+
+// Command names match the slices' action types (`todos/add`), so the default toAction fits.
+export const target = fromStore(store, { commands, select: (state) => state.todos, restore: { schema: rootStateSchema } });
+```
+
+- The default `toAction` produces the shape Redux Toolkit's action creators produce, so commands named after slice action types need no mapping.
+- `select` shapes what `getState`, `waitFor`, and `watch` see. `persist` always returns the **root** state, `store.getState()`, because a projection can't rebuild the root reducer's state.
+- The revision moves whenever the root state changes, including through dispatches made outside ironbird. A dispatch no reducer handles leaves it as it was.
+- `restore` exists only with `restore: { schema }`, a Zod schema for the root state, and it requires the root reducer to be wrapped with `withIronbirdRestore`. The snapshot is parsed with `schema` first: a failure throws `INVALID_SNAPSHOT` with the first issue's `{ path, reason }` (a dot-separated path, `''` for the root) and leaves the store untouched. The adapter then dispatches one internal action, `@@ironbird/restore`, which the wrapper answers by returning the parsed value as the new state. If the store's state afterwards isn't that value, the reducer isn't wrapped, and the load fails `INVALID_SNAPSHOT` with `{ path: '', reason: 'the root reducer is not wrapped with withIronbirdRestore' }`.
+- A command whose `toAction` returns the internal restore action fails `DISPATCH_FAILED`. Only a schema-checked snapshot may replace the state.
+- Without `restore`, the target's capabilities are `['persist']`.
+
+### @ironbird/xstate
+
+```ts
+function fromActor<R extends CommandRegistry, TLogic extends AnyStateMachine>(
+  actor: Actor<TLogic>,
+  options: FromActorOptions<R, TLogic>,
+): ActorTarget<TLogic>;
+
+interface FromActorOptions<R extends CommandRegistry, TLogic extends AnyStateMachine> {
+  commands: R;
+  toEvent?: (command: CommandOf<R>) => EventFromLogic<TLogic>; // default: { ...payload, type: name }
+  select?: (snapshot: SnapshotFrom<TLogic>) => unknown;         // default: { value, context }
+  restore?: {
+    snapshotSchema: z.ZodType;
+    actorOptions?: Omit<ActorOptions<TLogic>, 'snapshot' | 'state'>;
+  };
+}
+
+type ActorTarget<TLogic extends AnyStateMachine> = Target & {
+  /** The live actor; a restore replaces it. */
+  actor(): Actor<TLogic>;
+};
+```
+
+```ts
+import { fromActor } from '@ironbird/xstate';
+import { defineHeadless } from '@ironbird/core';
+import { createActor } from 'xstate';
+import { z } from 'zod';
+
+export default defineHeadless(({ clock }) => {
+  const actorOptions = { clock }; // delayed transitions run on the headless clock
+  const target = fromActor(createActor(checkoutMachine, actorOptions).start(), {
+    commands,
+    restore: {
+      snapshotSchema: z.looseObject({ status: z.literal('active'), value: z.string(), context: checkoutContextSchema }),
+      actorOptions,
+    },
+  });
+  return {
+    target,
+    dispose: () => {
+      target.actor().stop();
+    },
+  };
+});
+```
+
+- Pass a started **root** actor.
+- The default event is the payload's keys plus `type: name`, with `type` applied last, so a payload key named `type` never renames the event. A payload that isn't an object is sent as `{ type: name, payload }`.
+- The revision moves whenever the actor's snapshot changes, including through events sent outside ironbird and delayed transitions. An event no state handles leaves it as it was.
+- `dispatch` fails `DISPATCH_FAILED` with `the actor is <status>` when the actor isn't active. It fails with `the actor failed: <message>` when the event puts the actor in error.
+- The adapter observes the actor with an error callback, so an actor error never escapes through it as an uncaught exception. The error moves the revision, and the next dispatch reports it. XState rethrows an actor's error from a timer only when some observer lacks an error callback.
+- `persist` returns `actor().getPersistedSnapshot()`. That value carries `undefined` properties, which `snapshotSave`'s strict serializer omits.
+- `restore` exists only with `restore: { snapshotSchema, actorOptions? }`. It runs synchronously after validation, so no event reaches either actor in between:
+  1. Parse the snapshot with `snapshotSchema`. On failure, it throws `INVALID_SNAPSHOT` with the first issue's `{ path, reason }`, and nothing has changed.
+  2. Build and start the replacement: `createActor(actor().logic, { ...actorOptions, snapshot })`. If that throws or the actor's status is `error`, the replacement is stopped and the call throws `INVALID_SNAPSHOT` with `{ path: '', reason: 'actor failed to start: <message>' }`. The old actor stays live and subscribed.
+  3. On success, the adapter moves its subscription to the replacement, stops the old actor, makes `actor()` return the replacement, and notifies once.
+- Write `snapshotSchema` with `z.looseObject`, or declare `children` and `historyValue`. `z.object` strips the keys it doesn't declare, and XState can't restore a snapshot without `children`; that fails at step 2.
+- Pass the options the original actor was created with as `actorOptions`, especially `clock` in a headless definition. The replacement doesn't inherit them.
+
+Consequences of a restore:
+- App code holding the old actor reference sees a stopped actor. Read `actor()` instead, and read it again when the target notifies, for example to re-render. While the old actor's observers run their `complete` callbacks, `actor()` still returns the old, stopped actor, so an event sent through it there is dropped; react to the target's notification instead, which comes once, after the swap.
+- As in XState persistence, the restored state's invoked and spawned actors restart, and the old actor's stop. Entry actions aren't re-run. Both actors exist for one synchronous turn, so effects that start on `start()` can run once more than in the original timeline.
+- Delayed transitions (`after`) that were pending when the snapshot was saved don't fire after a restore, because XState's persisted snapshot holds no scheduled events. A restored state waiting on a delay stays in it until an event moves it.
+- `snapshotLoad` runs in the target's mutating queue, so no ironbird dispatch interleaves with a restore.
+- Without `restore`, the target's capabilities are `['persist']`.

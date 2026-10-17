@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft |
-| Last updated | 2026-09-29 |
+| Last updated | 2026-10-14 |
 | Related | [protocol.md](protocol.md) · [api.md](api.md) |
 
 The `ironbird` binary ships in `@ironbird/cli` and requires Node 22 or newer. The unscoped `ironbird` package exposes the same binary, so `npx ironbird <command>` works without a local install. Every command except `serve`, `doctor`, `verify-bundle`, `mcp`, and `agent setup` talks to a running daemon. `mcp` starts without one and finds it on each tool call.
@@ -27,7 +27,7 @@ Payloads are JSON, and an omitted payload means `{}`. Condition values for `--eq
 | Code | Meaning | Typical causes |
 |---|---|---|
 | 0 | Success, including headless steps that end quiescent | |
-| 1 | Operation failed | `INVALID_PAYLOAD`, `UNKNOWN_COMMAND`, `UNKNOWN_FAKE`, `UNKNOWN_CONTROL`, `DISPATCH_FAILED`, `UNSUPPORTED`, `SCREENSHOT_FAILED`, `TARGET_DISCONNECTED`, `CLOCK_RUNAWAY`, `INTERNAL` |
+| 1 | Operation failed | `INVALID_PAYLOAD`, `INVALID_SNAPSHOT`, `UNKNOWN_COMMAND`, `UNKNOWN_FAKE`, `UNKNOWN_CONTROL`, `DISPATCH_FAILED`, `UNSUPPORTED`, `SCREENSHOT_FAILED`, `TARGET_DISCONNECTED`, `CLOCK_RUNAWAY`, `INTERNAL` |
 | 2 | Usage or configuration error | Bad arguments, `AMBIGUOUS_TARGET`, `AMBIGUOUS_DEVICE`, `HEADLESS_LOAD_FAILED`, `INVALID_CONFIG`, `INVALID_SCENARIO`, `UNAUTHORIZED`, `PROTOCOL_MISMATCH`, `APP_MISMATCH` |
 | 3 | Applied, but not settled within the timeout | See `settle` in the result |
 | 4 | Condition or assertion not met | `WAIT_TIMEOUT`, a failed scenario step |
@@ -173,6 +173,8 @@ ironbird events [--since <seq>] [--limit <n>] [--follow]
 
 Prints `{ events, nextSeq, truncated }`. With `--follow`, the backlog and every later event print as JSON lines regardless of TTY, until interrupted.
 
+With `--follow`, SIGINT or SIGTERM ends it with exit 0, without an error line, including while the backlog is still being read. Anything else that ends it prints `{ "error": ... }` as the last line, as JSON even in a TTY, and exits with that error's code: an `error` frame, such as `TARGET_DISCONNECTED` when the followed app goes away; a backlog read or stream that fails, such as `NO_TARGET` (exit 5) when the daemon is unreachable; or a stream that the daemon closes without an `error` frame, because it shut down or the connection dropped, which is `TARGET_DISCONNECTED` with `{ target, op: "stream" }` (exit 1). Whichever of these comes first decides the exit code, and nothing prints after it. `events --follow` doesn't reconnect.
+
 ### fake
 
 ```text
@@ -288,28 +290,86 @@ Every run, passed or failed, writes a directory under the daemon's artifacts dir
 
 "During the run" means after the run's first `describe`, or after the last `reset` step, which restarts the event and call logs. Collection is best effort: a file that cannot be gathered, such as the state after a `TARGET_DISCONNECTED`, is left out and named in `artifactErrors`.
 
-### snapshot (P1)
+### snapshot
 
 ```text
 ironbird snapshot save <file>
 ironbird snapshot load <file>
 ```
 
-### watch (P1)
+For targets that declare `persist` and `restore`; others fail with `UNSUPPORTED`.
+
+`save` asks the target for its persisted state and writes `{ "app", "target", "rev", "snapshot" }` to `<file>` as JSON, with `app` from the target's `status` entry, then prints `{ target, app, rev, file }` with `file` absolute. A state that can't be saved losslessly, such as one holding a `Map`, a `Date`, a class instance, or a cycle, fails with `INVALID_SNAPSHOT` naming the first such path, and nothing is written. A file that can't be written exits 2.
+
+`load` reads `<file>` and checks that it is a JSON object with a non-empty string `app`, a string `target`, a non-negative integer `rev`, and a `snapshot`; only then does it send `snapshotLoad` with the file's `snapshot` and `app`. A file that isn't JSON or doesn't have that shape fails with `INVALID_PAYLOAD` and details `{ name: "snapshotLoad", issues }`, listing every problem, before anything is sent; a file that can't be read exits 2. The target refuses a snapshot saved from another app with `APP_MISMATCH` and one its own validation rejects with `INVALID_SNAPSHOT`. `target` in the file is informational: a snapshot can be loaded into another target of the same app. It prints `{ target, rev, path: "", value }`, the whole state after the load.
+
+```sh
+ironbird snapshot save todos.json
+ironbird send todos.clear
+ironbird snapshot load todos.json
+```
+
+### watch
 
 ```text
 ironbird watch [--path <path>]
 ```
 
-Streams `{ rev, patch }` JSON lines, where `patch` is a JSON Patch (RFC 6902) against the previous state, until interrupted.
+Prints one JSON line per change to the state at `--path` (default: the whole state), regardless of TTY, until interrupted: `{ "rev": 7, "patch": [...] }`. `patch` is a JSON Patch (RFC 6902) that turns the last printed value into the new one. Its pointers are relative to the value at `--path`, so the root is `""`, and keys escape `~` as `~0` and `/` as `~1` (RFC 6901). `rev` is the revision the read returned.
 
-### doctor (P1)
+- The first line is always printed: `[{ "op": "add", "path": "", "value": ... }]` with the current value, or `[]` when the path is missing. A path is missing when it doesn't resolve or holds `undefined`; `null` is a value.
+- Later, a path that disappears prints `[{ "op": "remove", "path": "" }]` and one that appears prints an `add` at `""`. A change that leaves the watched value equal prints nothing.
+- Objects are compared by key (`add`, `remove`, `replace`). Arrays are compared index by index: changed items are replaced whole, extra old items are removed from the highest index down, and new items are added at the end. A change of type is a `replace`.
+- `watch` samples state. The daemon sends at most 10 state frames per second and coalesces the revisions in between, so intermediate values can be skipped; use `events --follow` when every recorded event matters. Revisions restart after `reset` and `reload`, so `rev` can go backwards.
+- It opens the stream before its first read and reads only after the daemon's first `state` frame, so no change after it starts is missed. Reads never overlap, and any frame that arrives during a read causes one more read after it.
+- SIGINT or SIGTERM ends it with exit 0, without an error line. Anything else that ends it prints `{ "error": ... }` as the last line, as JSON even in a TTY, and exits with that error's code: an `error` frame, such as `TARGET_DISCONNECTED` when a connected app goes away; a read, or the stream, that fails, such as `NO_TARGET` (exit 5) when the daemon is gone; or a stream that the daemon closes without an `error` frame, because it shut down or the connection dropped, which is `TARGET_DISCONNECTED` with `{ target, op: "stream" }` (exit 1) once any read in flight has printed. `watch` doesn't reconnect.
 
-```text
-ironbird doctor
+```sh
+ironbird watch --path todos
+{"rev":3,"patch":[{"op":"add","path":"","value":[{"title":"milk","done":false}]}]}
+{"rev":4,"patch":[{"op":"replace","path":"/0","value":{"title":"milk","done":true}}]}
+{"rev":5,"patch":[{"op":"add","path":"/1","value":{"title":"eggs","done":false}}]}
 ```
 
-Checks the Node version, config validity, headless entry load (printing the import chain on failure), daemon port availability, `xcrun simctl` and `adb` availability, booted devices, and whether `.ironbird/` is gitignored.
+### doctor
+
+```text
+ironbird doctor [--config <file>]
+```
+
+Checks that the project and this machine are ready for ironbird, without a daemon. Prints `{ checks: [{ id, ok, required, detail, fix? }] }`, one entry per check in the order below, and exits 0 when every required check passes and 1 otherwise; optional checks never change the exit code. `detail` is one line saying what was found, and `fix`, present on most failures, says what to do. Text from outside ironbird, such as tool output, device names, and package fields, is flattened onto that line, with control characters replaced by spaces, and capped at 200 characters, counting the `...` that ends a cut piece; a config's issues are listed in full.
+
+| id | Required | Passes when |
+|---|---|---|
+| `node` | yes | Node is 22 or newer |
+| `config` | yes | The config file exists and validates. A missing file fails with a fix naming the file to create; an invalid one lists its `INVALID_CONFIG` issues |
+| `headless` | yes | The configured headless entry loads and default-exports `defineHeadless(...)`. A remote-only app, with no `headless` in its config, passes with detail `not configured`. A `react-native` import anywhere in the headless graph fails with the import chain |
+| `port` | yes | The daemon port is free or held by an ironbird daemon, and the bridge port is free. The bridge port isn't checked while an ironbird daemon holds the daemon port, and port `0` always passes |
+| `gitignore` | yes | The artifacts directory, `.ironbird/` by default, is ignored by git, is outside the repository, or the project isn't in a git repository. Without git installed, a project with no `.git` in its directory or any above it passes as not a repository, and one with a `.git` fails, since the ignore status can't be checked |
+| `versions` | yes | Every installed `@ironbird/*` package, the `ironbird` package, and the running CLI have the same version |
+| `simctl` | no | This is macOS and `xcrun simctl` works; `detail` lists booted simulators |
+| `adb` | no | `adb` is on the path; `detail` lists connected devices |
+
+The config is found as for other commands: `--config`, else the nearest `ironbird.config.ts` walking up from the working directory. When there is none, the later checks use the defaults (ports 4567 and 4568, `.ironbird/`); when it can't be loaded, `headless` and `port` fail as skipped. The config and the headless entry are bundled into a fresh temporary directory under `.ironbird/`, removed afterwards, so `doctor` never writes to a running daemon's `.ironbird/cache` or `daemon.json`. Loading the headless entry runs its top-level code but never calls `create`. If `doctor` can't create or remove that directory, it reports the problem on `config` (and `headless`) as a failed check, and the checks that need the config are skipped. A check that throws unexpectedly fails with `check failed unexpectedly: <message>`, and the other checks still run.
+
+A port in use is identified by sending `status` to `POST /v1/rpc` with a 1 s timeout: an `{ ok: true, result: { version, protocol } }` answer, or a 401 `UNAUTHORIZED` envelope from a daemon that requires a token, counts as ironbird. `doctor` sends no token. Packages are released at one version, so a `versions` failure means an install that mixes releases or a CLI run from outside the project, such as a global install.
+
+```json
+{
+  "checks": [
+    { "id": "node", "ok": true, "required": true, "detail": "Node 22.12.0" },
+    { "id": "config", "ok": true, "required": true, "detail": "ironbird.config.ts is valid" },
+    { "id": "headless", "ok": false, "required": true, "detail": "react-native is imported in the headless graph: headless.ts > pricing.ts > react-native", "fix": "Headless code runs in Node, so nothing it imports may import react-native: move that import out of this chain, for example behind a port with a fake" },
+    { "id": "port", "ok": true, "required": true, "detail": "daemon port 4567 on 127.0.0.1 is free; bridge port 4568 is free" },
+    { "id": "gitignore", "ok": true, "required": true, "detail": ".ironbird/ is ignored by git" },
+    { "id": "versions", "ok": true, "required": true, "detail": "@ironbird/cli 0.1.0, @ironbird/core 0.1.0, @ironbird/react-native 0.1.0, this CLI 0.1.0" },
+    { "id": "simctl", "ok": true, "required": false, "detail": "xcrun simctl is available; booted: iPhone 17 (9DEB1E0D-3DEF-4B99-ACFC-593ABDCAF6E6)" },
+    { "id": "adb", "ok": false, "required": false, "detail": "adb is not on the PATH", "fix": "Install the Android SDK Platform-Tools and add them to your PATH" }
+  ]
+}
+```
+
+This report exits 1, because `headless` is required.
 
 ### verify-bundle
 

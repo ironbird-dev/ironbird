@@ -70,11 +70,21 @@ function resolve(parsed: IronbirdConfig, rootDir: string, configPath: string | u
   };
 }
 
-export async function loadConfig(options: { cwd: string; configPath?: string }): Promise<ResolvedConfig> {
+/** The config every command uses when no config file exists, rooted at `rootDir`. */
+export function defaultConfig(rootDir: string): ResolvedConfig {
+  return resolve(configSchema.parse({}), path.resolve(rootDir), undefined);
+}
+
+/**
+ * `cacheDir` is where the config file's bundle is written; the default is `.ironbird/cache` next to
+ * the config, the directory the daemon uses. `ironbird doctor` passes its own temporary directory so
+ * it never writes into a running daemon's cache (M5 design §6).
+ */
+export async function loadConfig(options: { cwd: string; configPath?: string; cacheDir?: string }): Promise<ResolvedConfig> {
   const configPath = options.configPath ? path.resolve(options.cwd, options.configPath) : await findConfigFile(options.cwd);
-  if (!configPath) return resolve(configSchema.parse({}), path.resolve(options.cwd), undefined);
+  if (!configPath) return defaultConfig(options.cwd);
   const rootDir = path.dirname(configPath);
-  const loaded = await loadTypeScriptModule(configPath, { outDir: path.join(rootDir, '.ironbird', 'cache'), label: 'config', shims: CONFIG_SHIMS, errorCode: 'INVALID_CONFIG' });
+  const loaded = await loadTypeScriptModule(configPath, { outDir: options.cacheDir ?? path.join(rootDir, '.ironbird', 'cache'), label: 'config', shims: CONFIG_SHIMS, errorCode: 'INVALID_CONFIG' });
   const relativePath = path.relative(options.cwd, configPath);
   if (loaded.exports['default'] === undefined) {
     throw new IronbirdError('INVALID_CONFIG', `${relativePath} must default-export defineConfig(...)`, {

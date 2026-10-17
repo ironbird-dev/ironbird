@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { isIronbirdError } from './errors';
+import { IronbirdError, isIronbirdError } from './errors';
 import { defineCommands } from './registry';
 import { createTarget } from './target';
 
@@ -106,6 +106,74 @@ describe('createTarget', () => {
     await target.restore?.({ value: 9 });
     expect(target.getState()).toBe(9);
     expect(target.revision()).toBe(1);
+  });
+
+  it('reports a plain error from persist or restore as INVALID_SNAPSHOT and passes IronbirdErrors through', async () => {
+    let restoreError: unknown = new Error('bad shape');
+    const target = createTarget({
+      commands,
+      dispatch: () => {},
+      getState: () => 0,
+      persist: () => {
+        throw new Error('disk gone');
+      },
+      restore: () => {
+        throw restoreError;
+      },
+    });
+    let saved: unknown;
+    try {
+      target.persist?.();
+    } catch (error) {
+      saved = error;
+    }
+    expect(saved).toMatchObject({ code: 'INVALID_SNAPSHOT', message: 'Snapshot could not be saved: disk gone', details: { path: '', reason: 'disk gone' } });
+    expect(await target.restore?.({}).catch((error: unknown) => error)).toMatchObject({
+      code: 'INVALID_SNAPSHOT',
+      message: 'Snapshot could not be restored: bad shape',
+      details: { path: '', reason: 'bad shape' },
+    });
+    restoreError = new IronbirdError('INVALID_SNAPSHOT', 'Invalid snapshot at todos.0', { path: 'todos.0', reason: 'Expected string' });
+    expect(await target.restore?.({}).catch((error: unknown) => error)).toBe(restoreError);
+    expect(target.revision()).toBe(0);
+  });
+
+  it('classifies a thrown value that cannot be printed as INVALID_SNAPSHOT', async () => {
+    const hostile = {
+      toString: () => {
+        throw new Error('no string');
+      },
+    };
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    const thrown: unknown[] = [Object.create(null), Symbol('boom'), hostile, revoked.proxy, undefined, null];
+    for (const value of thrown) {
+      const target = createTarget({
+        commands,
+        dispatch: () => {},
+        getState: () => 0,
+        persist: () => {
+          throw value;
+        },
+        restore: () => {
+          throw value;
+        },
+      });
+      let saved: unknown;
+      try {
+        target.persist?.();
+      } catch (error) {
+        saved = error;
+      }
+      expect(saved).toBeInstanceOf(IronbirdError);
+      expect(saved).toMatchObject({ code: 'INVALID_SNAPSHOT', details: { path: '' } });
+      const restored = await target.restore?.({}).catch((error: unknown) => error);
+      expect(restored).toBeInstanceOf(IronbirdError);
+      expect(restored).toMatchObject({ code: 'INVALID_SNAPSHOT', details: { path: '' } });
+    }
+    const bare = Object.create(null) as object;
+    const unprintable = createTarget({ commands, dispatch: () => {}, getState: () => 0, persist: () => { throw bare; } });
+    expect(() => unprintable.persist?.()).toThrow('Snapshot could not be saved: [unprintable error]');
   });
 });
 

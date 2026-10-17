@@ -13,7 +13,7 @@ export default defineConfig({
         resolve: { alias },
         test: {
           name: 'unit',
-          include: ['packages/*/src/**/*.test.ts', 'examples/*/src/**/*.test.ts', 'packages/*/test/**/*.test.ts', 'examples/*/eval/**/*.test.mjs'],
+          include: ['packages/*/src/**/*.test.ts', 'examples/*/src/**/*.test.ts', 'packages/*/test/**/*.test.ts', 'examples/*/eval/**/*.test.mjs', 'examples/*/scripts/**/*.test.mjs', 'packages/*/scripts/**/*.test.mjs', 'scripts/**/*.test.mjs'],
           exclude: [
             '**/*.device.test.ts',
             '**/node_modules/**',
@@ -32,7 +32,8 @@ export default defineConfig({
           // in parallel lets one suite's daemon.json writes/removals race the other's.
           // model.smoke.test.ts is the M4 race smoke (M4 design D7): in process, no daemon, and
           // here so CI runs it one file at a time rather than beside the CPU-bound unit files.
-          include: ['packages/cli/test/**/*.test.ts', 'packages/cli/src/cli/commands/serve.test.ts', 'examples/checkout/test/model.smoke.test.ts'],
+          // examples/bare-redux/test/ drives a real daemon and Metro against that example.
+          include: ['packages/cli/test/**/*.test.ts', 'packages/cli/src/cli/commands/serve.test.ts', 'examples/checkout/test/model.smoke.test.ts', 'examples/bare-redux/test/**/*.test.ts'],
           exclude: ['**/*.device.test.ts', '**/node_modules/**', '**/dist/**'],
           fileParallelism: false,
         },

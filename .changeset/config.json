@@ -6,7 +6,7 @@
   "changelog": "@changesets/cli/changelog",
   "commit": false,
   "ignore": [],
-  "fixed": [],
+  "fixed": [["@ironbird/*", "ironbird"]],
   "linked": [],
   "updateInternalDependencies": "patch"
 }

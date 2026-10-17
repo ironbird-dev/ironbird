@@ -616,6 +616,12 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon> {
       pendingRev = rev;
       if (!throttle) flush();
     });
+    // The barrier (M5 design D5): the subscription above is live, so any change from here on
+    // produces another state frame. A client that reads state after this frame misses nothing,
+    // which is how `watch` starts. It goes through the throttle like any other state frame.
+    pendingRev = target.info().rev;
+    flush();
+    if (cleaned) return;
     handles.ping = setInterval(() => writeRaw(': ping\n\n'), options.pingIntervalMs ?? PING_INTERVAL_MS);
   };
 

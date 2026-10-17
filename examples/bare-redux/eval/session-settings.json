@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(/{{repo}}/**)",
+      "Edit(/{{repo}}/**)",
+      "Read(/{{template}}/**)",
+      "Edit(/{{template}}/**)"
+    ]
+  }
+}
