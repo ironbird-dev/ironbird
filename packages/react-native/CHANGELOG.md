@@ -1,5 +1,21 @@
 # @ironbird/react-native
 
+## 0.1.0
+
+### Minor Changes
+
+- e929a6b: 0.1.0: the in-app bridge for development builds, with settle detection, reconnection, reload, and snapshots, as docs/api.md describes for 0.1. It stays inert outside development builds and out of release bundles, which `ironbird verify-bundle` checks.
+
+### Patch Changes
+
+- e929a6b: `snapshotSave` is strict: a persisted state holding a `Map`, a `Date`, a class instance, a cycle, or another value that can't be saved losslessly fails with `INVALID_SNAPSHOT` naming its path, instead of saving a placeholder. `snapshotLoad` takes an optional `app` and refuses another app's snapshot with `APP_MISMATCH` before calling `restore`; a non-string `app` or a missing `snapshot` is `INVALID_PAYLOAD`.
+- Updated dependencies [e929a6b]
+- Updated dependencies [c096b90]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+  - @ironbird/core@0.1.0
+
 ## 0.0.3
 
 ### Patch Changes
