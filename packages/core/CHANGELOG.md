@@ -1,5 +1,18 @@
 # @ironbird/core
 
+## 0.1.0
+
+### Minor Changes
+
+- e929a6b: 0.1.0: the first release meant for apps outside this repository. The command registry, targets, fakes, clocks, tracker, recorder, headless definition, and snapshot serialization are the API that docs/api.md describes for 0.1. `zod` 4.2 or later stays the only peer dependency; apps on Zod 3 can follow docs/migrating-from-zod-3.md.
+
+### Patch Changes
+
+- e929a6b: `serializeSnapshot` refuses `-0` with `INVALID_SNAPSHOT` and `{ path, reason: '-0' }`. JSON writes `-0` as `0`, so a saved `-0` loaded back as a different number; `snapshotSave` now fails instead of changing state on the round trip.
+- c096b90: New error code `INVARIANT_FAILED`, raised by `@ironbird/testing`'s `modelTest` when a generated sequence of steps violates an invariant, with details `{ invariant, message, seed, path, runs, steps, scenarioFile, traceReplayable }`, where `traceReplayable` is `false` when a rejected step changed state, so the trace may not reproduce the violation. It is raised in the test process and never crosses the wire, so `PROTOCOL_VERSION` stays 1.
+- e929a6b: Snapshots. New error code `INVALID_SNAPSHOT` with details `{ path, reason }`. New `serializeSnapshot(value)`, which returns JSON-safe data or throws `INVALID_SNAPSHOT` naming the first value it can't save losslessly (functions, symbols, `BigInt`, `NaN`, `Infinity`, `Map`, `Set`, `Date`, other non-plain objects, cycles, `undefined` or holes in arrays, array properties other than indices, symbol-keyed properties, throwing getters) instead of substituting a placeholder, and `parseSnapshotLoadParams(params, appId)`, which checks `snapshotLoad`'s optional `app` (`APP_MISMATCH` on another app's id) and its `snapshot` before anything is applied. A plain error thrown by a `Target`'s `persist` or `restore` now surfaces as `INVALID_SNAPSHOT` with `{ path: '', reason }` instead of an unclassified error; an `IronbirdError` passes through.
+- e929a6b: `defineCommands`, and through it a fake's `create`, now checks every schema when it is called and throws `IronbirdError` with code `INVALID_CONFIG` and details `{ name, reason }` for a schema that isn't a Zod 4.2+ schema: one from `zod` 3 or `zod/v3`, one from `zod/mini`, or anything else. Before, such a schema validated payloads, and `describe()` failed with a bare `TypeError` the first time an agent listed the commands. The message points to docs/migrating-from-zod-3.md.
+
 ## 0.0.4
 
 ### Patch Changes

@@ -1,5 +1,23 @@
 # ironbird
 
+## 0.1.0
+
+### Minor Changes
+
+- e929a6b: 0.1.0: exposes the `ironbird` binary of `@ironbird/cli` 0.1.0, so `npx ironbird` works without a local install.
+
+### Patch Changes
+
+- Updated dependencies [e929a6b]
+- Updated dependencies [c096b90]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+  - @ironbird/cli@0.1.0
+
 ## 0.0.4
 
 ### Patch Changes

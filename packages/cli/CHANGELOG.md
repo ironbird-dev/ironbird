@@ -1,5 +1,27 @@
 # @ironbird/cli
 
+## 0.1.0
+
+### Minor Changes
+
+- e929a6b: 0.1.0: the daemon and CLI as docs/cli.md describes for 0.1, including scenarios, screenshots, `snapshot`, `watch`, `doctor`, `verify-bundle`, and the MCP server with its agent skill. Node 22 or later.
+
+### Patch Changes
+
+- e929a6b: `ironbird watch` and `ironbird events --follow` no longer exit 0 when the daemon closes the stream without an `error` frame, as when it shuts down or the connection drops. `watch` lets a read in flight print first. Both then print `{ "error": { "code": "TARGET_DISCONNECTED", ... } }` with `{ target, op: "stream" }` and exit 1. Every other failure, such as a backlog or cursor read or a stream that fails to open, now also ends with a `{ "error": ... }` JSON line, even in a TTY, rather than human-readable text. SIGINT or SIGTERM still ends them with exit 0, and `events --follow` now honours it while the backlog is still being read.
+- c096b90: New subpath `@ironbird/cli/runner`, published in ESM and CommonJS with type declarations: `createHeadlessTarget`, `loadScenarioFiles`, `parseScenario`, `runScenario`, and the `HeadlessTarget`, `HeadlessTargetOptions`, `Scenario`, `ScenarioStep`, `RunScenarioOptions`, and `DaemonClient` types. The main entry stays ESM only; the subpath lets CommonJS callers such as Jest reuse the headless target and the scenario engine, and it is how `@ironbird/testing` reaches the CLI.
+- e929a6b: New command `ironbird doctor`, which needs no daemon. It checks the Node version, `ironbird.config.ts`, that the headless entry loads (printing the import chain when it imports `react-native`), that the daemon and bridge ports are free or held by an ironbird daemon, that `.ironbird/` is gitignored, and that every installed ironbird package and the running CLI share one version; `xcrun simctl` and `adb`, with their devices, are reported for information. It prints `{ checks: [{ id, ok, required, detail, fix? }] }` and exits 0 when every required check passes and 1 otherwise. From this release on, every ironbird package is released at the same version.
+- e929a6b: The headless target serves `snapshotSave` and `snapshotLoad` when the app's `Target` implements `persist` and `restore`. A save is strict (`INVALID_SNAPSHOT` naming the first value that can't be saved losslessly); a load takes an optional `app`, refused with `APP_MISMATCH` when it isn't this target's app id, and runs in the mutating queue. After a successful `reset` or `reload`, the headless target notifies state listeners, so a stream sees a `state` frame with the new session's revision.
+- e929a6b: New commands `ironbird snapshot save <file>` and `ironbird snapshot load <file>`. `save` writes `{ app, target, rev, snapshot }`, taking `app` from the target's status entry, and prints `{ target, app, rev, file }`. `load` validates the file before sending anything (`INVALID_PAYLOAD` with `{ name: 'snapshotLoad', issues }` for a file that isn't JSON or has the wrong shape), then sends `snapshotLoad` with the file's `snapshot` and `app`, so the target refuses another app's snapshot with `APP_MISMATCH`. A file that can't be read or written exits 2. `INVALID_SNAPSHOT` exits 1.
+- e929a6b: `/v1/stream` sends a `state` frame with the target's current revision as soon as the stream's state subscription is live, after the event backlog. A client that reads state after that frame misses no later change; `watch` starts this way. The frame is additive, so the protocol version stays 1.
+- e929a6b: New command `ironbird watch [--path <path>]`. It prints `{ rev, patch }` JSON lines, where `patch` is an RFC 6902 JSON Patch from the last printed value to the new one, with pointers relative to `--path`. The first line is an `add` at `""` with the current value, or `[]` when the path is missing; a path that later disappears or appears prints a `remove` or `add` at `""`. It opens the stream before its first read and waits for the daemon's initial `state` frame, keeps one read in flight, and reads again after any frame that arrived during a read, so it misses no change, including after a `reset`. State is sampled at up to 10 frames per second. SIGINT exits 0; an `error` frame or a failed read prints `{ error }` and exits with that error's code. `DaemonClient`'s `call` and `rpc` take an optional `CallOptions` `{ signal }` (exported from `@ironbird/cli/runner`); aborting it cancels the request, which rejects with the signal's reason, so `watch` exits on SIGINT even while the daemon or a target is slow to answer.
+- Updated dependencies [e929a6b]
+- Updated dependencies [c096b90]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+- Updated dependencies [e929a6b]
+  - @ironbird/core@0.1.0
+
 ## 0.0.4
 
 ### Patch Changes

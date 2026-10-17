@@ -1,4 +1,0 @@
----
-"@ironbird/core": patch
----
-Snapshots. New error code `INVALID_SNAPSHOT` with details `{ path, reason }`. New `serializeSnapshot(value)`, which returns JSON-safe data or throws `INVALID_SNAPSHOT` naming the first value it can't save losslessly (functions, symbols, `BigInt`, `NaN`, `Infinity`, `Map`, `Set`, `Date`, other non-plain objects, cycles, `undefined` or holes in arrays, array properties other than indices, symbol-keyed properties, throwing getters) instead of substituting a placeholder, and `parseSnapshotLoadParams(params, appId)`, which checks `snapshotLoad`'s optional `app` (`APP_MISMATCH` on another app's id) and its `snapshot` before anything is applied. A plain error thrown by a `Target`'s `persist` or `restore` now surfaces as `INVALID_SNAPSHOT` with `{ path: '', reason }` instead of an unclassified error; an `IronbirdError` passes through.
